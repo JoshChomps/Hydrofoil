@@ -1,6 +1,10 @@
 # 07 — Interfaces
 
-## 1. UDP: Python → Unity (state), port 5005
+## 1. (Removed) UDP bridge to Unity
+
+> Removed on branch `mujoco-viewer`: `stream.py`, `control_uplink.py`, `sim_realtime.py`. The formats below are kept for history (git commit `841d501`).
+
+### 1a. UDP: Python → Unity (state), port 5005
 
 Sender: `SimStreamer` (`stream.py`), one JSON datagram per stream tick (~30 Hz: every `int(0.033/dt)` steps).
 Destination: `--host` (default: WSL gateway via `ip route show default`, else `127.0.0.1`).
@@ -25,7 +29,7 @@ Destination: `--host` (default: WSL gateway via `ip route show default`, else `1
 
 Unity's `SimPacket` mirrors these fields exactly (`JsonUtility`).
 
-## 2. UDP: Unity → Python (pilot), port 5006
+### 1b. UDP: Unity → Python (pilot), port 5006
 
 Receiver: `PilotUplink` bound to `0.0.0.0:5006`, 1 KB max datagram, 0.5 s socket timeout loop.
 
@@ -55,15 +59,15 @@ Note these are **not** the same units as the UDP packet (angles in degrees here,
 ```
 python -m hydrofoil.dashboard
 python -m hydrofoil.sim
-python -m hydrofoil.sim_realtime [--speed X] [--host IP] [--port 5005] [--pilot-port 5006] [--duration 60] [--waves]
+python -m hydrofoil.viewer [--speed X] [--duration 600] [--waves]      # MuJoCo (branch mujoco-viewer)
 pytest tests/
 ```
-`--duration` default 60 s; Unity auto-launch passes 86400.
+Viewer keys: Up/Down height, Left/Right bank, [ ] speed, R reset.
 
 ## 5. Python API (for scripts and a future linearisation/LQR driver)
 
 ```python
-from hydrofoil.dashboard import DEFAULT_PARAMS
+from hydrofoil.params import DEFAULT_PARAMS
 from hydrofoil.vehicle import VehiclePhysics
 from hydrofoil.waves.airy import CalmWater, AiryWave
 
@@ -74,4 +78,4 @@ s, cmds, thrust, draft, wave_elev = vp.step(s, t, CalmWater())
 ```
 `vp.physics_rhs(state, cmds, thrust, water_surface_z, wave_vel_body)` is the pure nonlinear dynamics, suitable for finite-difference linearisation
 (`cmds` = dict with `delta_main`, `delta_elev`, `delta_roll` in degrees).
-Importing `DEFAULT_PARAMS` imports `dashboard.py`, which pulls in FastAPI/uvicorn — a reason to move the params to their own module.
+`DEFAULT_PARAMS` now lives in `hydrofoil/params.py` (no FastAPI import).

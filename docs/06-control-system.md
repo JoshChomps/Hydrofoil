@@ -48,6 +48,8 @@ Modeled after a MyActuator RMD-X8-class direct-drive BLDC over CAN; numbers are 
 
 ## Gains and rationale
 
+> **Units warning (doc 13):** the roll and pitch PIDs receive error in **radians** and output **degrees**, so `Kp_roll = 3.5` is 3.5 °/rad ≈ 0.061 °/° — about 57× weaker than the numbers suggest. Heave (m → °) is fine.
+
 | Loop | Kp / Ki / Kd | Notes |
 |---|---|---|
 | heave | 15 / 1 / 5 | Higher than the legacy `sim.py` (1/0/3) because the vehicle starts at rest and must generate takeoff lift; only loop with nonzero Ki |

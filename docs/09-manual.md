@@ -2,14 +2,13 @@
 
 ## 1. Install
 
-Requirements: Python ≥ 3.10; Unity 6000.3.6f1 only if you want the 3D view.
+Requirements: Python ≥ 3.10 (tested 3.12).
 
 ```bash
 cd "D:/Coding_Projects/Hydrofoil Sim"
 python -m venv .venv
 .venv/Scripts/activate            # Windows (bash: source .venv/Scripts/activate)
 pip install -r requirements.txt   # numpy scipy matplotlib fastapi uvicorn[standard]
-pip install plotly pytest         # not in requirements.txt but needed for sim.py/viz.py and tests
 ```
 Run all commands from the repo root so `import hydrofoil...` resolves (there is no installable package / `pyproject.toml`).
 
@@ -39,14 +38,13 @@ Run/Stop/Reset: Reset restores `DEFAULT_PARAMS` and clears charts. The run auto-
 ### Keyboard
 W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Stay within ±8° to keep inside the verified stable region.
 
-## 3. Stream to Unity
+## 3. 3D viewer (MuJoCo)
 
 ```bash
-python -m hydrofoil.sim_realtime --host 127.0.0.1          # native Windows, Unity on the same machine
-python -m hydrofoil.sim_realtime --waves --speed 1         # with Airy waves (A 0.05, λ 5, T 2)
+python -m hydrofoil.viewer                    # calm water, real time
+python -m hydrofoil.viewer --waves --speed 2  # Airy wave (A 0.05, λ 5, T 2), 2x speed
 ```
-Then press Play in Unity. Details in doc 08. Console prints a line per sim-second:
-`t, z, draft [MODE], u (target), theta, thrust, delta_main`.
+Click the window for keyboard focus: Up/Down height, Left/Right bank, `[` `]` speed, `R` reset. Details in doc 08.
 
 ## 4. Headless batch (legacy model)
 
@@ -86,9 +84,7 @@ Cover polar loading/symmetry, kinematics, rigid body, foil force signs, buoyancy
 | `ModuleNotFoundError: hydrofoil` | Run from repo root with `python -m` |
 | `ModuleNotFoundError: plotly` | `pip install plotly` (only `sim.py`/`viz.py`) |
 | Dashboard blank charts | No internet for the Plotly CDN |
-| Unity shows no movement | Wrong `--host`, firewall, Python not running, or Unity window not receiving (set `runInBackground` already on); check `_packetsReceived` in the inspector |
-| Unity auto-launch fails | Fix `wslDistro` / `simCommand` path, or disable `autoLaunchSim` |
-| Hull invisible | Missing 709 MB `.blend` |
+| Viewer keys do nothing | Click the viewer window first; MuJoCo's own hotkeys share the keyboard |
 | Vehicle never lifts | Target speed too low (< ~3 m/s on current constants) or `max_thrust` too small for hull drag |
 | Violent attitude then "reset" look | Safety net rolled back after non-finite state; reduce combined inputs |
 | Changing a slider does nothing | It needs **Apply & Restart** (only height and roll are live) |

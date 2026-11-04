@@ -30,6 +30,10 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 | C13 | L | Dashboard server binds `0.0.0.0` with no authentication; POST endpoints can change/stop the sim from the network. |
 | C14 | L | `sim_realtime.py` converts θ with `3.14159265` literal instead of `np.degrees`. |
 | C15 | L | `PilotUplink.stop()` joins with a timeout; socket close from another thread relies on `OSError` to exit. |
+| C17 | **H** | **PID unit mismatch:** roll/pitch errors are in rad, outputs in deg (doc 13 §0.1). Roll loop does not stabilise at current gains. |
+| C18 | **H** | Waves are symmetric about y = 0, so cannot excite roll/yaw; upstream wave-based stability claims are not reproducible. |
+| C19 | M | Munk moment (added-mass Coriolis) missing; shifts the unstable pole 0.178 → 0.209 s⁻¹. |
+| C20 | M | Heave takes 60–90 s to settle (no feed-forward); default `t_end` = 60 s ends before settling. |
 | C16 | L | `get_windows_host_ip` uses `shell=True` `ip route`; on native Windows this silently falls back to 127.0.0.1 (works, but the `[SimStreamer] Sending to` line is the only indication). |
 
 ## Modelling concerns worth keeping in mind
@@ -46,8 +50,7 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 | U4 | L | Both URP and HDRP packages/assets present. |
 | U5 | L | Several dead scripts (`FoilData`, `HightBalancer`, `HydrofoilElement`, `HydrofoilController`). |
 
-## What was not verified
-- **Nothing was executed.** My attempt to run `pytest` and a headless takeoff probe was blocked by the environment's permission check, so test status, takeoff behaviour, stability limits, and all numbers in docs 03 §7 and 05 §3 are from reading the code and hand calculation.
-- The stability claims (Ki divergence, bank 12°, fuzz divergence) are quoted from upstream `PROJECT_STATE.md`/code comments, not reproduced.
-- Unity project was not opened; scene wiring (which objects hold which script references) was not inspected.
-- The raw `.unity` scene YAML and HDRP/URP assets were not read.
+## Verification status (updated)
+- Executed since the first pass: `pytest` (23/23 pass), takeoff run, linearisation, bank/disturbance sweeps, RK4 convergence, Munk comparison. Results in doc 13.
+- **Not reproduced:** the upstream fuzz-divergence claim and the Ki=0.05-diverges-in-waves claim (the latter cannot occur: waves never excite roll).
+- Unity was removed; its scene wiring was never inspected.

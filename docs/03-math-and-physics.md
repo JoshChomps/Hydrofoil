@@ -38,7 +38,7 @@ Heave: Σ m_a,i. Pitch: Σ m_a,i x_i² (lumped parallel-axis).
 
 For defaults (ρ = 1025): main half = 1025·π·0.15²/4·0.6 ≈ 10.9 kg ×2 halves; elevator = 1025·π·0.10²/4·0.3 ≈ 2.4 kg.
 Heave added mass ≈ 24.1 kg (about equal to the 25 kg vehicle mass, so effective heave mass ≈ 49 kg). Pitch added inertia ≈ 2.4·1.2² ≈ 3.5 kg·m² (main halves sit at x = 0 so contribute nothing), versus Iyy = 5.0.
-*(Hand calculation from the formulas, not executed.)*
+*(Confirmed numerically: 24.15 kg and 3.48 kg·m².)*
 
 ## 4. Generalised forces τ (per step)
 
@@ -102,7 +102,7 @@ At each step: controller and surge PID are evaluated **once** with the current s
 `physics_rhs` four times with those commands, thrust and wave state frozen. dt default 0.01 s (range 0.001–0.05).
 Controller discrete time = integration time. After integration: NaN → roll back; else clamp attitude/velocity (doc 05).
 
-## 7. Hand-calculated sanity numbers (estimates, not run output)
+## 7. Sanity numbers (hand calculation; re-checked by running code in doc 13: min speed 3.1 m/s, 10.2 N/deg per half, added mass 24.15 kg / 3.48 kg·m² all confirmed)
 
 Using defaults (m 25 kg, W = 245 N; main half 0.15×0.6 m, AR 4; ρ 1025):
 

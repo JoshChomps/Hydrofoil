@@ -20,7 +20,9 @@
 | `T_euler` | |cos θ| < 1e-6 → `ValueError` | Raw transform would crash |
 | `stream.send` | `OSError` swallowed | Dropped packets are silent |
 
-## 2. Empirically verified stability limits (from upstream `PROJECT_STATE.md`, not re-verified here)
+## 2. Stability limits: upstream claims vs. my re-test (see doc 13)
+
+> **Update 2026-11-04:** re-running these on the current code contradicts the upstream claims. With the current gains the roll loop does not stabilise a 5° disturbance (grows to 14° in 15 s) and a 4° bank command ends with the hull back in the water. The wave-based Ki test cannot excite roll at all (φ stays 0). The ±8° cap is therefore *not* a verified safe region today; the list below is the upstream record.
 
 1. **Roll Ki must be 0.** Ki = 0.05 diverged to 1000+° within 90 s under waves. Gyroscopic roll↔yaw↔pitch coupling in `C_RB` outruns an integral term.
 2. **Roll gains** Kp 3.5, Kd 2.5 found by sweep; old Kp 1 / Kd 1 converged to a wrong ~40° list under disturbance.
@@ -55,9 +57,6 @@
 
 ## 5. Platform / environment constraints
 
-- Python ≥ 3.10 (uses `X | None` annotations at definition time in `sim_realtime.py`).
-- Upstream runs Python inside **WSL2** and Unity on Windows; host IP auto-detected via `ip route show default`. On native Windows that detection fails and falls back to `127.0.0.1`.
-- Unity project version 6000.3.6f1 (Unity 6.3), Input handling = Both (`activeInputHandler: 2`); `PythonSimDriver` uses the legacy `Input` API.
-- Hull mesh `Mockup4_JacobRig_Merged.blend` (709 MB) is **not in the repo**; must be obtained from the club drive and placed at `unity-visualizer/Assets/Foil/`.
-- `requirements.txt` omits `plotly` (needed by `viz.py`/`sim.py`) and `pytest`.
+- Python ≥ 3.10 (tested 3.12). The MuJoCo viewer needs an OpenGL desktop and runs natively on Windows (no WSL, no UDP).
+- `requirements.txt` now includes `plotly`, `mujoco` and `pytest`.
 - Dashboard loads Plotly from a CDN (`cdn.plot.ly`) → needs internet.

@@ -46,6 +46,12 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Findings recorded in doc 11 (stale `PROJECT_STATE.md`, missing `plotly` in requirements, surge-D sign, etc.).
 - No source files were modified.
 
+### 2026-11-04 — Math audit, MuJoCo viewer
+- Ran the code (it had been blocked earlier): 23/23 tests pass; numerical audit in doc 13.
+- Findings: rad/deg gain mismatch in roll/pitch PIDs; roll loop unstable at current gains; waves cannot excite roll; no feed-forward (heave settles in 60-90 s); Munk moment missing.
+- New branch `mujoco-viewer`: removed `unity-visualizer/`, `stream.py`, `control_uplink.py`, `sim_realtime.py`; added `hydrofoil/viewer.py` (MuJoCo, render-only) and `hydrofoil/params.py`; requirements now list `mujoco`, `plotly`, `pytest`.
+- Physics files were not changed.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

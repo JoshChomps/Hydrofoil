@@ -17,7 +17,7 @@ source; it never simulates anything in the normal mode.
 | Entry point | Purpose | Uses `vehicle.py`? |
 |---|---|---|
 | `python -m hydrofoil.dashboard` | FastAPI + WebSocket app on `localhost:8000`, sliders, live plots, keyboard "stick". The actively developed entry point. | yes |
-| `python -m hydrofoil.sim_realtime` | Wall-clock loop, UDP stream to Unity, pilot input back from Unity. | yes |
+| `python -m hydrofoil.viewer` | MuJoCo 3D viewer, in-process, keyboard pilot (replaced the Unity/UDP path). | yes |
 | `python -m hydrofoil.sim` | Headless batch run (20 s), saves PNG + Plotly HTML into `data/`. Older, simpler model. | **no** (own model) |
 
 ## What exists (inventory)
@@ -67,7 +67,6 @@ span, free surface, induced drag) → added mass → actuator model → unit tes
 
 ## Current headline limitations
 
-1. Gains **have not been retuned** since the foil-force corrections and added mass were added (README
-   says the response will feel under-authoritative).
-2. Roll Ki must be 0; commanded bank ≥ ~12° diverges; combined rapid input can still diverge (masked by clamps).
+1. Gains **have not been retuned** since the foil-force corrections and added mass were added. Doc 13 shows the roll loop does not stabilise at all today (and a rad/deg unit mismatch in the roll and pitch PIDs).
+2. Roll Ki must be 0; the upstream bank limits are not reproducible on the current code; combined rapid input can still diverge (masked by clamps).
 3. Everything physical is a placeholder number.

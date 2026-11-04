@@ -1,3 +1,5 @@
+> **Superseded (2026-11-04):** this 2026-09-17 snapshot is out of date (added mass, tests, foil corrections now exist; Unity/UDP removed in favour of `hydrofoil/viewer.py`; several stability claims below do not reproduce). See `docs/`, especially `docs/13-math-audit-and-pid-critique.md`.
+
 # Hydrofoil Sim — Project State
 
 Snapshot of the Python simulation as of 2026-09-17. Written to orient

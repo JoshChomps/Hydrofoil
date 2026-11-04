@@ -1,27 +1,16 @@
 # Hydrofoil Sim
 
 Python 6-DOF physics simulation (Fossen notation) of a fully-submerged T-foil
-hydrofoil, with a live browser dashboard and a real-time Unity visualizer
-driven over UDP. Built for UBC Okanagan Marine Robotics Hydrofoil Club.
-
-## Missing file — read this first
-
-`unity-visualizer/Assets/Foil/Mockup4_JacobRig_Merged.blend` is **not** in
-this repo — it's 709MB, over GitHub's 100MB file limit. the file is in hydro foil drive in mech then cad files
-you need to drag both files in unity just the .blends tho. Once you have it, drop it in at exactly that path
-(`unity-visualizer/Assets/Foil/`) before opening the Unity project, or the
-boat hull won't render (everything else — scripts, scene, materials, physics
-— works fine without it).
+hydrofoil, with a live browser dashboard and a native MuJoCo 3D viewer. Built for UBC Okanagan Marine Robotics Hydrofoil Club.
 
 ## What's here
 
 - `hydrofoil/` — the Python simulation. `vehicle.py` is the canonical physics
   (6-DOF rigid body, strip-theory foils, hull buoyancy/drag, wave coupling,
-  cascade PID control). `dashboard.py` is the interactive browser UI.
-  `sim_realtime.py` streams state to Unity over UDP.
-- `unity-visualizer/` — the Unity project (trimmed: Unity's default
-  HDRP/terrain template sample content is left out, only the actual
-  hydrofoil scene/scripts/materials are here).
+  PID control). `dashboard.py` is the interactive browser UI. `viewer.py` is
+  the MuJoCo 3D viewer (render-only; the physics stays in `vehicle.py`).
+  `params.py` holds `DEFAULT_PARAMS`.
+- `docs/` — full documentation, math audit and roadmap (start at `docs/README.md`).
 - `tests/` — pytest unit tests (`test_forces.py`, `test_actuator.py`).
 - `notebooks/` — currently empty, reserved for analysis notebooks.
 - `requirements.txt` — Python deps.
@@ -37,14 +26,10 @@ python -m hydrofoil.dashboard
 # Tests
 pytest tests/
 
-# Stream to Unity over UDP (run this, then hit Play in the Unity project)
-python -m hydrofoil.sim_realtime
+# Native 3D viewer (MuJoCo). Click the window, then:
+#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset
+python -m hydrofoil.viewer [--waves] [--speed 1.0]
 ```
-
-Open `unity-visualizer/` as a Unity project (Unity Hub → Add → select this
-folder) to get the live visualizer. `Assets/HydrofoilSim/PythonSimDriver.cs`
-is what receives state from `sim_realtime.py` over UDP and drives the scene;
-`SimModeController.cs` switches between that and a built-in arcade mode.
 
 ## Known state / heads-up for anyone picking this up
 

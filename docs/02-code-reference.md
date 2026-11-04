@@ -6,14 +6,13 @@ Repo layout (excluding Unity assets/settings):
 README.md, requirements.txt, .gitignore
 data/foil_tables/naca0009_xflr5_re2700000.dat
 hydrofoil/
-  vehicle.py  dashboard.py  sim.py  sim_realtime.py  stream.py  control_uplink.py  viz.py  PROJECT_STATE.md
+  vehicle.py  dashboard.py  params.py  viewer.py  sim.py  viz.py  PROJECT_STATE.md   (sim_realtime/stream/control_uplink removed)
   dynamics/   rigid_body.py  kinematics.py
   forces/     foil.py  hull.py  buoyancy.py
   control/    pid.py  surge.py  actuator.py
   waves/      airy.py
   estimation/ (empty)   sensors/ (empty)
-tests/        test_forces.py  test_actuator.py
-unity-visualizer/Assets/ ... (see doc 08)
+tests/        test_forces.py  test_actuator.py   (23 tests, all pass)
 ```
 
 Data-flow of one physics step (dashboard / realtime):
@@ -44,7 +43,7 @@ params ─► VehiclePhysics.step(state, t, wave)
     Note the returned `draft` is computed from the *pre-step* `eta`.
 
 ## `hydrofoil/dashboard.py` (1060 lines) — FastAPI app + embedded HTML/JS
-- `DEFAULT_PARAMS` — master parameter dict (doc 04). Also imported by `sim_realtime.py`.
+- `DEFAULT_PARAMS` — now imported from `hydrofoil/params.py` (doc 04).
 - `SimRunner` — owns params, a thread, a lock and a state dict.
   `start/stop/restart_with(params)/set_live_params(updates)/get_state`. `_run()` loops `vp.step`, publishes
   rounded state, and **sleeps to real time** (`t > elapsed`). Stops at `t_end`.
@@ -58,17 +57,23 @@ params ─► VehiclePhysics.step(state, t, wave)
   - `effectiveZRef()` mirrors the backend `z_ref = hull_offset − flying_height`.
 - `__main__` block prints local + WSL URLs and runs `uvicorn` on port 8000.
 
-## `hydrofoil/sim_realtime.py`
+## `hydrofoil/viewer.py` (new) and `hydrofoil/params.py` (new)
+See doc 08. `params.py` holds `DEFAULT_PARAMS` (moved out of `dashboard.py`).
+
+## Removed on `mujoco-viewer`: `sim_realtime.py`, `stream.py`, `control_uplink.py`
+Kept below for reference (git `841d501`).
+
+## `hydrofoil/sim_realtime.py` (removed)
 `run_realtime(speed, streamer, wave, duration, pilot_port)` — builds `VehiclePhysics` from `DEFAULT_PARAMS`,
 starts `PilotUplink`, loops: copy pilot values into params → `vp.step` → stream every `int(0.033/dt)` steps
 (≈30 Hz at dt=0.01) → print status once per sim-second → sleep to wall clock (`dt/speed`).
 CLI: `--speed --host --port --pilot-port --duration(60) --waves` (waves = A 0.05, λ 5, T 2).
 
-## `hydrofoil/stream.py`
+## `hydrofoil/stream.py` (removed)
 `get_windows_host_ip()` (parses `ip route show default`; falls back to `127.0.0.1`) and `SimStreamer.send(...)`
 (JSON UDP, errors swallowed). Packet in doc 07.
 
-## `hydrofoil/control_uplink.py`
+## `hydrofoil/control_uplink.py` (removed; limits now in `viewer.py`)
 `PilotUplink` — daemon thread bound to `0.0.0.0:5006`; thread-safe properties `flying_height`, `target_speed`,
 `phi_ref`; any subset of keys accepted; values clamped on receipt (`HEIGHT -0.3..1.0`, `SPEED 0..10`, `BANK ±8`).
 

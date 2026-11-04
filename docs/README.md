@@ -2,8 +2,8 @@
 
 Written 2026-11-04 as a record of the repo at commit `2af5157`
 (<https://github.com/jacobleathem/hydrofoil-sim>), by reading every script.
-Nothing here was verified by running the code (see
-[11-known-issues.md](11-known-issues.md) → "What was not verified").
+Docs 01–12 were written by reading; doc 13 and the updates it triggered were produced by running the code
+(see [11-known-issues.md](11-known-issues.md) → "Verification status").
 
 | Doc | What's in it |
 |-----|--------------|
@@ -14,11 +14,12 @@ Nothing here was verified by running the code (see
 | [05-constraints-and-limits.md](05-constraints-and-limits.md) | Clamps, saturation limits, stability limits, modelling assumptions |
 | [06-control-system.md](06-control-system.md) | PID loops, actuator model, surge loop, sign conventions |
 | [07-interfaces.md](07-interfaces.md) | UDP packet formats, REST/WebSocket API, CLI flags |
-| [08-unity-visualizer.md](08-unity-visualizer.md) | Unity project, scripts, coordinate mapping, setup gotchas |
+| [08-mujoco-viewer.md](08-mujoco-viewer.md) | MuJoCo viewer (replaced Unity): design, frames, keys |
 | [09-manual.md](09-manual.md) | How to install, run, operate, and tune |
 | [10-roadmap.md](10-roadmap.md) | Planned and suggested future development |
 | [11-known-issues.md](11-known-issues.md) | Bugs, inconsistencies, stale docs, unverified items |
 | [12-progress-log.md](12-progress-log.md) | Dated record of project history and this documentation pass |
+| [13-math-audit-and-pid-critique.md](13-math-audit-and-pid-critique.md) | **Numerically verified math audit, PID method and its flaws, physics omissions** |
 
 Conventions used across the code (and these docs): Fossen (2011) notation,
 NED world frame (z **down**), body frame x-forward / y-starboard / z-down,

@@ -2,6 +2,10 @@
 
 Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggested]** = my recommendation from reading the code.
 
+## Phase 0 — Fix the baseline (from doc 13)
+1. Fix the rad/deg unit mismatch in the roll/pitch PIDs, retune, and commit the bank-step and disturbance-recovery tests.
+2. Speed-scheduled feed-forward trim; make waves able to excite roll/yaw; add strut side force and a buoyancy lever arm; add Munk moment and wing-tail downwash.
+
 ## Phase 3 — Advanced control (stated roadmap)
 1. **[stated]** Linearised state-space model (A, B) about a foilborne trim point. Nothing exists yet.
    - **[suggested]** Add `hydrofoil/linearize.py` with a trim solver (solve `physics_rhs = 0` for δ_main, δ_elev, thrust at given u, flying_height) and a central-difference Jacobian; add tests that A has the expected open-loop poles/stability.
@@ -26,19 +30,17 @@ Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggeste
 - Freshwater density option (lake testing).
 
 ## Software engineering (suggested)
-- Move `DEFAULT_PARAMS` out of `dashboard.py` (e.g. `hydrofoil/params.py`) so scripts don't import FastAPI.
+- (done) `DEFAULT_PARAMS` moved to `hydrofoil/params.py`.
 - Add `pyproject.toml` / pinned versions; add `plotly` and `pytest` to requirements; document Python ≥ 3.10.
 - Tests: `vehicle.py` (trim, takeoff reaches foilborne, finite after fuzz), PID (anti-windup, derivative-on-measurement), hull, waves, free-surface factor, uplink clamps.
 - Headless regression scripts (the bank sweep, fuzz test, Ki divergence check) checked in under `tests/` or `scripts/` — they currently exist only as ad-hoc throwaways.
 - Retire or rebuild `sim.py` on top of `vehicle.py`; remove legacy Unity scripts or move them into an `Archive/` folder.
 - Add a CSV/NPZ run logger for analysis; fill the (non-existent) `notebooks/` directory.
-- Decouple the Unity auto-launch command from a personal path (make it a per-user setting).
 - Real-time pacing: catch-up logic or fixed-rate scheduler; run physics in a separate process from the dashboard UI.
 
-## Unity visualisation (suggested)
-- Apply `wave_elev` to the water mesh; render `draft`/foilborne state; show thrust.
-- Send `p,q,r` and use them for motion cues; HUD for speed/height.
-- Resolve double render pipeline (HDRP and URP assets both present).
+## Viewer (suggested)
+- Done: Unity removed, MuJoCo viewer added (doc 08).
+- Next: wave-surface mesh, spray/flow cues, trail of the track, offline video rendering, sharing live params with the dashboard.
 
 ## Hardware track (stated: deprioritised)
 Firmware for NUCLEO-H723ZG, VESC CAN control, MyActuator RMD-X8 CAN position control; hardware-in-the-loop with the sim; then replace the actuator and thrust placeholders with bench numbers.
