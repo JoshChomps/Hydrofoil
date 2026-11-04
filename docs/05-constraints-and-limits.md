@@ -7,7 +7,7 @@
 | `vehicle.step` | |φ|, |θ| ≤ 70° | Keeps clear of Euler singularity at ±90° (`T_euler` would raise `ValueError`) |
 | `vehicle.step` | |u|,|v|,|w| ≤ 15 m/s | Velocity cap |
 | `vehicle.step` | |p|,|q|,|r| ≤ 3 rad/s (~172 °/s) | Rate cap |
-| `vehicle.step` | non-finite state → roll back to previous state, zero ν, reset controllers and actuators | Prevents NaN reaching Unity; pilot regains control |
+| `vehicle.step` | non-finite state → roll back to previous state, zero ν, reset controllers and actuators | Prevents NaN reaching the viewer; pilot regains control |
 | `pid.HydrofoilController` | each PID output ±20° | Flap command limit (before actuator) |
 | `surge` | thrust ±`max_thrust` (50 N) | Thrust can be **negative** (reverse) |
 | `PID.update` | integrator step undone when output saturated | Conditional anti-windup |
@@ -27,17 +27,27 @@
 1. **Roll Ki must be 0.** Ki = 0.05 diverged to 1000+° within 90 s under waves. Gyroscopic roll↔yaw↔pitch coupling in `C_RB` outruns an integral term.
 2. **Roll gains** Kp 3.5, Kd 2.5 found by sweep; old Kp 1 / Kd 1 converged to a wrong ~40° list under disturbance.
 3. **Commanded bank**: held bank settles at ≈ 1.3–1.5× command (P-dominant, no integral) while yaw builds (a coordinated turn).
-   Command ≥ 12° diverges to overflow in ~6 s even in calm water; verified OK up to ~10°. Hence ±8° caps.
+   Command ≥ 12° diverges to overflow in ~6 s even in calm water; verified OK up to ~10°. Hence ±8° caps. **(Not reproduced on current code; see the update above.)**
 4. **Rapid multi-axis combined input** (bank + height + speed changing at once) can still diverge to NaN/Inf within 15–60 s of randomized input, even under the 8° cap.
    Not fixed at controller level; the safety net masks it. Explicitly scoped as a MIMO (LQR/MPC) problem.
-5. Do not widen `BANK_MIN/MAX` (Python and Unity) or the dashboard `ROLL_MAX` without re-running the bank sweep.
+5. Do not widen the viewer's `BANK_MIN/MAX` or the dashboard `ROLL_MAX` without re-running the bank sweep.
+
+### Re-test results (current code, calm, 4 m/s foilborne, 2026-11-04)
+| Test | Result |
+|---|---|
+| φ₀ = 5°, φ_ref = 0 | φ grows to 14.2° in 15 s; d_roll only ~0.3–2.4° |
+| φ_ref = 0.5° / 1° / 2° / 4° (16 s) | φ = 1.5° / 3.1° / 6.7° / 16.4°; at 4° flap saturates at 20° and hull touches down |
+| φ_ref = 4 / 8 / 10 / 12 / 15° (20 s) | φ_final = 16 / 21 / 24 / 26 / 28°; hull back in water (z ≈ 0.62); ψ ≈ 280–350° |
+| Roll Kp, Kd ×5 | recovers the 5° disturbance to ≈ 0; bank 8° still ends at 12° with touchdown |
+| Roll Kp, Kd ×57 (true °/°) | recovers; bank 8° → 7.95° (peak 8.8°) |
+| Waves A 0.05, λ 5, T 2; roll Ki = 0 and 0.05 | max |φ| = 0.0° in both (waves cannot excite roll) |
 
 ## 3. Operating-envelope constraints (derived from the constants; estimates)
 
 - **Minimum foilborne speed** with current geometry ≈ 3 m/s from flap authority alone (doc 03 §7). Throttle min 0 m/s means "no lift, sink" by design.
 - Flap authority: main foil flap ±20° × 0.21 effectiveness = only ±4.2° of effective AoA. Elevator ±20° × 1.0 = ±20° effective, which would hit the polar's stall region (CL_max at 14.4°) — pitch authority is far larger than heave authority.
 - Maximum foil lift at the flap limit scales with V²; at 4 m/s ≈ 400 N vs weight 245 N, i.e. only ~1.6× margin.
-- Thrust 50 N vs hull+foil drag: unverified that the vehicle can reach 4 m/s; the surge Ki windup is limited by anti-windup.
+- Thrust: verified the vehicle reaches 4.0 m/s and cruises on ~13–14 N; hull drag at rest draft and 4 m/s would be ~43 N, so takeoff relies on the draft shrinking.
 - Wave model requires depth ≫ wavelength fraction (deep water); orbital velocity evaluated at the vehicle origin depth, not at each foil.
 
 ## 4. Modelling assumptions and what they exclude

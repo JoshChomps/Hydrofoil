@@ -39,6 +39,8 @@ There are **no measured values** anywhere in the repo.
 | `target_speed` | 4.0 | m/s | 0–15 in UI (uplink 0–10) |
 
 ### Gains (see doc 06)
+
+> **Units:** heave gains are °/m (fine). Roll and pitch gains are applied to errors in **radians** and output **degrees**, so they are °/rad, ≈ 57× smaller than if read as °/° (doc 13). Speed gains are N/(m/s).
 | Loop | Kp | Ki | Kd | Note |
 |---|---|---|---|---|
 | heave | 15.0 | 1.0 | 5.0 | higher than `sim.py` for takeoff authority |
@@ -46,7 +48,7 @@ There are **no measured values** anywhere in the repo.
 | roll | 3.5 | **0.0 (must stay 0)** | 2.5 | swept; Ki>0 diverges |
 | speed | 30.0 | 5.0 | 0.0 | → thrust [N] |
 
-`max_thrust` = 50 N (placeholder matching Unity arcade-mode value).
+`max_thrust` = 50 N (placeholder originally matching the Unity arcade value). Measured cruise thrust at 4 m/s is only ~13–14 N.
 
 ### Waves
 `waves_enabled` False; `wave_amplitude` 0.05 m; `wave_wavelength` 5.0 m; `wave_period` 2.0 s; direction fixed 0 (+x) in dashboard.
@@ -91,7 +93,7 @@ mass 25, inertia diag(2,5,5), DISPLACED_VOLUME = 25/1025, main half 0.15×0.6, e
 ELEV_FOIL_POS (−1.2,0,0.4), lateral offset 0.35, gains heave (1,0,3) / pitch (2,0,2) / roll (3.5,0,2.5), DT 0.01, T_END 20, CRUISE 4 m/s,
 Z_REF 0.5, heave damping 50 (hard-coded), start z 0.3 with 2° pitch.
 
-## H. Unity-side constants (`PythonSimDriver.cs`)
+## H. (Removed) Unity-side constants (`PythonSimDriver.cs`, history only)
 HEIGHT_RATE 0.15 m/s, HEIGHT −0.3…1.0; SPEED_RATE 1.0 m/s², SPEED 0…10; BANK_RATE 6°/s, ±8°, return 10°/s;
 send interval 0.05 s; `modelYawOffsetDeg` −90; ports 5005/5006; default sim command contains a
 machine-specific path (`/home/jleathem/code/unity`) and distro `Ubuntu`.
@@ -99,3 +101,17 @@ machine-specific path (`/home/jleathem/code/unity`) and distro `Ubuntu`.
 ## Likely-to-change parameters (priority for real measurement)
 mass, inertia, foil chord/span/positions, hull waterplane area / drag, flap effectiveness, actuator rate/lag/delay,
 max thrust, and the water density if testing on a lake.
+
+## I. Measured/derived values from the audit (calm water, defaults, 4 m/s, run 2026-11-04)
+| Quantity | Value |
+|---|---|
+| Added mass heave / pitch | 24.15 kg / 3.48 kg·m² |
+| Rest draft | 0.041 m |
+| Main-flap lift slope | 10.2 N/deg per half (both halves 20.4 N/deg) |
+| Foil heave stiffness dL/dw | 698 N/(m/s) per half (explicit `heave_damping` = 50 is ~28× smaller) |
+| Trim flap (cruise) | ≈ 14.1° (≈ 72 % of the ±20° limit) |
+| Cruise thrust | ≈ 13–14 N |
+| Minimum foilborne speed (flap-limited) | ≈ 3.1 m/s |
+| Settled pitch | −0.38° |
+| Open-loop eigenvalues | −82.2, −47.2, −22.7, −0.32±0.47j, −0.13±0.98j, −0.025, **+0.178**, 0 ×3 |
+| cond(M) | 24.6 |

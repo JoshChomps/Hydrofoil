@@ -3,8 +3,12 @@
 Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggested]** = my recommendation from reading the code.
 
 ## Phase 0 — Fix the baseline (from doc 13)
-1. Fix the rad/deg unit mismatch in the roll/pitch PIDs, retune, and commit the bank-step and disturbance-recovery tests.
-2. Speed-scheduled feed-forward trim; make waves able to excite roll/yaw; add strut side force and a buoyancy lever arm; add Munk moment and wing-tail downwash.
+1. Fix the rad/deg unit mismatch in the roll/pitch PIDs (convert error to degrees or scale gains ×57.3), retune, and commit the bank-step and disturbance-recovery tests (the sweeps in doc 05's re-test table are the acceptance criteria).
+2. Speed-scheduled feed-forward trim δ_trim ≈ W/(2·q·A·CLα·k_flap) so height settles in seconds; raise default `t_end`.
+3. Make waves able to excite roll/yaw (per-foil phase, directional spread, lateral components); lock λ–T by dispersion.
+4. Add strut side force and a buoyancy lever arm (roll/yaw stability), Munk moment, wing–tail downwash, section pitching moment of the flap.
+5. Replace the freeze-style anti-windup with conditional integration or back-calculation; add a derivative filter; fix the surge Kd sign.
+6. Move the safety clamps out of the design plant; consider quaternion attitude.
 
 ## Phase 3 — Advanced control (stated roadmap)
 1. **[stated]** Linearised state-space model (A, B) about a foilborne trim point. Nothing exists yet.
@@ -34,7 +38,7 @@ Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggeste
 - Add `pyproject.toml` / pinned versions; add `plotly` and `pytest` to requirements; document Python ≥ 3.10.
 - Tests: `vehicle.py` (trim, takeoff reaches foilborne, finite after fuzz), PID (anti-windup, derivative-on-measurement), hull, waves, free-surface factor, uplink clamps.
 - Headless regression scripts (the bank sweep, fuzz test, Ki divergence check) checked in under `tests/` or `scripts/` — they currently exist only as ad-hoc throwaways.
-- Retire or rebuild `sim.py` on top of `vehicle.py`; remove legacy Unity scripts or move them into an `Archive/` folder.
+- Retire or rebuild `sim.py` on top of `vehicle.py`.
 - Add a CSV/NPZ run logger for analysis; fill the (non-existent) `notebooks/` directory.
 - Real-time pacing: catch-up logic or fixed-rate scheduler; run physics in a separate process from the dashboard UI.
 

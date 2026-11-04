@@ -13,6 +13,7 @@
 ```
 
 Three independent SISO loops plus one speed loop. No decoupling, no feed-forward, no gain scheduling, no MIMO.
+**Note:** the code and older docs call this a "cascade PID"; it is not — there is no inner rate loop under an outer angle loop. Each loop is a single parallel-form PID acting directly on an actuator command.
 
 ## Sign conventions (from `pid.py`)
 
@@ -23,7 +24,7 @@ Three independent SISO loops plus one speed loop. No decoupling, no feed-forward
 | roll | `φ_meas − φ_ref` | positive = rolled right (starboard down) → left foil gets `δ_main − δ_roll`, right gets `+δ_roll` |
 | surge | `speed_ref − u` | conventional |
 
-φ positive = starboard down; Unity A/D = bank left/right = negative/positive `phi_ref`.
+φ positive = starboard down; viewer Left/Right = bank left/right = negative/positive `phi_ref`.
 
 ## PID implementation (`control/pid.py::PID`)
 
@@ -43,7 +44,7 @@ if u != u_clamped: integral −= e·dt                    # conditional anti-win
 ## Actuator model (`control/actuator.py`)
 
 Per channel: `delayed = buffer[0]` (FIFO of `delay_steps`) → `target = pos + clip(delayed − pos, ±rate·dt)` →
-`pos += dt/(τ+dt) · (target − pos)`. The returned angle is what the plant sees (and what Unity animates).
+`pos += dt/(τ+dt) · (target − pos)`. The returned angle is what the plant sees (and what the viewer animates).
 Modeled after a MyActuator RMD-X8-class direct-drive BLDC over CAN; numbers are placeholders.
 
 ## Gains and rationale
@@ -58,6 +59,12 @@ Modeled after a MyActuator RMD-X8-class direct-drive BLDC over CAN; numbers are 
 | speed | 30 / 5 / 0 | Output thrust N, ±50 |
 
 **Not yet retuned** after flap effectiveness (0.21), finite-span, free-surface, induced-drag and added-mass corrections were introduced.
+
+## Method summary and critique (full detail: doc 13 §3)
+- Algorithm: positional discrete PID, rectangular integral, backward-difference derivative **on measurement** (PI-D), no derivative filter, clamp ±20°, anti-windup by undoing the integral step whenever the output is saturated (blocks integration even when the error is desaturating).
+- Execution: sample time = integration step (10 ms), ZOH across RK4 stages, then delay (2 steps) → rate limit (720 °/s) → lag (20 ms).
+- Bugs/oversights: rad→deg unit mismatch (roll, pitch); surge Kd sign; no trim feed-forward (integrator builds a 14° trim → 60–90 s settling); no speed scheduling; shared main-flap authority between heave and roll; no reference shaping; no filtering; exact-state feedback; no stability margins or step-response metrics.
+- Measured effect: roll does not stabilise at current gains; ×57 gains (true °/°) do (doc 05 re-test table).
 
 ## Pilot interface
 

@@ -5,12 +5,12 @@
 A Python 6-DOF physics simulation (Fossen notation) of a **fully submerged
 T-foil hydrofoil boat**: a hull riding above the water on struts, a main foil
 split into left/right halves (differential flap = roll authority), and an aft
-elevator (pitch authority). It is closed-loop with cascade PID control, has a
-live browser dashboard, and can stream state over UDP to a Unity visualizer.
+elevator (pitch authority). It is closed-loop with three independent PID loops (not a true cascade), has a
+live browser dashboard, and a native MuJoCo 3D viewer.
 Built for the UBC Okanagan Marine Robotics Hydrofoil Club (per README).
 
-Python is the sole physics authority. Unity is a renderer plus a pilot-input
-source; it never simulates anything in the normal mode.
+Python is the sole physics authority. The MuJoCo viewer is a renderer plus a keyboard pilot input;
+it never simulates anything (Unity and the UDP bridge were removed on branch `mujoco-viewer`).
 
 ## Three ways to run it
 
@@ -34,8 +34,7 @@ source; it never simulates anything in the normal mode.
 - **Safety net** in `VehiclePhysics.step()`: NaN rollback + attitude/velocity clamps.
 - **Dashboard**: params panel (live + config tabs), 3 canvas views, 4 Plotly charts, telemetry strip, keyboard control.
 - **UDP bridge**: `stream.py` (state out, ~30 Hz) and `control_uplink.py` (pilot in).
-- **Unity project** (Unity 6000.3.6f1): `PythonSimDriver` + `SimModeController` are the live path;
-  several legacy arcade-physics / Simulink scripts remain.
+- **MuJoCo viewer** (`hydrofoil/viewer.py`): render-only, in-process, keyboard pilot (doc 08). Replaced the former Unity project.
 - **Tests**: `tests/test_forces.py`, `tests/test_actuator.py` (pytest). 
 - **Data**: one polar, `data/foil_tables/naca0009_xflr5_re2700000.dat`.
 
@@ -50,6 +49,19 @@ source; it never simulates anything in the normal mode.
 - No post-stall model; no Reynolds correction; one polar used for all surfaces.
 - `notebooks/` directory is mentioned in the README but does not exist in the repo.
 
+## Key findings of the 2026-11-04 audit (details: doc 13)
+
+| # | Finding | Severity |
+|---|---|---|
+| 1 | Roll and pitch PIDs take error in **rad** and output **deg** → effective gains ~57× smaller than the numbers imply | High |
+| 2 | Roll loop does **not** stabilise at current gains (5° disturbance grows to 14° in 15 s; 4° bank command ends with the hull back in the water). Upstream "stable to ~10° bank" claims do not reproduce | High |
+| 3 | Waves are symmetric about y = 0 and cannot excite roll/yaw, so wave-based roll tests are vacuous | High |
+| 4 | No feed-forward: heave trim flap (~14° of ±20°) is built by the integrator; height settles in 60–90 s (default run is 60 s) | Medium |
+| 5 | No Munk moment (added-mass Coriolis); shifts the unstable pole 0.178 → 0.209 s⁻¹ and the height/speed mode 0.98 → 0.73 rad/s | Medium |
+| 6 | No strut side force, hull restoring moment, wing–tail downwash; single-point wave sampling | Medium |
+| 7 | The "cascade PID" is three parallel SISO PIDs: PI-D (D on measurement), conditional-undo anti-windup, no filter, no scheduling | Info |
+| 8 | Verified correct: Coriolis passivity, kinematics, force directions, RK4 accuracy (~1e-5), flap authority (min foilborne speed ≈ 3.1 m/s), 23/23 tests pass | Info |
+
 ## Progress summary (from the code and git history)
 
 | Date | Milestone |
@@ -58,10 +70,10 @@ source; it never simulates anything in the normal mode.
 | 2026-09-10 | Unity screenshots captured (file names) |
 | 2026-10-24 | Initial public commit (`3170acd`) |
 | 2026-10-25 | Fix `.gitignore` that excluded the foil polar (`cc314c2`) |
-| 2026-11-04 | README update (`2af5157`); this documentation pass |
+| 2026-11-04 | README update (`2af5157`); documentation pass; math audit; Unity replaced by MuJoCo viewer (branch `mujoco-viewer`) |
 
 Roughly in build order, inferred from comments: open-loop/PID heave+pitch → roll unlock with differential
-main foil → hull buoyancy/takeoff → surge PID → waves coupled through relative flow → UDP bridge + Unity
+main foil → hull buoyancy/takeoff → surge PID → waves coupled through relative flow → UDP bridge + Unity (since replaced by the MuJoCo viewer)
 driver → pilot uplink (height, speed, bank) → safety net → foil corrections (flap effectiveness, finite
 span, free surface, induced drag) → added mass → actuator model → unit tests.
 

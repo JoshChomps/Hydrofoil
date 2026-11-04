@@ -25,15 +25,19 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 | C8 | L | Hull buoyancy and weight both act at the body origin; no restoring moment from the hull (pitch/roll stiffness while in displacement mode comes only from the foils). |
 | C9 | L | `buoyancy_force` imports `R_body_to_ned` inside the function; minor performance cost per RK4 stage. `np.linalg.solve` of a constant M each call could be a precomputed inverse. |
 | C10 | L | Actuator delay is specified in steps, so the delay in seconds changes with `dt`. |
-| C11 | L | Importing `DEFAULT_PARAMS` from `sim_realtime.py` pulls in FastAPI/uvicorn via `dashboard.py`. |
+| C11 | L | ~~Importing `DEFAULT_PARAMS` pulled in FastAPI~~ — fixed: now `hydrofoil/params.py`. |
 | C12 | L | `SimRunner.set_live_params` locks but `_run` reads `p[...]` unlocked (benign race on floats). |
 | C13 | L | Dashboard server binds `0.0.0.0` with no authentication; POST endpoints can change/stop the sim from the network. |
-| C14 | L | `sim_realtime.py` converts θ with `3.14159265` literal instead of `np.degrees`. |
+| C14 | L | ~~`sim_realtime.py` literal for π~~ — file removed. |
 | C15 | L | `PilotUplink.stop()` joins with a timeout; socket close from another thread relies on `OSError` to exit. |
 | C17 | **H** | **PID unit mismatch:** roll/pitch errors are in rad, outputs in deg (doc 13 §0.1). Roll loop does not stabilise at current gains. |
 | C18 | **H** | Waves are symmetric about y = 0, so cannot excite roll/yaw; upstream wave-based stability claims are not reproducible. |
 | C19 | M | Munk moment (added-mass Coriolis) missing; shifts the unstable pole 0.178 → 0.209 s⁻¹. |
 | C20 | M | Heave takes 60–90 s to settle (no feed-forward); default `t_end` = 60 s ends before settling. |
+| C21 | M | The "cascade PID" label in code/docs is a misnomer: three parallel SISO loops, no inner/outer structure. |
+| C22 | M | PID anti-windup freezes the integrator whenever output is saturated, even when error opposes saturation. |
+| C23 | M | No trim feed-forward or speed scheduling (lift ∝ V²). |
+| C24 | M | No strut side force / hull restoring moment / wing–tail downwash; single-point wave sampling; λ and T not tied by dispersion. |
 | C16 | L | `get_windows_host_ip` uses `shell=True` `ip route`; on native Windows this silently falls back to 127.0.0.1 (works, but the `[SimStreamer] Sending to` line is the only indication). |
 
 ## Modelling concerns worth keeping in mind
@@ -41,10 +45,10 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 - `heave_damping = 50 N·s/m` is the dominant non-foil damping and is a tuning knob, not physics.
 - Lateral offset 0.35 m with a 0.6 m half-span means the two "halves" overlap geometrically if they are meant to be adjacent panels from the centreline (centres at ±0.3 m). It is a lever-arm choice, not a layout check.
 
-## Unity issues
+## Unity issues (obsolete — Unity removed on branch `mujoco-viewer`; kept as a record)
 | # | Sev | Issue |
 |---|---|---|
-| U1 | H (for new machines) | Auto-launch uses `/home/jleathem/code/unity` and distro `Ubuntu`. |
+| U1 | — | ~~Unity auto-launch machine-specific path~~ — Unity removed. |
 | U2 | M | `Floater.cs` logs every FixedUpdate when underwater (only when enabled). |
 | U3 | M | `SimulinkTCPReceiver` uses `Thread.Abort` (unsupported on modern runtimes) and a byte-order TODO. |
 | U4 | L | Both URP and HDRP packages/assets present. |

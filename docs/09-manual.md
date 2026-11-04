@@ -36,7 +36,7 @@ raises the flaps to generate lift, the hull rises until draft = 0 → status fli
 Run/Stop/Reset: Reset restores `DEFAULT_PARAMS` and clears charts. The run auto-stops at `t_end` (default 60 s).
 
 ### Keyboard
-W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Stay within ±8° to keep inside the verified stable region.
+W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Keep bank small: with the current gains the roll loop is not stable even at a few degrees (doc 13); the ±8° cap is not a verified safe region.
 
 ## 3. 3D viewer (MuJoCo)
 

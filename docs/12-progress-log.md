@@ -24,10 +24,10 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 | Foil model with corrections | done (placeholders for free-surface; single polar) |
 | Hull buoyancy / takeoff | done (linear wall-sided) |
 | Waves | regular Airy only |
-| Cascade PID (heave/pitch/roll) + surge | done, **not retuned** after corrections |
+| PID (heave/pitch/roll, three parallel loops) + surge | done, **not retuned**; roll loop unstable and rad/deg unit bug (doc 13) |
 | Actuator model | done, placeholder numbers |
 | Dashboard | done |
-| Unity bridge + pilot uplink | done |
+| Unity bridge + pilot uplink | done, then **removed** 2026-11-04; replaced by MuJoCo viewer (branch `mujoco-viewer`, not yet merged/pushed) |
 | Safety net | done |
 | Unit tests | partial (forces + actuator only) |
 | Linearisation (A, B) | not started |
@@ -50,7 +50,8 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Ran the code (it had been blocked earlier): 23/23 tests pass; numerical audit in doc 13.
 - Findings: rad/deg gain mismatch in roll/pitch PIDs; roll loop unstable at current gains; waves cannot excite roll; no feed-forward (heave settles in 60-90 s); Munk moment missing.
 - New branch `mujoco-viewer`: removed `unity-visualizer/`, `stream.py`, `control_uplink.py`, `sim_realtime.py`; added `hydrofoil/viewer.py` (MuJoCo, render-only) and `hydrofoil/params.py`; requirements now list `mujoco`, `plotly`, `pytest`.
-- Physics files were not changed.
+- Physics files were not changed. Docs updated across 01, 04, 05, 06, 09, 10, 11, 12 with the findings; new doc 13.
+- Follow-ups: fix PID units and retune; add committed regression tests for bank/disturbance; merge or push `mujoco-viewer`.
 
 ### Template for future entries
 ```
