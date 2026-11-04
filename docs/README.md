@@ -1,0 +1,25 @@
+# Hydrofoil Sim — Documentation
+
+Written 2026-11-04 as a record of the repo at commit `2af5157`
+(<https://github.com/jacobleathem/hydrofoil-sim>), by reading every script.
+Nothing here was verified by running the code (see
+[11-known-issues.md](11-known-issues.md) → "What was not verified").
+
+| Doc | What's in it |
+|-----|--------------|
+| [01-overview-and-status.md](01-overview-and-status.md) | What the project is, what exists, progress, what's stub/missing |
+| [02-code-reference.md](02-code-reference.md) | Every file and class/function, one by one |
+| [03-math-and-physics.md](03-math-and-physics.md) | Equations of motion, foil model, hull, waves, integration |
+| [04-constants-and-parameters.md](04-constants-and-parameters.md) | Every constant, default parameter, gain, with units and provenance |
+| [05-constraints-and-limits.md](05-constraints-and-limits.md) | Clamps, saturation limits, stability limits, modelling assumptions |
+| [06-control-system.md](06-control-system.md) | PID loops, actuator model, surge loop, sign conventions |
+| [07-interfaces.md](07-interfaces.md) | UDP packet formats, REST/WebSocket API, CLI flags |
+| [08-unity-visualizer.md](08-unity-visualizer.md) | Unity project, scripts, coordinate mapping, setup gotchas |
+| [09-manual.md](09-manual.md) | How to install, run, operate, and tune |
+| [10-roadmap.md](10-roadmap.md) | Planned and suggested future development |
+| [11-known-issues.md](11-known-issues.md) | Bugs, inconsistencies, stale docs, unverified items |
+| [12-progress-log.md](12-progress-log.md) | Dated record of project history and this documentation pass |
+
+Conventions used across the code (and these docs): Fossen (2011) notation,
+NED world frame (z **down**), body frame x-forward / y-starboard / z-down,
+ZYX Euler angles in radians internally, degrees at UI/UDP-input boundaries.
