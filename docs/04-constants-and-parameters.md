@@ -4,7 +4,7 @@
 **tuned** = found by sweep/feel, **derived** = from a formula, **physical** = true constant/standard.
 There are **no measured values** anywhere in the repo.
 
-## A. `DEFAULT_PARAMS` (`hydrofoil/dashboard.py`) — master list
+## A. `DEFAULT_PARAMS` (`hydrofoil/params.py`) — master list
 
 ### Vehicle / rigid body
 | Key | Default | Unit | UI range | Provenance |
@@ -21,6 +21,7 @@ There are **no measured values** anywhere in the repo.
 | `main_lateral_offset` | 0.35 | m | 0.05–1.0 (halves at y = ±offset) |
 | `elev_chord` / `elev_span` | 0.10 / 0.3 | m | 0.05–0.4 / 0.1–1.5 |
 | `elev_pos_x` / `elev_pos_z` | −1.2 / 0.4 | m | −3…0 / 0.1–1.5 |
+| `main_strut_chord` / `elev_strut_chord` | 0.12 / 0.08 | m | **new placeholders** (doc 14 E10); wetted length is computed from depth |
 
 ### Hull
 | Key | Default | Unit | UI range |
@@ -38,20 +39,21 @@ There are **no measured values** anywhere in the repo.
 | `theta_ref` | 0.0 | deg | Pitch target ±10°; **only applied on restart** |
 | `target_speed` | 4.0 | m/s | 0–15 in UI (uplink 0–10) |
 
-### Gains (see doc 06)
+### Gains (see doc 06) — retuned 2026-11-04 (doc 14 E1/E2)
 
-> **Units:** heave gains are °/m (fine). Roll and pitch gains are applied to errors in **radians** and output **degrees**, so they are °/rad, ≈ 57× smaller than if read as °/° (doc 13). Speed gains are N/(m/s).
-| Loop | Kp | Ki | Kd | Note |
+> **Units:** heave °/m; roll and pitch **° of flap per ° of error** (the controller now converts radians to degrees; previously these were °/rad, 57× weaker); speed N per m/s.
+
+| Loop | Kp | Ki | Kd | Old values (for reference) |
 |---|---|---|---|---|
-| heave | 15.0 | 1.0 | 5.0 | higher than `sim.py` for takeoff authority |
-| pitch | 2.0 | 0.0 | 2.0 | |
-| roll | 3.5 | **0.0 (must stay 0)** | 2.5 | swept; Ki>0 diverges |
-| speed | 30.0 | 5.0 | 0.0 | → thrust [N] |
+| heave | 40.0 | 6.0 | 10.0 | 15 / 1 / 5 |
+| pitch | 1.0 | 0.0 | 0.1 | 2 / 0 / 2 |
+| roll | 2.0 | 0.0 (keep 0) | 0.2 | 3.5 / 0 / 2.5 |
+| speed | 30.0 | 5.0 | 0.0 | unchanged |
 
-`max_thrust` = 50 N (placeholder originally matching the Unity arcade value). Measured cruise thrust at 4 m/s is only ~13–14 N.
+`max_thrust` = 50 N (placeholder). Measured cruise thrust at 4 m/s is ≈ 14 N.
 
 ### Waves
-`waves_enabled` False; `wave_amplitude` 0.05 m; `wave_wavelength` 5.0 m; `wave_period` 2.0 s; direction fixed 0 (+x) in dashboard.
+`waves_enabled` False; `wave_amplitude` 0.05 m; `wave_wavelength` 5.0 m; `wave_direction` 0° (travel heading, −180…180; 90 = beam seas). **`wave_period` was removed**: the period now follows deep-water dispersion (T = 2π/√(g k) = 1.79 s for 5 m).
 
 ### Simulation
 `dt` 0.01 s (0.001–0.05); `t_end` 60 s (5–120).
@@ -75,9 +77,9 @@ Polar: NACA 0009, XFLR5 v6.61, Re 2.7e6, Ncrit 9, α −10°…+17.8°, CL_max �
 |---|---|---|
 | Flap command limit | ±20° (all three PIDs) | `control/pid.py` (`lim`) |
 | Speed PID limit | ±`max_thrust` | `control/surge.py` |
-| `DEFAULT_ACTUATOR_PARAMS` | rate 720°/s, τ 0.02 s, delay 2 steps | `control/actuator.py` — placeholder for MyActuator RMD-X8-class |
+| `DEFAULT_ACTUATOR_PARAMS` | rate 720°/s, τ 0.02 s, **delay 0.02 s** | `control/actuator.py` — placeholder for MyActuator RMD-X8-class |
 
-At dt = 0.01 the delay is 20 ms. The delay is in *steps*, so changing dt changes the real delay.
+The delay is now specified in **seconds** and converted to whole steps (`round(delay_s/dt)`), so changing dt no longer changes the latency.
 
 ## D. Safety constants (`vehicle.py`)
 `MAX_ATTITUDE_RAD` 70°, `MAX_LINEAR_VEL` 15 m/s, `MAX_ANGULAR_VEL` 3 rad/s.
@@ -86,12 +88,10 @@ At dt = 0.01 the delay is 20 ms. The delay is in *steps*, so changing dt changes
 Height −0.3…1.0 m; speed 0…10 m/s; bank ±8°. UDP in: 5006. UDP out: 5005.
 
 ## F. Physical constants
-ρ_water 1025 kg/m³ (hard-coded in several places: `foil.py`, `hull.py`, `airy.py`, `vehicle.rest_state`, `rigid_body.py`), g 9.81 m/s².
+ρ_water 1025 kg/m³ and g 9.81 m/s² now live only in `hydrofoil/constants.py` (`RHO_WATER`, `G`) and are imported everywhere.
 
-## G. `sim.py` legacy constants
-mass 25, inertia diag(2,5,5), DISPLACED_VOLUME = 25/1025, main half 0.15×0.6, elevator 0.10×0.3, MAIN_FOIL_POS (0,0,0.5),
-ELEV_FOIL_POS (−1.2,0,0.4), lateral offset 0.35, gains heave (1,0,3) / pitch (2,0,2) / roll (3.5,0,2.5), DT 0.01, T_END 20, CRUISE 4 m/s,
-Z_REF 0.5, heave damping 50 (hard-coded), start z 0.3 with 2° pitch.
+## G. `sim.py` (now a wrapper over `VehiclePhysics`)
+No private constants any more: it uses `DEFAULT_PARAMS`, runs from rest, and `T_END = 90 s` (was 20 s).
 
 ## H. (Removed) Unity-side constants (`PythonSimDriver.cs`, history only)
 HEIGHT_RATE 0.15 m/s, HEIGHT −0.3…1.0; SPEED_RATE 1.0 m/s², SPEED 0…10; BANK_RATE 6°/s, ±8°, return 10°/s;

@@ -29,17 +29,15 @@ Three independent SISO loops plus one speed loop. No decoupling, no feed-forward
 ## PID implementation (`control/pid.py::PID`)
 
 ```
-integral += e·dt
-u = Kp·e + Ki·integral + Kd·(meas − meas_prev)/dt     # derivative on MEASUREMENT
-u_clamped = clip(u, min, max)
-if u != u_clamped: integral −= e·dt                    # conditional anti-windup (undo this step)
+candidate = I + e·dt
+u = Kp·e + Ki·candidate + Kd·(y − y_prev)/dt         # derivative on MEASUREMENT (PI-D), no filter
+u_sat = clip(u, lo, hi)
+pushing_deeper = (u > hi and e > 0) or (u < lo and e < 0)
+if not pushing_deeper: I = candidate                  # conditional integration (fixed, doc 14 E3)
 ```
-
-- Derivative on measurement avoids "derivative kick" on setpoint jumps. It assumes `error` and `measurement`
-  move in the same direction — true for heave (`e = z − z_ref`), pitch and roll. For **surge**, `e = ref − u`
-  moves *opposite* to `u`, so the derivative term has the opposite sign from a standard PID (Kd is 0 by default, so this is latent).
-- First call after reset has no derivative (no spurious kick).
-- No derivative filter, no setpoint weighting, no output rate limit (the actuator provides that).
+- First call after `reset()` has no derivative. Derivative-on-measurement avoids setpoint kick.
+- Angle loops: `HydrofoilController.update` takes angles in **radians** and converts errors/measurements to **degrees** before the PID, so Kp/Kd are ° of flap per ° (per °/s) (fixed, E1).
+- Surge: the measurement fed to the PID is `−u` so Kd opposes acceleration (fixed, E4).
 
 ## Actuator model (`control/actuator.py`)
 
@@ -47,24 +45,23 @@ Per channel: `delayed = buffer[0]` (FIFO of `delay_steps`) → `target = pos + c
 `pos += dt/(τ+dt) · (target − pos)`. The returned angle is what the plant sees (and what the viewer animates).
 Modeled after a MyActuator RMD-X8-class direct-drive BLDC over CAN; numbers are placeholders.
 
-## Gains and rationale
+## Gains and rationale (retuned 2026-11-04)
 
-> **Units warning (doc 13):** the roll and pitch PIDs receive error in **radians** and output **degrees**, so `Kp_roll = 3.5` is 3.5 °/rad ≈ 0.061 °/° — about 57× weaker than the numbers suggest. Heave (m → °) is fine.
+| Loop | Kp | Ki | Kd | Notes |
+|---|---|---|---|---|
+| heave | 40 °/m | 6 | 10 | Takeoff 2.9 s, 2 cm settling ≈ 17 s, no overshoot (Ki 15 overshoots; Kp 80 is slower). Integrator still carries the ≈ 14° trim flap |
+| pitch | 1.0 °/° | 0 | 0.1 | Kd > 0.3 only adds flap chatter |
+| roll | 2.0 °/° | **0** | 0.2 | Kd ≥ 1 chatters; Kp ≥ 3.5 uses 13° of flap for a 5° kick |
+| speed | 30 N/(m/s) | 5 | 0 | cruise thrust ≈ 14 N of 50 N |
 
-| Loop | Kp / Ki / Kd | Notes |
-|---|---|---|
-| heave | 15 / 1 / 5 | Higher than the legacy `sim.py` (1/0/3) because the vehicle starts at rest and must generate takeoff lift; only loop with nonzero Ki |
-| pitch | 2 / 0 / 2 | |
-| roll | 3.5 / **0** / 2.5 | Ki must remain 0 |
-| speed | 30 / 5 / 0 | Output thrust N, ±50 |
+Procedure: closed-loop sweeps on the corrected plant from a clean settled state (metrics: ISE, residual oscillation, flap total variation and peak, takeoff time, settling, overshoot, bank tracking, wave response, delay/lag-doubling robustness). Details and the earlier contamination pitfall: doc 14 E2.
+The old values (3.5/2.5 roll, 2/2 pitch, 15/1/5 heave) were tuned for a different plant and, once the units were fixed, limit-cycled (pitch) or chattered (roll).
 
-**Not yet retuned** after flap effectiveness (0.21), finite-span, free-surface, induced-drag and added-mass corrections were introduced.
-
-## Method summary and critique (full detail: doc 13 §3)
-- Algorithm: positional discrete PID, rectangular integral, backward-difference derivative **on measurement** (PI-D), no derivative filter, clamp ±20°, anti-windup by undoing the integral step whenever the output is saturated (blocks integration even when the error is desaturating).
-- Execution: sample time = integration step (10 ms), ZOH across RK4 stages, then delay (2 steps) → rate limit (720 °/s) → lag (20 ms).
-- Bugs/oversights: rad→deg unit mismatch (roll, pitch); surge Kd sign; no trim feed-forward (integrator builds a 14° trim → 60–90 s settling); no speed scheduling; shared main-flap authority between heave and roll; no reference shaping; no filtering; exact-state feedback; no stability margins or step-response metrics.
-- Measured effect: roll does not stabilise at current gains; ×57 gains (true °/°) do (doc 05 re-test table).
+## Method summary and what changed (full detail: doc 13 §3, doc 14)
+- Algorithm: positional discrete PID, rectangular integral, backward-difference derivative **on measurement** (PI-D), no derivative filter, clamp ±20°, **conditional-integration anti-windup** (fixed).
+- Execution: sample time = integration step (10 ms), ZOH across RK4 stages, then delay (0.02 s) → rate limit (720 °/s) → lag (20 ms).
+- Fixed: rad→deg unit mismatch, surge Kd sign, anti-windup rule, delay-in-steps, gains retuned.
+- Still open: no trim feed-forward (integrator builds the ≈ 14° trim), no speed scheduling (lift ∝ V²), shared main-flap authority between heave and roll, no reference shaping, no derivative filter, exact-state feedback, no formal stability margins.
 
 ## Pilot interface
 

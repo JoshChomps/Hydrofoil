@@ -17,10 +17,13 @@ lifting surfaces' geometry. This is a deliberate exception to the usual
 combined M = M_RB + M_A, so keeping the diagonal M_A terms in the same
 matrix M_RB builds gets callers a correct combined solve for free.
 Off-diagonal terms and surge/sway/yaw added mass are NOT modeled — only
-M[2,2] (heave) and M[4,4] (pitch). Damping (D) is still added by the caller.
+M[2,2] (heave) and M[4,4] (pitch). The matching added-mass Coriolis term C_A
+(Munk moment) IS included in C(). Damping (D) is still added by the caller.
 """
 
 import numpy as np
+
+from hydrofoil.constants import RHO_WATER
 
 
 def skew(v: np.ndarray) -> np.ndarray:
@@ -30,7 +33,7 @@ def skew(v: np.ndarray) -> np.ndarray:
                      [-v[1],  v[0],  0   ]])
 
 
-def strip_added_mass_heave_pitch(strips, rho: float = 1025.0):
+def strip_added_mass_heave_pitch(strips, rho: float = RHO_WATER):
     """
     2D-strip-theory hydrodynamic added mass in heave and pitch, from one or
     more lifting surfaces treated as slender strips.
@@ -134,6 +137,15 @@ class RigidBody:
         C[:3, 3:] = -skew(m * v1 + m * S_rg.T @ v2)
         C[3:, :3] = -skew(m * v1 + m * S_rg.T @ v2)
         C[3:, 3:] = -skew(self.I_b @ v2)
+
+        # Added-mass Coriolis C_A(nu) (Fossen 6.43): the SAME skew structure as C_RB with
+        # M_A in place of M_RB. Includes the Munk moment (Z_wdot - X_udot) u w, which is
+        # destabilising in pitch. M_A is diagonal: only heave and pitch are modelled.
+        a1 = np.array([0.0, 0.0, self.added_mass_heave * v1[2]])
+        a2 = np.array([0.0, self.added_inertia_pitch * v2[1], 0.0])
+        C[:3, 3:] += -skew(a1)
+        C[3:, :3] += -skew(a1)
+        C[3:, 3:] += -skew(a2)
         return C
 
     def nu_dot(self, nu: np.ndarray, tau: np.ndarray) -> np.ndarray:

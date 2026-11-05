@@ -23,8 +23,9 @@ setup are no longer needed.
 ## Run
 ```bash
 pip install mujoco          # already in requirements.txt
-python -m hydrofoil.viewer [--waves] [--speed 1.0] [--duration 600]
+python -m hydrofoil.viewer [--waves] [--wave-dir 45] [--speed 1.0] [--duration 600]
 ```
+`--wave-dir` is the wave travel direction in degrees from +x (90 = beam seas, which now genuinely load the left and right foils differently). The wave period follows deep-water dispersion.
 Click the viewer window so it has keyboard focus. Needs a desktop with OpenGL (runs natively on Windows, no WSL).
 
 ## Tested
@@ -35,4 +36,5 @@ Model compiles (nq = 10), pose and flap-sign checks above, and a 6 s smoke run o
 - Visual only: no wave-surface mesh (a flat plane moves vertically with the wave elevation at the vehicle), no spray, no flow lines.
 - The viewer shares `DEFAULT_PARAMS` but is not wired to the dashboard sliders; run one or the other. A shared live-params object could unify them.
 - The dashboard (`hydrofoil.dashboard`) remains the tool for plots. The same pose code could render offline video with `mujoco.Renderer`.
-- The roll loop issue in doc 13 will be very visible in this viewer: banking more than a degree or two with default gains will make the boat roll over and drop back into the water.
+- The struts drawn in the viewer are visual only (fixed size); the physics struts use `main_strut_chord`/`elev_strut_chord` and a wetted length from depth.
+- With the 2026-11-04 fixes the bank command works: ±8° bank holds height and turns the boat slowly (turn rate depends on the placeholder strut chords).

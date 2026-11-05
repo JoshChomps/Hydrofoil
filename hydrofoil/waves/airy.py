@@ -8,7 +8,11 @@ velocity seen by each foil, which is how waves produce disturbance forces.
 Reference: Fossen (2011) Appendix D; Newman (1977) Marine Hydrodynamics.
 """
 
+from __future__ import annotations
+
 import numpy as np
+
+from hydrofoil.constants import RHO_WATER, G
 
 
 class AiryWave:
@@ -19,7 +23,10 @@ class AiryWave:
     ----------
     amplitude   : wave amplitude (half height) [m]
     wavelength  : spatial wavelength [m]
-    period      : wave period [s]
+    period      : wave period [s]. Default None = derive from the deep-water
+                  dispersion relation omega^2 = g k, so wavelength and period
+                  cannot disagree. Passing an explicit value overrides it
+                  (non-physical combinations are then the caller's problem).
     direction   : wave travel direction in NED x-y plane [rad], 0 = +x
     phase       : initial phase offset [rad]
     rho         : water density [kg/m³]
@@ -30,22 +37,22 @@ class AiryWave:
         self,
         amplitude: float = 0.05,
         wavelength: float = 5.0,
-        period: float = 2.0,
+        period: float | None = None,
         direction: float = 0.0,
         phase: float = 0.0,
-        rho: float = 1025.0,
-        g: float = 9.81,
+        rho: float = RHO_WATER,
+        g: float = G,
     ):
         self.A = amplitude
         self.lam = wavelength
-        self.T = period
+        self.k = 2 * np.pi / wavelength     # wavenumber [rad/m]
+        self.T = (2 * np.pi / np.sqrt(g * self.k)) if period is None else period
         self.direction = direction
         self.phase = phase
         self.rho = rho
         self.g = g
 
-        self.k = 2 * np.pi / wavelength     # wavenumber [rad/m]
-        self.omega = 2 * np.pi / period     # angular frequency [rad/s]
+        self.omega = 2 * np.pi / self.T     # angular frequency [rad/s]
 
     def elevation(self, x: float, y: float, t: float) -> float:
         """Surface elevation eta_w(x, y, t) [m] relative to still water."""
@@ -88,7 +95,7 @@ class CalmWater(AiryWave):
     """No-wave environment — zero elevation and velocity everywhere."""
 
     def __init__(self):
-        super().__init__(amplitude=0.0, wavelength=1.0, period=1.0)
+        super().__init__(amplitude=0.0, wavelength=1.0)
 
     def elevation(self, x, y, t):
         return 0.0

@@ -23,78 +23,61 @@ Singular at θ = ±90°. Guarded by an exception in `T_euler` and by the ±70° 
 
 ## 3. Rigid-body dynamics
 
-M ν̇ + C_RB(ν) ν = τ  (Fossen eq. 3.46 style)
+M ν̇ + C(ν) ν = τ,  C = C_RB + C_A
 
-- M = [[m·I₃, −m·S(r_g)], [m·S(r_g), I_b]] with r_g = 0 and I_b = diag(Ixx, Iyy, Izz).
-- Added mass folded into M: `M[2,2] += m_a,heave`, `M[4,4] += I_a,pitch` (no other added mass; no off-diagonals).
-- C_RB: upper-right and lower-left blocks = −S(m ν₁ + m S(r_g)ᵀ ν₂); lower-right = −S(I_b ν₂).
-  (With r_g = 0 the C matrix is the standard gyroscopic/Coriolis term, which is what couples roll↔yaw↔pitch.)
+- M = [[m·I₃, −m·S(r_g)], [m·S(r_g), I_b]] with r_g = 0 and I_b = diag(Ixx, Iyy, Izz); M[2,2] += m_a,heave and M[4,4] += I_a,pitch (diagonal added mass, heave and pitch only).
+- C_RB (Fossen 3.46): blocks −S(m ν₁ + m S(r_g)ᵀ ν₂) off-diagonal and −S(I_b ν₂) lower-right.
+- **C_A (added-mass Coriolis, fixed 2026-11-04, doc 14 E7):** same skew structure with M_A: a₁ = [0,0,m_a w], a₂ = [0, I_a q, 0]; blocks −S(a₁) off-diagonal and −S(a₂) lower-right. It contains the **Munk moment** (C·ν)_q = −m_a·u·w, which is destabilising in pitch (m_a ≈ 24 kg, u = 4 m/s ⇒ 97 Nm per m/s of w). νᵀCν = 0 (checked numerically and in a test).
 - Solved each call with `np.linalg.solve(M, τ − C ν)`.
-- **Note:** C is built only from `m` and `I_b`; the added mass is *not* included in C (no added-mass Coriolis), a standard simplification but worth knowing.
 
 ### Added mass (heave, pitch) — `strip_added_mass_heave_pitch`
-Per surface: m_a = ρ π c² / 4 · span (2D flat-plate/ellipse result, per unit span integrated over span).
-Heave: Σ m_a,i. Pitch: Σ m_a,i x_i² (lumped parallel-axis).
-
-For defaults (ρ = 1025): main half = 1025·π·0.15²/4·0.6 ≈ 10.9 kg ×2 halves; elevator = 1025·π·0.10²/4·0.3 ≈ 2.4 kg.
-Heave added mass ≈ 24.1 kg (about equal to the 25 kg vehicle mass, so effective heave mass ≈ 49 kg). Pitch added inertia ≈ 2.4·1.2² ≈ 3.5 kg·m² (main halves sit at x = 0 so contribute nothing), versus Iyy = 5.0.
-*(Confirmed numerically: 24.15 kg and 3.48 kg·m².)*
+Per surface: m_a = ρ π c² / 4 · span (2-D flat-plate/ellipse result, integrated over span). Heave: Σ m_a,i. Pitch: Σ m_a,i x_i² (lumped parallel-axis).
+Defaults (ρ = 1025): main half ≈ 10.9 kg ×2, elevator ≈ 2.4 kg ⇒ heave 24.15 kg (≈ the vehicle's own mass), pitch 3.48 kg·m² (main halves are at x = 0), versus Iyy = 5. (Confirmed numerically.)
+Caveat (open, E-O3): the 2-D value over-estimates a finite AR-4 panel by roughly 20 %.
 
 ## 4. Generalised forces τ (per step)
 
-τ = τ_leftfoil + τ_rightfoil + τ_elev + τ_hull_buoy + τ_gravity + τ_hull_drag + [thrust,0,0,0,0,0] + [0,0,−c_heave·w,0,0,0]
+τ = τ_left + τ_right + τ_elev + τ_mainstrut + τ_elevstrut + τ_hull_buoy + τ_gravity + τ_hull_drag + [thrust,0,0,0,0,0] + [0,0,−c_heave·w,0,0,0]
 
-The three foils see the **relative** velocity ν_rel = ν with its linear part reduced by the wave orbital velocity
-(in the body frame). Hull drag and heave damping use the raw ν.
+Each foil/strut sees the body velocity minus the wave orbital velocity **at its own world position** (`WaveSample`, doc 14 E13). Hull drag and heave damping use the raw ν.
 
 ### 4.1 Foil force (one strip per surface) — `Foil.generalized_force`
 
-1. Velocity at attachment: V_f = ν₁ + ω × r_attach; speed = |V_f|. If speed < 0.01 m/s → zero force.
-2. Flow direction V̂ = V_f/speed.
-3. **Angle of attack** α = atan2(V_f,z, V_f,x) [deg] + aoa_offset + k_flap · δ,
-   where k_flap = flap effectiveness (0.21 main, 1.0 elevator) and δ is the actuator-filtered command in degrees.
-   *Body pitch θ does not enter α* — only the velocity direction in the body frame does (foils have zero mounting incidence unless `aoa_offset` is set; it is 0 everywhere).
-4. Dynamic pressure q = ½ρ|V_f|², area A = chord × span.
-5. 2D polar lookups CL₂D(α), CD₂D(α) — linear interpolation, α clamped to table range (−10°…17.8°).
-6. **Finite span:** CL = CL₂D · AR/(AR+2), AR = span/chord (each half is its own panel).
-7. **Free surface:** CL ← CL · (1 − exp(−(h/c)/1.58)), h/c = foil depth/chord. Skipped if `submergence_over_chord is None`.
-8. **Induced drag:** CD = CD₂D + CL²/(π·AR·e), e = 0.80 for main halves; elevator uses the default e = 0.80 too.
-9. L = q·CL·A, D = q·CD·A.
-10. Lift direction = normalise(V̂ × (lift_axis × V̂)), lift_axis = (0,0,−1) (up). Force = L·lift_dir − D·V̂.
-11. Moment about body origin = r_attach × force. τ = [force; moment].
+1. V_f = ν₁ + ω × r (r = attachment point; `_cross` helper).
+2. Each surface has a body-frame **normal axis** n (horizontal foils: +z; vertical struts: +y). Only the chordwise (x) and normal components load it: V_n = V_f·n, V_plane = (V_x, 0, 0) + V_n·n; speed = |V_plane| (spanwise flow is dropped, E9). If speed < 0.01 m/s → 0.
+3. **AoA** α = atan2(V_n, V_x) [→ deg] + aoa_offset + k_flap·δ (k_flap = 0.21 main, 1.0 elevator, 0 struts). Body pitch enters only through the velocity direction.
+4. q = ½ρ speed²; area A = chord × span (span overridden per call for struts).
+5. 2-D polar CL₂D(α), CD₂D(α), linear interpolation, α clamped to −10°…+17.8°.
+6. **Finite span (E8):** CL = CL₂D · 1/(1 + a₂D/(π e AR)), a₂D = polar slope per rad (≈ 6.19), same e as induced drag. Main half (AR 4, e 0.8): 0.619; elevator (AR 3): 0.549.
+7. Free surface: CL ← CL·(1 − exp(−(h/c)/1.58)) for foils (skipped for struts).
+8. Induced drag: CD = CD₂D + CL²/(π·AR·e), e = 0.80.
+9. L = q·CL·A, D = q·CD·A; lift direction = (a − (a·V̂)V̂)/‖·‖ with a = −n (up for foils, −y for struts); force = L·lift_dir − D·V̂; moment = r × force.
 
-Flap-to-roll mechanism: left foil δ = δ_main − δ_roll, right foil δ = δ_main + δ_roll. Differential lift × lateral offset (0.35 m) is the only roll moment source.
+Roll mechanism: left foil δ = δ_main − δ_roll, right foil δ = δ_main + δ_roll; differential lift × 0.35 m lateral offset.
+
+**Struts (E10, new, placeholder chords 0.12 / 0.08 m):** same code with n = +y, so AoA = side-slip angle, force along ±y. Wetted span = foil depth below the local surface (clipped to hull_offset + foil z), force at mid-wetted length.
 
 ### 4.2 Hull buoyancy — `hull_buoyancy_force`
-- hull_bottom_z = η_z − hull_offset (NED; offset positive = hull above CoG).
-- draft = clip(hull_bottom_z − water_surface_z, 0, max_draft); water_surface_z = −wave_elevation.
-- V = A_wp · draft; F_b = ρ g V, acting straight up in NED, rotated into the body frame by Rᵀ.
-- Linear/wall-sided: valid only near the design waterline.
-- Foilborne ⇔ draft = 0 (`draft ≤ 1e-6` in the code).
+- Hull-bottom reference point (0,0,−hull_offset) rotated to NED: z_bottom = η_z − hull_offset·cosφ·cosθ (E11). draft = clip(z_bottom − z_surface, 0, max_draft); z_surface = −wave elevation at the hull.
+- F_b = ρ g A_wp draft, up in NED, rotated into the body by Rᵀ, **applied at r_cb = (0,0,−(hull_offset + draft/2))** so it produces a moment r_cb × F (E12).
+- Linear/wall-sided: valid only near the design waterline. Foilborne ⇔ draft = 0 (`≤ 1e-6`).
 
 ### 4.3 Hull drag — `hull_drag_force`
-F_x = −C_hull · (draft/max_draft) · u|u|. Surge only. No hump, no wave-making, no sway/yaw drag.
+F_x = −C_hull · (draft/max_draft) · u|u|. Surge only. Placeholder.
 
 ### 4.4 Gravity — `gravity_force`
-f_ned = [0,0,m g] → body via Rᵀ. g = 9.81.
+f_ned = [0,0,m g] → body via Rᵀ.
 
 ### 4.5 Thrust and heave damping
-Thrust acts as a pure +x force at the body origin (no moment). Heave damping: τ_z −= 50·w (placeholder, body-frame w).
+Thrust is a +x force at the body origin. Heave damping τ_z −= 50·w (placeholder; the foils' own heave damping is ≈ 1400 N·s/m at 4 m/s, so this term is ~4 %).
 
 ## 5. Wave model — `AiryWave`
 
-η_w(x,y,t) = A cos(k·s − ω t + φ₀), s = x cosβ + y sinβ, k = 2π/λ, ω = 2π/T.
-Orbital velocity at NED depth z_wave = −η_z (negative below surface) with decay e^{k z_wave}:
+η_w(x,y,t) = A cos(k·s − ω t + φ₀), s = x cosβ + y sinβ, k = 2π/λ, β = travel direction.
+**ω = √(g k)** (deep-water dispersion; period is derived unless explicitly passed — E15). Orbital velocity at NED depth z_w = −(z_NED) ≤ 0, decay e^{k z_w}:
+horizontal Vh = A ω e^{kz} cos(k s − ωt + φ₀) along β; vertical Vv = A ω e^{kz} sin(…), NED z-component −Vv. (Sign convention checked against dη/dt.)
 
-- horizontal Vh = A ω e^{kz} cos(k s − ωt + φ₀) along direction β
-- vertical Vv = A ω e^{kz} sin(…); NED z-component = −Vv
-
-Deep-water assumption. λ and T are independent inputs; deep-water dispersion would require ω² = g k
-(T = √(2πλ/g); for λ = 5 m that gives T ≈ 1.79 s versus the default 2.0 s). Wave state is
-evaluated once at the start of a step and held through the four RK4 stages.
-
-Waves influence the vehicle through (a) relative flow at the foils, (b) local surface z in draft, (c) local
-surface z in the free-surface factor. There is no direct wave force on the hull.
+Sampling (E13/E14): `VehiclePhysics.wave_sample` evaluates elevation, local surface z and orbital velocity at the hull and at **each surface's world position** (foil AC = η + R·r), so the foil's own depth sets the decay and beam/oblique seas load the left and right halves differently. Frozen across the four RK4 stages of a step. Waves act through relative flow at the surfaces, local surface z in draft, and the free-surface factor; there is no direct wave force on the hull.
 
 ## 6. Integration — RK4 with held controls
 
@@ -102,13 +85,12 @@ At each step: controller and surge PID are evaluated **once** with the current s
 `physics_rhs` four times with those commands, thrust and wave state frozen. dt default 0.01 s (range 0.001–0.05).
 Controller discrete time = integration time. After integration: NaN → roll back; else clamp attitude/velocity (doc 05).
 
-## 7. Sanity numbers (hand calculation; re-checked by running code in doc 13: min speed 3.1 m/s, 10.2 N/deg per half, added mass 24.15 kg / 3.48 kg·m² all confirmed)
+## 7. Sanity numbers (all confirmed by running the code; values for the corrected model are in doc 14 §H)
 
 Using defaults (m 25 kg, W = 245 N; main half 0.15×0.6 m, AR 4; ρ 1025):
+- Main flap lift slope ≈ 10.2 N/deg per half at 4 m/s *before* E8 (finite-span change lowers it ≈ 7 %).
+- Flap limit ±20° ⇒ ≈ 400 N total before E8 (≈ 370 N after), so the minimum foilborne speed on flap authority alone is ≈ 3.1–3.3 m/s.
+- Rest draft 0.041 m; max hull buoyancy 1810 N; heave added mass 24.15 kg; pitch added inertia 3.48 kg·m².
+- Foil free-surface factor at nominal flying height (foil 0.55 m deep, h/c = 3.7): 0.904.
+- Open-loop eigenvalues and controllability: see doc 13 §1.
 
-- Main-foil effective lift slope ≈ 0.108/deg × AR/(AR+2)=0.667 × free-surface ≈0.90 ≈ 0.065 per deg of AoA.
-  Free-surface factor at nominal flying height 0.55 m: foil depth = (hull_offset − flying_height) + main_pos_z = 0.05 + 0.5 = 0.55 m → h/c = 3.7 → 0.90.
-- At 4 m/s, q = 8200 Pa; both halves area 0.18 m² → lift ≈ 1476·CL N. Weight alone needs CL ≈ 0.17 → AoA_eff ≈ 2.6° → main flap ≈ 12° (÷0.21), before accounting for the elevator's load share.
-- At the ±20° flap limit: AoA_eff = 4.2° → ≈ 400 N at 4 m/s; scaling with V² this meets 245 N at ≈ 3.1 m/s. So minimum foilborne speed on flap authority alone is roughly 3 m/s with current constants. Stall (CL_max 1.42 at 14.4°) is far above anything the flap range reaches.
-- Rest draft = 25/(1025·0.6) ≈ 0.041 m of the 0.30 m maximum.
-- Max hull buoyancy = 1025·9.81·0.6·0.30 ≈ 1810 N (7× vehicle weight).

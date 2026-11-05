@@ -16,7 +16,7 @@ import numpy as np
 DEFAULT_ACTUATOR_PARAMS = {
     "rate_limit_deg_s": 720.0,  # placeholder BLDC slew rate
     "tau": 0.02,                # first-order lag time constant [s]
-    "delay_steps": 2,           # pure command latency, in units of dt (CAN + loop)
+    "delay_s": 0.02,            # pure command latency [s] (CAN + loop); converted to whole steps of dt
 }
 
 

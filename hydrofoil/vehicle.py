@@ -11,8 +11,13 @@ source of truth. sim.py's simpler model stays as-is for quick trim/plotting
 checks; this module is for anything that needs the full picture.
 """
 
+from __future__ import annotations
+
+from dataclasses import dataclass, field
+
 import numpy as np
 
+from hydrofoil.constants import RHO_WATER
 from hydrofoil.dynamics.rigid_body import RigidBody, strip_added_mass_heave_pitch
 from hydrofoil.dynamics.kinematics import J, R_body_to_ned
 from hydrofoil.forces.foil import (
@@ -39,6 +44,20 @@ from hydrofoil.control.actuator import DEFAULT_ACTUATOR_PARAMS
 MAX_ATTITUDE_RAD = np.radians(70.0)   # keeps clear of T_euler's +-90 deg singularity
 MAX_LINEAR_VEL = 15.0                  # m/s
 MAX_ANGULAR_VEL = 3.0                  # rad/s (~172 deg/s)
+
+
+@dataclass
+class WaveSample:
+    """
+    Wave environment frozen for one integration step, sampled where it matters:
+    at the hull (draft) and at each foil's own world position (relative flow and
+    free-surface submergence). Sampling per foil is what lets oblique/beam seas
+    load the left and right halves differently and so excite roll.
+    """
+    elevation: float = 0.0                       # at the body origin [m] (for display)
+    hull_surface_z: float = 0.0                  # NED z of the surface at the hull
+    foil_surface_z: dict = field(default_factory=dict)   # name -> NED z of the surface at that foil
+    foil_vel_body: dict = field(default_factory=dict)    # name -> wave orbital velocity in body frame [m/s]
 
 
 class VehiclePhysics:
@@ -102,6 +121,15 @@ class VehiclePhysics:
             flap_effectiveness=ELEVATOR_FLAP_EFFECTIVENESS,
         )
 
+        # Vertical struts (hull -> foil), normal axis = body y, so AoA = side-slip and they
+        # carry side force; wetted span follows the foil's depth below the surface.
+        self.main_strut = Foil(FoilGeometry(chord=p["main_strut_chord"], span=1.0), polar,
+                               r_attach=np.array([p["main_pos_x"], 0.0, p["main_pos_z"]]),
+                               normal_axis=np.array([0.0, 1.0, 0.0]))
+        self.elev_strut = Foil(FoilGeometry(chord=p["elev_strut_chord"], span=1.0), polar,
+                               r_attach=np.array([p["elev_pos_x"], 0.0, p["elev_pos_z"]]),
+                               normal_axis=np.array([0.0, 1.0, 0.0]))
+
         pid_gains = {
             "heave": {"Kp": p["kp_heave"], "Ki": p["ki_heave"], "Kd": p["kd_heave"]},
             "pitch": {"Kp": p["kp_pitch"], "Ki": p["ki_pitch"], "Kd": p["kd_pitch"]},
@@ -115,20 +143,36 @@ class VehiclePhysics:
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
         p = self.params
-        rest_draft = min(p["mass"] / (1025.0 * p["waterplane_area"]), p["max_draft"])
+        rest_draft = min(p["mass"] / (RHO_WATER * p["waterplane_area"]), p["max_draft"])
         z0 = p["hull_offset"] + rest_draft
         eta0 = np.array([0.0, 0.0, z0, 0.0, np.radians(2.0), 0.0])
         nu0 = np.zeros(6)
         return np.concatenate([eta0, nu0])
 
-    def _wave_state(self, eta, t, wave):
-        """Wave elevation, local-surface NED z, and body-frame orbital velocity at the vehicle's position."""
-        wave_elev = wave.elevation(eta[0], eta[1], t)
-        water_surface_z = -wave_elev  # NED: surface risen -> smaller (more negative) z
-        V_wave_ned = wave.orbital_velocity(eta[0], eta[1], -eta[2], t)
+    def _foils(self):
+        return {"left": self.left_foil, "right": self.right_foil, "elev": self.elev_foil,
+                "main_strut": self.main_strut, "elev_strut": self.elev_strut}
+
+    def wave_sample(self, eta, t, wave) -> WaveSample:
+        """Sample the wave field at the hull and at every foil's world position."""
         R = R_body_to_ned(eta[3], eta[4], eta[5])
-        wave_vel_body = R.T @ V_wave_ned
-        return wave_elev, water_surface_z, wave_vel_body
+        smp = WaveSample()
+        smp.elevation = wave.elevation(eta[0], eta[1], t)
+        smp.hull_surface_z = -smp.elevation          # NED: surface risen -> smaller (more negative) z
+        for name, foil in self._foils().items():
+            pos = eta[:3] + R @ foil.r_attach        # foil AC in the NED world frame
+            elev = wave.elevation(pos[0], pos[1], t)
+            smp.foil_surface_z[name] = -elev
+            # orbital_velocity wants depth below the still surface as a NEGATIVE z (z <= 0)
+            v_ned = wave.orbital_velocity(pos[0], pos[1], -pos[2], t)
+            smp.foil_vel_body[name] = R.T @ v_ned
+        return smp
+
+    @staticmethod
+    def calm_sample() -> WaveSample:
+        z3 = np.zeros(3)
+        names = ("left", "right", "elev", "main_strut", "elev_strut")
+        return WaveSample(0.0, 0.0, {n: 0.0 for n in names}, {n: z3 for n in names})
 
     def _submergence_over_chord(self, foil, eta, water_surface_z):
         """
@@ -144,41 +188,62 @@ class VehiclePhysics:
         world_z = eta[2] + (R @ foil.r_attach)[2]
         return (world_z - water_surface_z) / foil.geometry.chord
 
-    def physics_rhs(self, state, cmds, thrust, water_surface_z, wave_vel_body):
+    def physics_rhs(self, state, cmds, thrust, env: WaveSample | None = None):
+        """
+        Pure nonlinear dynamics d(state)/dt. env is a WaveSample (None = calm).
+        Each foil sees the body velocity minus the wave orbital velocity AT ITS OWN
+        position; hull drag and heave damping use the raw body velocity.
+        """
         p = self.params
+        env = env or self.calm_sample()
         eta, nu = state[:6], state[6:]
-        nu_rel = nu.copy()
-        nu_rel[:3] -= wave_vel_body   # relative flow seen by the foils, waves included
+
+        def foil_force(name, delta):
+            foil = self._foils()[name]
+            nu_rel = nu.copy()
+            nu_rel[:3] -= env.foil_vel_body[name]
+            return foil.generalized_force(
+                nu_rel, delta=delta,
+                submergence_over_chord=self._submergence_over_chord(foil, eta, env.foil_surface_z[name]))
+
+        def strut_force(name):
+            strut = self._foils()[name]
+            nu_rel = nu.copy()
+            nu_rel[:3] -= env.foil_vel_body[name]
+            h = self._submergence_over_chord(strut, eta, env.foil_surface_z[name]) * strut.geometry.chord
+            strut_len = p["hull_offset"] + strut.r_attach[2]
+            wet = float(np.clip(h, 0.0, strut_len))
+            r = strut.r_attach - np.array([0.0, 0.0, 0.5 * wet])   # AC at mid wetted length
+            return strut.generalized_force(nu_rel, span=wet, r_attach=r)
 
         tau = np.zeros(6)
-        tau += self.left_foil.generalized_force(
-            nu_rel, delta=cmds["delta_main"] - cmds["delta_roll"],
-            submergence_over_chord=self._submergence_over_chord(self.left_foil, eta, water_surface_z))
-        tau += self.right_foil.generalized_force(
-            nu_rel, delta=cmds["delta_main"] + cmds["delta_roll"],
-            submergence_over_chord=self._submergence_over_chord(self.right_foil, eta, water_surface_z))
-        tau += self.elev_foil.generalized_force(
-            nu_rel, delta=cmds["delta_elev"],
-            submergence_over_chord=self._submergence_over_chord(self.elev_foil, eta, water_surface_z))
+        tau += strut_force("main_strut")
+        tau += strut_force("elev_strut")
+        tau += foil_force("left", cmds["delta_main"] - cmds["delta_roll"])
+        tau += foil_force("right", cmds["delta_main"] + cmds["delta_roll"])
+        tau += foil_force("elev", cmds["delta_elev"])
         tau += hull_buoyancy_force(eta, p["hull_offset"], p["waterplane_area"], p["max_draft"],
-                                    water_surface_z=water_surface_z)
+                                    water_surface_z=env.hull_surface_z)
         tau += gravity_force(p["mass"], eta)
         tau += hull_drag_force(nu, eta, p["hull_offset"], p["max_draft"], p["hull_drag_coeff"],
-                                water_surface_z=water_surface_z)
+                                water_surface_z=env.hull_surface_z)
         tau[0] += thrust
         tau[2] -= p["heave_damping"] * nu[2]
         return np.concatenate([J(eta) @ nu, self.rigid_body.nu_dot(nu, tau)])
 
-    def step(self, state: np.ndarray, t: float, wave):
+    def step(self, state: np.ndarray, t: float, wave, cmds_override: dict | None = None):
         """
         Advance one full RK4 step: evaluate the controller and surge
         controller once (held fixed across the RK4 sub-stages, same as
         wave state), integrate, and return everything a caller needs to
         broadcast/log.
 
+        cmds_override : optional dict of delta_main/delta_elev/delta_roll [deg] that
+                        bypasses the controller (open-loop experiments).
+
         Returns
         -------
-        new_state, cmds, thrust, draft, wave_elev
+        new_state, cmds, thrust, draft, wave_elev   (draft is measured on new_state)
         """
         p = self.params
         dt = p["dt"]
@@ -187,16 +252,20 @@ class VehiclePhysics:
         z_ref = p["hull_offset"] - p["flying_height"]
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
-        cmds = self.controller.update(
-            z_ref,                       eta[2],
-            np.radians(p["phi_ref"]),    eta[3],
-            np.radians(p["theta_ref"]),  eta[4],
-        )
+        if cmds_override is None:
+            cmds = self.controller.update(
+                z_ref,                       eta[2],
+                np.radians(p["phi_ref"]),    eta[3],
+                np.radians(p["theta_ref"]),  eta[4],
+            )
+        else:
+            cmds = dict(cmds_override)
         thrust = self.surge.update(p["target_speed"], nu[0])
-        wave_elev, water_surface_z, wave_vel_body = self._wave_state(eta, t, wave)
+        env = self.wave_sample(eta, t, wave)
+        wave_elev = env.elevation
 
         def rhs(s):
-            return self.physics_rhs(s, cmds, thrust, water_surface_z, wave_vel_body)
+            return self.physics_rhs(s, cmds, thrust, env)
 
         k1 = rhs(state)
         k2 = rhs(state + dt / 2 * k1)
@@ -218,5 +287,5 @@ class VehiclePhysics:
             new_state[6:9] = np.clip(new_state[6:9], -MAX_LINEAR_VEL, MAX_LINEAR_VEL)
             new_state[9:12] = np.clip(new_state[9:12], -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL)
 
-        draft = hull_draft(eta, p["hull_offset"], p["max_draft"], water_surface_z)
+        draft = hull_draft(new_state[:6], p["hull_offset"], p["max_draft"], env.hull_surface_z)
         return new_state, cmds, thrust, draft, wave_elev

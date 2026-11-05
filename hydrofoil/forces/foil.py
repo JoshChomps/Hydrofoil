@@ -14,6 +14,8 @@ from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field
 
+from hydrofoil.constants import RHO_WATER
+
 # Default polar: NACA 0009 from XFLR5 at Re=2.70e6, Mach=0, Ncrit=9
 # Stored in data/foil_tables/naca0009_xflr5_re2700000.dat
 _DAT_DIR = Path(__file__).parent.parent.parent / "data" / "foil_tables"
@@ -136,6 +138,11 @@ def free_surface_lift_factor(submergence_over_chord: float) -> float:
     return float(1.0 - np.exp(-h_c / DECAY_LENGTH_CHORDS))
 
 
+def _cross(a, b):
+    """3-vector cross product (np.cross has ~10x the overhead for tiny vectors; this runs ~400x per step)."""
+    return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
+
+
 class Foil:
     """
     A single lifting surface attached to the vehicle.
@@ -163,14 +170,25 @@ class Foil:
         tables: FoilTables,
         r_attach: np.ndarray,
         lift_axis: np.ndarray = np.array([0.0, 0.0, -1.0]),
-        rho: float = 1025.0,
+        rho: float = RHO_WATER,
         flap_effectiveness: float = 1.0,
         oswald_efficiency: float = 0.80,
+        normal_axis: np.ndarray | None = None,
     ):
         self.geometry = geometry
         self.tables = tables
         self.r_attach = np.asarray(r_attach, dtype=float)
-        self.lift_axis = np.asarray(lift_axis, dtype=float) / np.linalg.norm(lift_axis)
+        # normal_axis: body-frame unit vector the foil's AoA is measured along (positive
+        # AoA = flow arriving from the -normal side... i.e. velocity component ALONG normal).
+        # Horizontal foil: (0,0,1) (body z, down). Vertical strut: (0,1,0) (starboard), so the
+        # strut's AoA is the side-slip angle and it develops a side force. lift_axis = -normal.
+        if normal_axis is not None:
+            n = np.asarray(normal_axis, dtype=float)
+            self.normal = n / np.linalg.norm(n)
+            self.lift_axis = -self.normal
+        else:
+            self.lift_axis = np.asarray(lift_axis, dtype=float) / np.linalg.norm(lift_axis)
+            self.normal = -self.lift_axis
         self.rho = rho
         # Default (1.0) is a no-penalty, all-moving-surface assumption, so
         # callers that don't pass this explicitly (e.g. sim.py) keep their
@@ -183,12 +201,25 @@ class Foil:
         # at its own half-span, so this is that half-panel's local AR, not
         # the un-split wing's.
         self.aspect_ratio = geometry.span / geometry.chord
+        self._a2d = tables.cl_slope_per_deg * 180.0 / np.pi   # section slope, per rad
+        # Finite-wing lift-curve correction, Prandtl/Helmbold form with the SAME
+        # Oswald efficiency used for induced drag:
+        #     a_3D = a_2D / (1 + a_2D / (pi * e * AR))
+        # a_2D is the polar's own section slope (per rad), not a hard-coded 2*pi.
+        # (Previously lift used AR/(AR+2), an e = 1 form, while induced drag used
+        # e = 0.80 -- the two corrections disagreed about the same wing.)
+        self.lift_slope_factor = self._lift_slope_factor(self.aspect_ratio)
+
+    def _lift_slope_factor(self, ar: float) -> float:
+        return 1.0 / (1.0 + self._a2d / (np.pi * self.oswald_efficiency * ar))
 
     def generalized_force(
         self,
         nu: np.ndarray,
         delta: float = 0.0,
         submergence_over_chord: float | None = None,
+        span: float | None = None,
+        r_attach: np.ndarray | None = None,
     ) -> np.ndarray:
         """
         Compute 6-DOF generalized force contribution of this foil.
@@ -204,43 +235,56 @@ class Foil:
                 that don't track submergence (e.g. sim.py) get unchanged
                 behavior.
 
+        span, r_attach : optional per-call overrides of the geometric span and the
+                aerodynamic-centre position (used for struts whose wetted length
+                changes with depth). Defaults: the constructor values.
+
         Returns
         -------
         tau : (6,) [X, Y, Z, K, M, N] in body frame [N, N, N, Nm, Nm, Nm]
         """
+        span = self.geometry.span if span is None else span
+        r_attach = self.r_attach if r_attach is None else np.asarray(r_attach, dtype=float)
+        if span <= 1e-3:
+            return np.zeros(6)
+        ar = span / self.geometry.chord
         V_body = nu[:3]   # translational velocity at body origin
         omega = nu[3:]    # angular velocity
 
         # velocity at foil attachment point (body frame)
-        V_foil = V_body + np.cross(omega, self.r_attach)
-        speed = np.linalg.norm(V_foil)
+        V_foil = V_body + _cross(omega, r_attach)
+        # Only the chordwise (x) and normal (z) velocity components load a
+        # horizontal foil. Spanwise (y) flow produces neither lift nor dynamic
+        # pressure on it, so it is excluded (previously |V| included it, which
+        # over-predicted force in side-slip).
+        V_n = float(V_foil @ self.normal)
+        V_plane = np.array([V_foil[0], 0.0, 0.0]) + V_n * self.normal
+        speed = np.linalg.norm(V_plane)
 
         if speed < 0.01:
             return np.zeros(6)
 
-        # flow direction (opposing velocity = drag direction)
-        V_hat = V_foil / speed
+        # flow direction (opposing velocity = drag direction), in the x-z plane
+        V_hat = V_plane / speed
 
         # AoA = arctan(w / u) in NED body frame.
         # Positive w (sinking) → water hits underside → positive AoA → upward lift ✓
         # Only the flap_effectiveness-scaled portion of a commanded deflection
         # actually becomes angle-of-attack — 1 deg of flap is NOT 1 deg of AoA
         # (see class docstring / module-level *_FLAP_EFFECTIVENESS constants).
-        aoa_rad = np.arctan2(V_foil[2], V_foil[0])
+        aoa_rad = np.arctan2(V_n, V_foil[0])
         aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * delta
 
         q = 0.5 * self.rho * speed**2
-        A = self.geometry.area
+        A = self.geometry.chord * span
 
         # 1. 2D section polar (XFLR5) — section (infinite-span) data.
         CL_2d = self.tables.cl(aoa_deg)
         CD_2d = self.tables.cd(aoa_deg)
 
-        # 2. Finite-span correction. Strip theory here uses ONE strip per
-        # foil (no spanwise circulation distribution), so the 2D section CL
-        # overestimates real 3D lift; scale toward the classical finite-wing
-        # limit AR/(AR+2).
-        CL = CL_2d * self.aspect_ratio / (self.aspect_ratio + 2.0)
+        # 2. Finite-span correction (see __init__): strip theory here uses ONE
+        # strip per foil, so the 2D section CL overestimates real 3D lift.
+        CL = CL_2d * self._lift_slope_factor(ar)
 
         # 3. Free-surface lift loss (no-op — factor 1.0 — if the caller
         # didn't supply a known submergence).
@@ -250,20 +294,22 @@ class Foil:
         # 4. Induced drag from the corrected (3D, free-surface-adjusted) CL,
         # added on top of 2D profile drag. Must come last — it depends on
         # the fully-corrected CL, not the raw 2D section CL.
-        CD_induced = CL**2 / (np.pi * self.aspect_ratio * self.oswald_efficiency)
+        CD_induced = CL**2 / (np.pi * ar * self.oswald_efficiency)
         CD = CD_2d + CD_induced
 
         L_mag = q * CL * A
         D_mag = q * CD * A
 
         # lift perpendicular to flow in the lift plane
-        lift_dir = np.cross(V_hat, np.cross(self.lift_axis, V_hat))
+        # V_hat x (a x V_hat) = a - (a.V_hat) V_hat for unit V_hat: the part of the lift axis
+        # perpendicular to the flow.
+        lift_dir = self.lift_axis - (self.lift_axis @ V_hat) * V_hat
         ln = np.linalg.norm(lift_dir)
         if ln > 1e-9:
             lift_dir = lift_dir / ln
 
         force = L_mag * lift_dir - D_mag * V_hat   # [N] in body frame
-        moment = np.cross(self.r_attach, force)     # [Nm] about body origin
+        moment = _cross(r_attach, force)     # [Nm] about body origin
 
         tau = np.zeros(6)
         tau[:3] = force

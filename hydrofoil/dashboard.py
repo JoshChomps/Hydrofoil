@@ -84,7 +84,7 @@ class SimRunner:
 
         wave = (AiryWave(amplitude=p["wave_amplitude"],
                          wavelength=p["wave_wavelength"],
-                         period=p["wave_period"])
+                         direction=np.radians(p["wave_direction"]))
                 if p["waves_enabled"] else CalmWater())
 
         # Start at rest, floating at the hull's buoyant equilibrium draft —
@@ -97,9 +97,9 @@ class SimRunner:
         real_start = time.time()
 
         while not self._stop_event.is_set() and t <= p["t_end"]:
-            eta, nu = state[:6], state[6:]
             state, cmds, thrust, draft, wave_elev = vp.step(state, t, wave)
             t += dt
+            eta, nu = state[:6], state[6:]   # report the state at the new time t (was one step stale)
 
             self.set_state(
                 t=round(t, 3),
@@ -351,7 +351,7 @@ const LIVE_GROUPS = [
   { label: "① Flight Target", params: [
     { key:"flying_height", label:"Hull Height Over Water (m)", min:-0.3, max:1.0,  step:0.02 },
     { key:"theta_ref",     label:"Target Pitch (°)",           min:-10,  max:10,   step:0.5  },
-    { key:"phi_ref",       label:"Target Roll (°)",            min:-10,  max:10,   step:0.5  },
+    { key:"phi_ref",       label:"Target Roll (°)",            min:-8,   max:8,    step:0.5  },
   ]},
   { label: "② Propulsion", params: [
     { key:"target_speed", label:"Target Speed (m/s)",  min:0, max:15,  step:0.1 },
@@ -379,7 +379,7 @@ const LIVE_GROUPS = [
     { key:"waves_enabled",   label:"Enable Waves",   type:"checkbox" },
     { key:"wave_amplitude",  label:"Amplitude (m)",  min:0.01, max:1.0, step:0.01 },
     { key:"wave_wavelength", label:"Wavelength (m)", min:1,    max:20,  step:0.5  },
-    { key:"wave_period",     label:"Period (s)",     min:0.5,  max:10,  step:0.25 },
+    { key:"wave_direction",  label:"Travel dir (° from +x)", min:-180, max:180, step:5 },
   ]},
 ];
 
@@ -551,7 +551,7 @@ const HEIGHT_RATE = 0.15;       // m/s while held
 const HEIGHT_MIN = -0.3, HEIGHT_MAX = 1.0;
 const ROLL_RATE = 20.0;         // deg/s while held (turning)
 const ROLL_CENTER_RATE = 15.0;  // deg/s spring-back to level when released
-const ROLL_MAX = 10.0;
+const ROLL_MAX = 8.0;   // matches the viewer cap; 8 deg is the largest bank re-verified (docs/14)
 let lastManualTick = null;
 
 function manualControlTick(now) {

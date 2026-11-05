@@ -6,13 +6,13 @@ Repo layout (excluding Unity assets/settings):
 README.md, requirements.txt, .gitignore
 data/foil_tables/naca0009_xflr5_re2700000.dat
 hydrofoil/
-  vehicle.py  dashboard.py  params.py  viewer.py  sim.py  viz.py  PROJECT_STATE.md   (sim_realtime/stream/control_uplink removed)
+  vehicle.py  dashboard.py  params.py  constants.py  viewer.py  sim.py  viz.py  PROJECT_STATE.md   (sim_realtime/stream/control_uplink removed)
   dynamics/   rigid_body.py  kinematics.py
   forces/     foil.py  hull.py  buoyancy.py
   control/    pid.py  surge.py  actuator.py
   waves/      airy.py
   estimation/ (empty)   sensors/ (empty)
-tests/        test_forces.py  test_actuator.py   (23 tests, all pass)
+tests/        test_forces.py  test_actuator.py  test_method_fixes.py   (42 tests, all pass; ~1 min because of closed-loop tests)
 ```
 
 Data-flow of one physics step (dashboard / realtime):
@@ -30,17 +30,17 @@ params ─► VehiclePhysics.step(state, t, wave)
 
 ## `hydrofoil/vehicle.py` — canonical physics
 - Constants: `MAX_ATTITUDE_RAD = 70°`, `MAX_LINEAR_VEL = 15 m/s`, `MAX_ANGULAR_VEL = 3 rad/s`.
+- **`WaveSample`** (dataclass): wave state frozen for a step, sampled at the hull and at each surface (`elevation`, `hull_surface_z`, `foil_surface_z[name]`, `foil_vel_body[name]`).
 - **`VehiclePhysics(params)`** — builds from a params dict (kept *live*, not copied, so mutating
   `params["flying_height"]` etc. takes effect next step).
   - Computes added mass/inertia (`strip_added_mass_heave_pitch`) from left half, right half, elevator.
   - Creates `RigidBody`, three `Foil`s (left/right main at `y = ∓main_lateral_offset`, elevator on centreline),
     `HydrofoilController`, `SurgeController`. Polar = `FoilTables.naca0009()`.
   - `rest_state()` → 12-vector at rest, z = `hull_offset + min(mass/(ρ·Awp), max_draft)`, pitch 2°.
-  - `_wave_state(eta, t, wave)` → (elevation, `water_surface_z = -elevation`, body-frame orbital velocity `Rᵀ·V_ned`).
+  - `wave_sample(eta, t, wave)` → `WaveSample` (elevation / surface z / body-frame orbital velocity at the hull and at left, right, elev, main_strut, elev_strut positions); `calm_sample()` for no waves.
   - `_submergence_over_chord(foil, eta, surface_z)` → (foil AC world z − surface z)/chord, with AC z = `eta_z + (R·r_attach)_z`.
-  - `physics_rhs(state, cmds, thrust, surface_z, wave_vel_body)` → 12-vector derivative (see doc 03).
-  - `step(state, t, wave)` → `(new_state, cmds, thrust, draft, wave_elev)`; RK4, safety net.
-    Note the returned `draft` is computed from the *pre-step* `eta`.
+  - `physics_rhs(state, cmds, thrust, env=None)` → 12-vector derivative (`env` is a `WaveSample`; None = calm). Includes the two struts (side force) and C_A.
+  - `step(state, t, wave, cmds_override=None)` → `(new_state, cmds, thrust, draft, wave_elev)`; RK4, safety net. `draft` is measured on the **new** state. `cmds_override` bypasses the controller (open loop).
 
 ## `hydrofoil/dashboard.py` (1060 lines) — FastAPI app + embedded HTML/JS
 - `DEFAULT_PARAMS` — now imported from `hydrofoil/params.py` (doc 04).
@@ -94,7 +94,8 @@ Only used by `sim.py`.
 - `rigid_body.py` — `skew`, `strip_added_mass_heave_pitch(strips, rho)`, `RigidBody` (`M`, `C(nu)`, `nu_dot(nu, tau)` via `np.linalg.solve`).
 
 ## `hydrofoil/forces/`
-- `foil.py` — constants `MAIN_FOIL_FLAP_EFFECTIVENESS=0.21`, `ELEVATOR_FLAP_EFFECTIVENESS=1.0`,
+- `constants.py` — `RHO_WATER`, `G`.
+- `foil.py` — `Foil(..., normal_axis)` (body z for foils, body y for struts), `_cross` helper, Helmbold finite-span factor; `generalized_force(nu, delta, submergence_over_chord, span, r_attach)`; constants `MAIN_FOIL_FLAP_EFFECTIVENESS=0.21`, `ELEVATOR_FLAP_EFFECTIVENESS=1.0`,
   `MAIN_FOIL_OSWALD_EFFICIENCY=0.80`; `FoilGeometry`, `FoilTables` (`cl`, `cd`, `cl_slope_per_deg`, `from_dat`, `naca0009`),
   `free_surface_lift_factor(h/c)`, `Foil.generalized_force(nu, delta, submergence_over_chord)`.
 - `hull.py` — `hull_draft`, `hull_buoyancy_force`, `hull_drag_force` (used by `vehicle.py`).

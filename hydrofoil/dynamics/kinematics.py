@@ -34,8 +34,17 @@ def Rz(psi: float) -> np.ndarray:
 
 
 def R_body_to_ned(phi: float, theta: float, psi: float) -> np.ndarray:
-    """ZYX rotation: world = Rz(psi) @ Ry(theta) @ Rx(phi) @ body."""
-    return Rz(psi) @ Ry(theta) @ Rx(phi)
+    """
+    ZYX rotation: world = Rz(psi) @ Ry(theta) @ Rx(phi) @ body.
+    Closed form of that product (one array build instead of three matmuls; this
+    is called ~40 times per physics step). Equality with the matmul form is tested.
+    """
+    cf, sf = np.cos(phi), np.sin(phi)
+    ct, st = np.cos(theta), np.sin(theta)
+    cp, sp = np.cos(psi), np.sin(psi)
+    return np.array([[cp * ct, cp * st * sf - sp * cf, cp * st * cf + sp * sf],
+                     [sp * ct, sp * st * sf + cp * cf, sp * st * cf - cp * sf],
+                     [-st,     ct * sf,                ct * cf]])
 
 
 def T_euler(phi: float, theta: float) -> np.ndarray:

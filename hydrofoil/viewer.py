@@ -226,9 +226,10 @@ def main():
     ap = argparse.ArgumentParser(description="Hydrofoil sim -> native MuJoCo viewer")
     ap.add_argument("--speed", type=float, default=1.0, help="sim speed multiplier")
     ap.add_argument("--duration", type=float, default=600.0, help="run length [sim s]")
-    ap.add_argument("--waves", action="store_true", help="enable the default Airy wave")
+    ap.add_argument("--waves", action="store_true", help="enable an Airy wave (period from deep-water dispersion)")
+    ap.add_argument("--wave-dir", type=float, default=0.0, help="wave travel direction [deg from +x]; try 90 for beam seas")
     a = ap.parse_args()
-    wave = AiryWave(amplitude=0.05, wavelength=5.0, period=2.0) if a.waves else CalmWater()
+    wave = AiryWave(amplitude=0.05, wavelength=5.0, direction=np.radians(a.wave_dir)) if a.waves else CalmWater()
     run(speed=a.speed, wave=wave, duration=a.duration)
 
 

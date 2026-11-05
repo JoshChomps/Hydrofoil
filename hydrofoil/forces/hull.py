@@ -19,6 +19,7 @@ waterline, not a full hull-form model.
 
 import numpy as np
 
+from hydrofoil.constants import RHO_WATER, G
 from hydrofoil.dynamics.kinematics import R_body_to_ned
 
 
@@ -29,7 +30,11 @@ def hull_draft(eta: np.ndarray, hull_offset_above_cog: float, max_draft: float,
     surface [m], clamped to [0, max_draft]. water_surface_z is the surface's
     current NED z-position (0 = calm water datum; negative = surface risen).
     """
-    hull_bottom_z = eta[2] - hull_offset_above_cog
+    # Hull-bottom reference point sits hull_offset above the CoG along body -z, so its
+    # NED depth follows the attitude (previously attitude was ignored here while
+    # the foil submergence calculation did rotate -- inconsistent).
+    R = R_body_to_ned(eta[3], eta[4], eta[5])
+    hull_bottom_z = eta[2] + (R @ np.array([0.0, 0.0, -hull_offset_above_cog]))[2]
     return float(np.clip(hull_bottom_z - water_surface_z, 0.0, max_draft))
 
 
@@ -38,8 +43,8 @@ def hull_buoyancy_force(
     hull_offset_above_cog: float,
     waterplane_area: float,
     max_draft: float,
-    rho_water: float = 1025.0,
-    g: float = 9.81,
+    rho_water: float = RHO_WATER,
+    g: float = G,
     water_surface_z: float = 0.0,
 ) -> np.ndarray:
     """
@@ -56,8 +61,16 @@ def hull_buoyancy_force(
     f_ned = np.array([0.0, 0.0, -F_b])   # upward = -z in NED
     f_body = R.T @ f_ned
 
+    # Buoyancy acts at the centre of buoyancy of the submerged volume, which sits
+    # above the CoG (hull_offset to the hull bottom, plus half the draft). The
+    # force is not through the CoG, so tilting the hull produces a restoring
+    # moment r_cb x F (previously applied at the CoG -> no hydrostatic stiffness).
+    r_cb = np.array([0.0, 0.0, -(hull_offset_above_cog + 0.5 * draft)])
     tau = np.zeros(6)
     tau[:3] = f_body
+    tau[3:] = np.array([r_cb[1] * f_body[2] - r_cb[2] * f_body[1],
+                        r_cb[2] * f_body[0] - r_cb[0] * f_body[2],
+                        r_cb[0] * f_body[1] - r_cb[1] * f_body[0]])
     return tau
 
 

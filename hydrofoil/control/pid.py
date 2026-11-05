@@ -79,17 +79,20 @@ class PID:
             derivative = 0.0
         else:
             derivative = (measurement - self._prev_measurement) / self.dt
-        self._integral += error * self.dt
+        candidate = self._integral + error * self.dt
+        output = self.Kp * error + self.Ki * candidate + self.Kd * derivative
+        clamped = float(np.clip(output, self.output_min, self.output_max))
 
-        output = self.Kp * error + self.Ki * self._integral + self.Kd * derivative
-
-        # clamp and anti-windup: stop integrating when saturated
-        clamped = np.clip(output, self.output_min, self.output_max)
-        if output != clamped:
-            self._integral -= error * self.dt   # undo last integration step
+        # Conditional-integration anti-windup: freeze the integrator only while the
+        # output is saturated AND the error is driving it further into saturation.
+        # (The old rule froze it whenever the output was clamped, even if the error
+        # was pulling the output back out of saturation, which delayed recovery.)
+        pushing_deeper = (output > self.output_max and error > 0.0) or                          (output < self.output_min and error < 0.0)
+        if not pushing_deeper:
+            self._integral = candidate
 
         self._prev_measurement = measurement
-        return float(clamped)
+        return clamped
 
 
 class HydrofoilController:
@@ -118,6 +121,7 @@ class HydrofoilController:
                           Defaults to DEFAULT_ACTUATOR_PARAMS (BLDC placeholder).
         """
         lim = 20.0   # ± 20 deg flap limit — adjust to your servo range
+        self.dt = dt
 
         self.heave_pid = PID(dt=dt, output_min=-lim, output_max=lim,
                              **gains['heave'])
@@ -126,10 +130,15 @@ class HydrofoilController:
         self.roll_pid  = PID(dt=dt, output_min=-lim, output_max=lim,
                              **gains['roll'])
 
-        actuator_params = actuator_params or DEFAULT_ACTUATOR_PARAMS
-        self.main_actuator = Actuator(dt=dt, **actuator_params)
-        self.elev_actuator = Actuator(dt=dt, **actuator_params)
-        self.roll_actuator = Actuator(dt=dt, **actuator_params)
+        ap = dict(actuator_params or DEFAULT_ACTUATOR_PARAMS)
+        # Latency is specified in seconds (delay_s) so it does not silently change with
+        # dt; an explicit delay_steps (legacy / tests) still wins.
+        delay_s = ap.pop("delay_s", 0.0)
+        if "delay_steps" not in ap:
+            ap["delay_steps"] = int(round(delay_s / dt))
+        self.main_actuator = Actuator(dt=dt, **ap)
+        self.elev_actuator = Actuator(dt=dt, **ap)
+        self.roll_actuator = Actuator(dt=dt, **ap)
 
     def update(
         self,
@@ -139,6 +148,13 @@ class HydrofoilController:
     ) -> dict:
         """
         Compute foil deflection commands.
+
+        Units: z in metres; every angle (phi, theta and their references) in
+        RADIANS (Fossen convention, same as the state vector). The roll and pitch
+        errors are converted to DEGREES before the PID so the gains are
+        degrees-of-flap per degree-of-error; the heave gains are degrees per metre.
+        (Previously radian errors were fed to a degree-output PID, making the
+        angle gains 57.3x weaker than their numerical values suggested.)
 
         Sign convention: positive delta → increased AoA → increased lift.
         NED frame: z positive downward, so altitude error = z_meas - z_ref
@@ -150,12 +166,12 @@ class HydrofoilController:
         (actuator-filtered) flap angles, not raw PID output.
         """
         heave_err = z_meas - z_ref      # +ve: too deep → need more lift to rise
-        pitch_err = theta_meas - theta_ref  # +ve: nose up → need upward rear force → –M_y → nose down
-        roll_err  = phi_meas - phi_ref      # +ve: rolled right → need upward left force
+        pitch_err = np.degrees(theta_meas - theta_ref)  # +ve: nose up → need upward rear force → –M_y → nose down
+        roll_err  = np.degrees(phi_meas - phi_ref)      # +ve: rolled right → need upward left force
 
         cmd_main = self.heave_pid.update(heave_err, z_meas)
-        cmd_elev = self.pitch_pid.update(pitch_err, theta_meas)
-        cmd_roll = self.roll_pid.update(roll_err, phi_meas)
+        cmd_elev = self.pitch_pid.update(pitch_err, np.degrees(theta_meas))
+        cmd_roll = self.roll_pid.update(roll_err, np.degrees(phi_meas))
 
         return {
             'delta_main': self.main_actuator.update(cmd_main),

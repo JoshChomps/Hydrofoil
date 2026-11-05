@@ -49,7 +49,9 @@ it never simulates anything (Unity and the UDP bridge were removed on branch `mu
 - No post-stall model; no Reynolds correction; one polar used for all surfaces.
 - `notebooks/` directory is mentioned in the README but does not exist in the repo.
 
-## Key findings of the 2026-11-04 audit (details: doc 13)
+## Key findings of the 2026-11-04 audit (details: doc 13; **fixes: doc 14**)
+
+> Status after the fix pass: items 1, 2, 3, 5 (Munk), 6 (struts, per-foil waves) and 7 are **fixed**; item 4 (trim feed-forward) is improved by the retune (settling 62 s → ~17 s) but still integrator-driven. The table below records the findings as originally made.
 
 | # | Finding | Severity |
 |---|---|---|
@@ -79,6 +81,6 @@ span, free surface, induced drag) → added mass → actuator model → unit tes
 
 ## Current headline limitations
 
-1. Gains **have not been retuned** since the foil-force corrections and added mass were added. Doc 13 shows the roll loop does not stabilise at all today (and a rad/deg unit mismatch in the roll and pitch PIDs).
-2. Roll Ki must be 0; the upstream bank limits are not reproducible on the current code; combined rapid input can still diverge (masked by clamps).
+1. Gains were **retuned on 2026-11-04** after fixing a rad/deg unit mismatch (doc 14); the earlier values were for a different plant.
+2. Roll Ki is still 0 (no longer needed). The upstream bank/fuzz claims were not reproduced; the new tests cover disturbance rejection, an 8° bank and oblique waves, but randomised combined-input fuzzing has not been re-run.
 3. Everything physical is a placeholder number.

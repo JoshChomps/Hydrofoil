@@ -19,7 +19,10 @@ class SurgeController:
 
     def update(self, speed_ref: float, speed_meas: float) -> float:
         error = speed_ref - speed_meas
-        return self.pid.update(error, speed_meas)
+        # Reverse-acting loop: error = ref - y moves OPPOSITE to the measurement, while
+        # PID.update's derivative-on-measurement assumes they move together. Feeding the
+        # negated measurement gives the correct -Kd * dy/dt (the old call had the wrong sign).
+        return self.pid.update(error, -speed_meas)
 
     def reset(self):
         self.pid.reset()

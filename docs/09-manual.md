@@ -36,13 +36,14 @@ raises the flaps to generate lift, the hull rises until draft = 0 → status fli
 Run/Stop/Reset: Reset restores `DEFAULT_PARAMS` and clears charts. The run auto-stops at `t_end` (default 60 s).
 
 ### Keyboard
-W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Keep bank small: with the current gains the roll loop is not stable even at a few degrees (doc 13); the ±8° cap is not a verified safe region.
+W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Bank is tracked well up to the ±8° cap after the 2026-11-04 fixes (doc 14); larger values have not been re-tested.
 
 ## 3. 3D viewer (MuJoCo)
 
 ```bash
 python -m hydrofoil.viewer                    # calm water, real time
-python -m hydrofoil.viewer --waves --speed 2  # Airy wave (A 0.05, λ 5, T 2), 2x speed
+python -m hydrofoil.viewer --waves --speed 2  # Airy wave (A 0.05, λ 5, T from dispersion), 2x speed
+python -m hydrofoil.viewer --waves --wave-dir 90   # beam seas (excites roll)
 ```
 Click the window for keyboard focus: Up/Down height, Left/Right bank, `[` `]` speed, `R` reset. Details in doc 08.
 
@@ -51,13 +52,14 @@ Click the window for keyboard focus: Up/Down height, Left/Right bank, `[` `]` sp
 ```bash
 python -m hydrofoil.sim
 ```
-Runs closed-loop and open-loop 20 s cases, writes PNGs and HTML to `data/` and opens them (WSL-aware; falls back to the default browser). This is the old pinned-speed model; not representative of `vehicle.py`.
+Runs closed-loop and zero-flap open-loop 90 s cases from rest on the **same physics as the dashboard** (it is now a thin wrapper over `VehiclePhysics`), writes PNGs and HTML to `data/` and opens them (WSL-aware; falls back to the default browser).
 
 ## 5. Tests
 
 ```bash
 pytest tests/ -v
 ```
+42 tests; the closed-loop ones (takeoff, roll rejection, bank tracking, oblique waves) take about a minute in total.
 Cover polar loading/symmetry, kinematics, rigid body, foil force signs, buoyancy/gravity, actuator and controller filtering. They do not cover `vehicle.py`, hull, PID, or waves.
 
 ## 6. Reading the telemetry

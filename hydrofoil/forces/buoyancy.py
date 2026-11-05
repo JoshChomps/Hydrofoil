@@ -7,12 +7,14 @@ The foil struts contribute negligibly and are ignored here.
 
 import numpy as np
 
+from hydrofoil.constants import RHO_WATER, G
+
 
 def buoyancy_force(
     displaced_volume: float,
     eta: np.ndarray,
-    rho_water: float = 1025.0,
-    g: float = 9.81,
+    rho_water: float = RHO_WATER,
+    g: float = G,
 ) -> np.ndarray:
     """
     Generalized buoyancy force in body frame, correctly rotated for attitude.
@@ -49,7 +51,7 @@ def buoyancy_force(
     return tau
 
 
-def gravity_force(mass: float, eta: np.ndarray, g: float = 9.81) -> np.ndarray:
+def gravity_force(mass: float, eta: np.ndarray, g: float = G) -> np.ndarray:
     """
     Gravitational restoring force in body frame.
 

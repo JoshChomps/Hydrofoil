@@ -53,6 +53,13 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Physics files were not changed. Docs updated across 01, 04, 05, 06, 09, 10, 11, 12 with the findings; new doc 13.
 - Follow-ups: fix PID units and retune; add committed regression tests for bank/disturbance; merge or push `mujoco-viewer`.
 
+### 2026-11-04 — Method/unit/math fix pass and retune
+- Fixed (doc 14): PID rad/deg mismatch; anti-windup; surge Kd sign; actuator delay in seconds; Munk (added-mass Coriolis); consistent finite-span/Oswald; spanwise flow in foil force; hull draft vs attitude and buoyancy moment arm; per-foil wave sampling; wave direction + deep-water dispersion; stale reporting; `sim.py` rebuilt on `VehiclePhysics`; shared constants.
+- Added: vertical struts (side force; placeholder chords), `WaveSample`, `constants.py`, `tests/test_method_fixes.py` (19 new tests), performance work (`np.cross`, closed-form rotation) ≈ 8.6 → 3.6 ms/step.
+- Retuned: heave 40/6/10, pitch 1.0/0/0.1, roll 2.0/0/0.2 (was 15/1/5, 2/0/2, 3.5/0/2.5 with the wrong units). Takeoff 9.9 s → 2.9 s; 2 cm height settling 62 s → ~17 s; roll kick rejected in 0.7 s; 8° bank tracked; oblique-wave roll ≤ 1.3°.
+- Verified: 42/42 tests; sweep results and robustness to doubled actuator delay/lag in doc 14 §H. Not re-run: randomised combined-input fuzz.
+- Follow-ups: trim feed-forward; wing–tail downwash; flap section moment; real strut/hull/actuator measurements; merge or push `mujoco-viewer`.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

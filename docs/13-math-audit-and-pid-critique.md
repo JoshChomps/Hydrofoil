@@ -1,5 +1,7 @@
 # 13 — Math Audit and PID Critique
 
+> **Status (later the same day):** the High and most Medium findings below were fixed and the gains retuned. This document records the audit **as found**; what was changed, how, and the before/after numbers are in [14-error-register-and-fixes.md](14-error-register-and-fixes.md). Numbers quoted here (e.g. roll instability) describe the pre-fix code.
+
 Audit of 2026-11-04. Unlike docs 01–12 (written by reading), the numbers here were **produced by running the code**
 (Python 3.12, repo at the state of commit `841d501` + the viewer branch; physics files unchanged).
 Scripts were throwaway and are not in the repo; each result below says how to reproduce it.

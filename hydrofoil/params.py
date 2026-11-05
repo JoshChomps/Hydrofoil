@@ -12,13 +12,17 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "elev_chord": 0.10, "elev_span": 0.3,
     "main_pos_x": 0.0,  "main_pos_z": 0.5, "main_lateral_offset": 0.35,
     "elev_pos_x": -1.2, "elev_pos_z": 0.4,
+    # Vertical struts: give the side force that makes bank turn the boat instead of letting it
+    # skid (without them a banked boat slides sideways and yaw has the wrong sign). Chord is a
+    # PLACEHOLDER; the wetted length is computed from depth below the surface every step.
+    "main_strut_chord": 0.12, "elev_strut_chord": 0.08,
     # Heave gains are tuned higher than sim.py's — here the vehicle starts at rest
     # and must generate real lift to take off, not just trim near an already-flying point.
-    "kp_heave": 15.0, "ki_heave": 1.0, "kd_heave": 5.0,
-    "kp_pitch": 2.0, "ki_pitch": 0.0, "kd_pitch": 2.0,
+    "kp_heave": 40.0, "ki_heave": 6.0, "kd_heave": 10.0,
+    "kp_pitch": 1.0, "ki_pitch": 0.0, "kd_pitch": 0.1,
     # Ki must stay 0 here — any nonzero integral term reliably diverges under
     # wave disturbance (verified: Ki=0.05 blew up to 1000+ deg within 90s).
-    "kp_roll":  3.5, "ki_roll":  0.0, "kd_roll":  2.5,
+    "kp_roll":  2.0, "ki_roll":  0.0, "kd_roll":  0.2,
     # Target height of the HULL above the water once foilborne [m] (negative =
     # hull still below the surface). Internally converted to a CoG depth
     # reference via hull_offset — this is the number you actually care about.
@@ -28,7 +32,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "flying_height": 0.55,
     "phi_ref": 0.0, "theta_ref": 0.0,
     "waves_enabled": False,
-    "wave_amplitude": 0.05, "wave_wavelength": 5.0, "wave_period": 2.0,
+    # Period is derived from wavelength by the deep-water dispersion relation. Direction is the
+    # wave TRAVEL heading in degrees (0 = +x, the way the boat faces); oblique/beam seas (e.g. 90)
+    # are what load the left and right foils differently and excite roll.
+    "wave_amplitude": 0.05, "wave_wavelength": 5.0, "wave_direction": 0.0,
     "dt": 0.01, "t_end": 60.0,
 
     # Velocity (surge) controller: closed-loop speed control, thrust in Newtons.
