@@ -57,7 +57,10 @@ Roll mechanism: left foil δ = δ_main − δ_roll, right foil δ = δ_main + δ
 
 **Struts (E10, new, placeholder chords 0.12 / 0.08 m):** same code with n = +y, so AoA = side-slip angle, force along ±y. Wetted span = foil depth below the local surface (clipped to hull_offset + foil z), force at mid-wetted length.
 
-### 4.2 Hull buoyancy — `hull_buoyancy_force`
+### 4.2 Hull buoyancy — `HullHydrostatics` (E20; derivation and checks in doc 15)
+The hull footprint (rectangle, 11 × 7 cells) is integrated: per cell z_i = η_z + R[2,:]·p_i, d_i = clip(z_i − z_surf,i, 0, max_draft), F_i = ρ g dA d_i, f_body,i = −F_i R[2,:], at r_i = (x_i, y_i, −(hull_offset + d_i/2)); τ = Σ(f_i, r_i × f_i). This reproduces ρ g A_wp, ρ g ∇ GM_T and ρ g ∇ GM_L to within 1 %. The paragraphs below describe the earlier lumped model for reference.
+
+#### (earlier lumped model — `hull_buoyancy_force`)
 - Hull-bottom reference point (0,0,−hull_offset) rotated to NED: z_bottom = η_z − hull_offset·cosφ·cosθ (E11). draft = clip(z_bottom − z_surface, 0, max_draft); z_surface = −wave elevation at the hull.
 - F_b = ρ g A_wp draft, up in NED, rotated into the body by Rᵀ, **applied at r_cb = (0,0,−(hull_offset + draft/2))** so it produces a moment r_cb × F (E12).
 - Linear/wall-sided: valid only near the design waterline. Foilborne ⇔ draft = 0 (`≤ 1e-6`).

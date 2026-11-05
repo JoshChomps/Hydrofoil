@@ -47,6 +47,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # hull_offset is how far above the CoG the hull rides (roughly the strut
     # length); waterplane_area/max_draft set how buoyant it is at rest and how
     # much draft it has before the linear approximation caps out.
-    "waterplane_area": 0.6, "max_draft": 0.3, "hull_offset": 0.6,
+    # Hull footprint (rectangle, PLACEHOLDER): waterplane area = length x beam = 0.6 m^2 as before. The footprint
+    # (not just its area) sets roll/pitch hydrostatic stiffness through the waterplane inertia.
+    "hull_length": 2.0, "hull_beam": 0.30, "hull_x": 0.0,    # m; footprint centre relative to the CoG (0 = floats level with the CoG over the CB)
+    "max_draft": 0.3, "hull_offset": 0.6,
     "hull_drag_coeff": 20.0,
+    # Roll/pitch damping of the floating hull [N*m*s/rad at full draft], scaled by wetted fraction. PLACEHOLDER
+    # standing in for radiation damping (~0.2 of critical in pitch at rest draft).
+    "hull_rot_damping": 400.0,
 }

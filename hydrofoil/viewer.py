@@ -90,7 +90,7 @@ def build_mjcf(p: dict) -> str:
     </body>
     <body name="vehicle" pos="0 0 0">
       <freejoint name="root"/>
-      <geom name="hull" type="box" size="0.9 0.14 0.08" pos="-0.2 0 {hull_off}" material="hull"/>
+      <geom name="hull" type="box" size="{p["hull_length"]/2} {p["hull_beam"]/2} 0.08" pos="{p["hull_x"]} 0 {hull_off}" material="hull"/>
       <geom name="main_strut" type="box" size="0.015 0.04 {strut_len/2}" pos="{mx} 0 {hull_off - strut_len/2}" material="strut"/>
       <geom name="cross_bar" type="box" size="0.015 {lat} 0.01" pos="{mx} 0 {-mz}" material="strut"/>
       <geom name="elev_strut" type="box" size="0.012 0.03 {(hull_off+ez)/2}" pos="{ex} 0 {hull_off - (hull_off+ez)/2}" material="strut"/>

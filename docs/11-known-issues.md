@@ -22,6 +22,7 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 | C5 | M | AoA ignores body pitch and mounting incidence (`aoa_offset` always 0). May be intended, but means foil incidence depends only on velocity direction + flap. |
 | C6 | M | `step()` returns `draft` from the pre-step η and the dashboard publishes pre-step `eta`/`nu` — one-step (10 ms) lag in displayed data. Negligible, but the "foilborne" flag lags by one step. — **FIXED 2026-11-04 (doc 14)** |
 | C7 | M | Wave orbital velocity is evaluated once at the body origin depth and held for foils up to 0.5 m deeper/1.2 m aft; wave λ and T are independent (non-dispersive combos possible). — **FIXED 2026-11-04 (doc 14)** |
+| C8b | ~~L~~ | ~~Hull buoyancy had no waterplane-inertia term (pitch stiffness 14× low, roll 23 % low)~~ — **FIXED**, E20/doc 15. |
 | C8 | L | Hull buoyancy and weight both act at the body origin; no restoring moment from the hull (pitch/roll stiffness while in displacement mode comes only from the foils). — **FIXED 2026-11-04 (doc 14)** |
 | C9 | L | `buoyancy_force` imports `R_body_to_ned` inside the function; minor performance cost per RK4 stage. `np.linalg.solve` of a constant M each call could be a precomputed inverse. |
 | C10 | L | Actuator delay is specified in steps, so the delay in seconds changes with `dt`. — **FIXED 2026-11-04 (doc 14)** |

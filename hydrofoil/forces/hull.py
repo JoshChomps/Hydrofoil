@@ -98,3 +98,92 @@ def hull_drag_force(
     tau = np.zeros(6)
     tau[0] = Fx
     return tau
+
+
+# ---------------------------------------------------------------------------
+# Distributed hull hydrostatics
+# ---------------------------------------------------------------------------
+
+class HullHydrostatics:
+    """
+    Hull buoyancy by integrating the local draft over the hull's footprint instead of
+    lumping it at one point.
+
+    Why: the lumped model above reproduces the heave stiffness rho*g*A_wp but misses the
+    waterplane-inertia term of the metacentric height, GM = (CB above CoG) + I/V
+    (Fossen 2011 ch. 4). For a 2.0 x 0.30 m box hull at its 4 cm rest draft that is
+    roll stiffness 23 % low and pitch stiffness 14x too low (152 vs 2163 Nm/rad).
+
+    Kinematics: the hull is a rigid prism whose bottom plane is hull_offset above the CoG
+    along body -z. Each footprint cell i at body (x_i, y_i) has its bottom point at body
+    (x_i, y_i, -hull_offset); its NED depth follows the full attitude,
+        z_i = eta_z + R[2,:] . p_i
+    and its local draft is clip(z_i - z_surface_i, 0, max_draft) with z_surface_i the
+    (wave-displaced) surface under that cell. Each cell pushes straight up in NED with
+    rho*g*dA*draft_i, i.e. f_body_i = -F_i * R[2,:], acting at the centroid of its
+    submerged column, body (x_i, y_i, -(hull_offset + draft_i/2)); the moment is the sum
+    of p_i x f_i. Heave, roll and pitch stiffness, partial emergence during takeoff, and
+    wave slope across the hull all follow from this one integral.
+
+    The footprint is a rectangle (length x beam, centred at x_center), a placeholder.
+    """
+
+    def __init__(self, length: float, beam: float, x_center: float, hull_offset: float,
+                 max_draft: float, nx: int = 11, ny: int = 7,
+                 rho: float = RHO_WATER, g: float = G):
+        xs = x_center + ((np.arange(nx) + 0.5) / nx - 0.5) * length
+        ys = ((np.arange(ny) + 0.5) / ny - 0.5) * beam
+        X, Y = np.meshgrid(xs, ys, indexing="ij")
+        self.xy = np.stack([X.ravel(), Y.ravel()], axis=1)                       # (N, 2)
+        self.bottom = np.column_stack([self.xy, np.full(len(self.xy), -hull_offset)])   # (N, 3) body coords
+        self.dA = length * beam / (nx * ny)
+        self.waterplane_area = length * beam
+        self.hull_offset = hull_offset
+        self.max_draft = max_draft
+        self.rho, self.g = rho, g
+        self.n = len(self.xy)
+
+    def cell_world_xy(self, eta):
+        """NED (x, y, z) of every cell's hull-bottom point (for sampling the wave field)."""
+        R = R_body_to_ned(eta[3], eta[4], eta[5])
+        return eta[:3] + self.bottom @ R.T
+
+    def drafts(self, eta, surface_z):
+        """Per-cell draft [m]; surface_z is the NED z of the surface under each cell (scalar or (N,))."""
+        R = R_body_to_ned(eta[3], eta[4], eta[5])
+        z_bottom = eta[2] + self.bottom @ R[2]
+        return np.clip(z_bottom - surface_z, 0.0, self.max_draft)
+
+    def mean_draft(self, eta, surface_z) -> float:
+        return float(np.mean(self.drafts(eta, surface_z)))
+
+    def buoyancy(self, eta, surface_z) -> np.ndarray:
+        """6-vector [Fx Fy Fz Mx My Mz] in the body frame about the CoG."""
+        R = R_body_to_ned(eta[3], eta[4], eta[5])
+        r2 = R[2]                                           # NED-z row: f_body = -F * r2
+        d = np.clip(eta[2] + self.bottom @ r2 - surface_z, 0.0, self.max_draft)
+        F = self.rho * self.g * self.dA * d                 # (N,)
+        px, py = self.xy[:, 0], self.xy[:, 1]
+        pz = -(self.hull_offset + 0.5 * d)                  # centroid of each submerged column
+        # moment = sum p_i x (-F_i r2)
+        mx = -np.sum(F * (py * r2[2] - pz * r2[1]))
+        my = -np.sum(F * (pz * r2[0] - px * r2[2]))
+        mz = -np.sum(F * (px * r2[1] - py * r2[0]))
+        tau = np.zeros(6)
+        tau[:3] = -np.sum(F) * r2
+        tau[3:] = (mx, my, mz)
+        return tau
+
+    def drag(self, nu, mean_draft: float, drag_coeff: float, rot_damping: float = 0.0) -> np.ndarray:
+        """
+        Placeholder hull damping, both scaled by the wetted fraction (0 once foilborne):
+        quadratic surge drag, and linear roll/pitch damping standing in for radiation
+        damping. Without the latter the (now correct) hydrostatic stiffness lets a floating
+        hull rock almost undamped at ~2.4 Hz until the foils get flow.
+        """
+        wetted = mean_draft / self.max_draft if self.max_draft > 0 else 0.0
+        tau = np.zeros(6)
+        tau[0] = -drag_coeff * wetted * nu[0] * abs(nu[0])
+        tau[3] = -rot_damping * wetted * nu[3]
+        tau[4] = -rot_damping * wetted * nu[4]
+        return tau

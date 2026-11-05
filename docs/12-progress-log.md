@@ -60,6 +60,11 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Verified: 42/42 tests; sweep results and robustness to doubled actuator delay/lag in doc 14 §H. Not re-run: randomised combined-input fuzz.
 - Follow-ups: trim feed-forward; wing–tail downwash; flap section moment; real strut/hull/actuator measurements; merge or push `mujoco-viewer`.
 
+### 2026-11-04 — Buoyancy cross-reference
+- Compared the hull against Fossen ch.4 metacentric theory: roll stiffness was 23 % low and pitch 14× too low (no waterplane-inertia term). Replaced the lumped model with `HullHydrostatics` (footprint grid, full attitude kinematics, per-cell wave elevation); stiffness now within 1 % of theory (doc 15, E20).
+- Added placeholder hull roll/pitch damping so the correctly stiff hull does not ring at rest; new params `hull_length`, `hull_beam`, `hull_x`, `hull_rot_damping` (`waterplane_area` now derived).
+- 46 tests pass; foilborne metrics unchanged; gains did not need retuning. Everything remains local (no push), commits on branch `mujoco-viewer`.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

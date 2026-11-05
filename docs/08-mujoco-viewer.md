@@ -9,7 +9,7 @@ setup are no longer needed.
 `qpos` and `mj_forward` is called; `mj_step` is never used (gravity is off in the MJCF). Python stays the sole physics authority.
 
 - `build_mjcf(params)` generates the model from the same params dict as the sim, so geometry in `DEFAULT_PARAMS` shows up automatically:
-  hull box (`hull_offset` above CoG), main strut, cross bar, left/right main foil halves each with a hinged 40 % flap, elevator on its own strut
+  hull box (`hull_length` × `hull_beam`, `hull_x`, `hull_offset` above CoG), main strut, cross bar, left/right main foil halves each with a hinged 40 % flap, elevator on its own strut
   (all-moving, hinged), red CoG marker, an infinite checker seabed at z = -3 m for motion cues, and a translucent water plane (mocap body) that follows the vehicle in x/y and rides the wave elevation.
 - `MujocoPose.apply(state, cmds, wave_elev)` maps NED/body to MuJoCo Z-up. World: `D = diag(1,-1,-1)`; body frame (x fwd, y left, z up) vs sim body (x fwd, y stbd, z down): `B = diag(1,-1,-1)`;
   `R_mj = D R_ned B`, `p_mj = D p_ned`. Flap hinges use `-delta` because a positive MuJoCo rotation about +y (left) raises the trailing edge.

@@ -24,6 +24,7 @@ Done: units fix + retune + committed regression tests (item 1), waves able to ex
 - **[suggested]** Add a `--noise` option so every controller test can run in both ideal and realistic modes.
 
 ## Model fidelity (suggested)
+- (done) Distributed hull hydrostatics checked against metacentric theory (doc 15). Next: real hull lines, inclining/free-decay measurements, dynamic sinkage/trim, wave-making and the pre-takeoff drag hump.
 - Measured parameters: mass, inertia, CG, foil geometry/positions, hull waterplane/drag, actuator dynamics, thrust curve.
 - Replace placeholder `free_surface_lift_factor` with validated data (panel method / tow tank).
 - Per-surface polars at the right Reynolds number (Re ≈ 6e5 vs 2.7e6 now); add post-stall, negative-α table symmetry (table stops at −10° but +17.8°).

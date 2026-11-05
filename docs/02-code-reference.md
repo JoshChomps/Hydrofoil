@@ -12,7 +12,7 @@ hydrofoil/
   control/    pid.py  surge.py  actuator.py
   waves/      airy.py
   estimation/ (empty)   sensors/ (empty)
-tests/        test_forces.py  test_actuator.py  test_method_fixes.py   (42 tests, all pass; ~1 min because of closed-loop tests)
+tests/        test_forces.py  test_actuator.py  test_method_fixes.py   (46 tests, all pass; ~1–2 min because of closed-loop tests)
 ```
 
 Data-flow of one physics step (dashboard / realtime):
@@ -98,7 +98,7 @@ Only used by `sim.py`.
 - `foil.py` — `Foil(..., normal_axis)` (body z for foils, body y for struts), `_cross` helper, Helmbold finite-span factor; `generalized_force(nu, delta, submergence_over_chord, span, r_attach)`; constants `MAIN_FOIL_FLAP_EFFECTIVENESS=0.21`, `ELEVATOR_FLAP_EFFECTIVENESS=1.0`,
   `MAIN_FOIL_OSWALD_EFFICIENCY=0.80`; `FoilGeometry`, `FoilTables` (`cl`, `cd`, `cl_slope_per_deg`, `from_dat`, `naca0009`),
   `free_surface_lift_factor(h/c)`, `Foil.generalized_force(nu, delta, submergence_over_chord)`.
-- `hull.py` — `hull_draft`, `hull_buoyancy_force`, `hull_drag_force` (used by `vehicle.py`).
+- `hull.py` — `HullHydrostatics` (distributed buoyancy over a footprint grid, drag, placeholder roll/pitch damping; **used by `vehicle.py`**, doc 15) plus the older lumped `hull_draft`, `hull_buoyancy_force`, `hull_drag_force` (kept for reference/tests).
 - `buoyancy.py` — `buoyancy_force` (constant volume; only `sim.py` and tests) and `gravity_force` (both use it).
 
 ## `hydrofoil/control/`

@@ -26,10 +26,12 @@ There are **no measured values** anywhere in the repo.
 ### Hull
 | Key | Default | Unit | UI range |
 |---|---|---|---|
-| `waterplane_area` | 0.6 | m² | 0.05–3 |
+| `hull_length` / `hull_beam` | 2.0 / 0.30 | m | 0.5–4 / 0.1–1.5 (placeholders; waterplane area = L × B = 0.6 m², formerly `waterplane_area`) |
+| `hull_x` | 0.0 | m | −1…1 (footprint centre relative to the CoG; 0 = floats level) |
 | `max_draft` | 0.3 | m | 0.05–1 |
 | `hull_offset` | 0.6 | m (hull bottom above CoG) | 0–1.5 |
 | `hull_drag_coeff` | 20.0 | N/(m/s)² | 0–100 (placeholder) |
+| `hull_rot_damping` | 400 | N·m·s/rad at full draft | placeholder radiation damping on roll/pitch, scaled by wetted fraction |
 
 ### Flight targets
 | Key | Default | Unit | Notes |

@@ -73,7 +73,7 @@
 - No hydrodynamic damping matrix D(ν) (only foil drag, hull surge drag, and a heave-damping term).
 - Single polar for all surfaces regardless of local Reynolds number (Re 2.7e6 vs actual: chord 0.15 m × 4 m/s / 1e-6 ≈ 6e5).
 - Regular waves only; no current; no wind; no ventilation or cavitation; no spray.
-- Wall-sided linear hull buoyancy, no heel/trim buoyancy moment (buoyancy acts at the body origin, so the hull produces no restoring moment from lateral/longitudinal waterplane offset).
+- Hull buoyancy is a distributed hydrostatic integral over a rectangular footprint (doc 15): heave/roll/pitch stiffness match metacentric theory within 1 %; still wall-sided, no hull lines, no dynamic sinkage/trim, no planing lift or wave-making, placeholder radiation damping.
 - Thrust applied at body origin (no thrust-line pitching moment; no differential thrust).
 - Constant water density 1025 kg/m³ and g 9.81.
 - Ground-truth full-state feedback: no sensor noise, latency (other than actuator delay), quantisation, or estimator.

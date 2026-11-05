@@ -181,3 +181,51 @@ def test_closed_form_rotation_matches_matmul_form():
     from hydrofoil.dynamics.kinematics import R_body_to_ned, Rx, Ry, Rz
     for phi, theta, psi in ((0.1, -0.3, 2.0), (-1.2, 0.7, -3.0), (0.0, 0.0, 0.0)):
         assert np.allclose(R_body_to_ned(phi, theta, psi), Rz(psi) @ Ry(theta) @ Rx(phi), atol=1e-12)
+
+
+# --- distributed hull hydrostatics vs classical theory (Fossen ch.4) -----------
+
+def _stiffness(H, eta0, idx, k, e=1e-4):
+    v = np.zeros(6); v[idx] = e
+    return -(H.buoyancy(eta0 + v, 0.0)[k] - H.buoyancy(eta0 - v, 0.0)[k]) / (2 * e)
+
+
+def test_hull_hydrostatic_stiffness_matches_metacentric_theory():
+    from hydrofoil.constants import RHO_WATER, G
+    from hydrofoil.forces.hull import HullHydrostatics
+    L, B, h, dmax, m = 2.0, 0.30, 0.6, 0.3, 25.0
+    H = HullHydrostatics(L, B, 0.0, h, dmax)
+    A = L * B; d = m / (RHO_WATER * A); V = A * d
+    eta0 = np.array([0, 0, h + d, 0, 0, 0.0])
+    KB = h + d / 2                                     # centre of buoyancy above the CoG
+    assert _stiffness(H, eta0, 2, 2) == pytest.approx(RHO_WATER * G * A, rel=1e-6)                       # heave
+    assert _stiffness(H, eta0, 3, 3) == pytest.approx(RHO_WATER * G * V * (KB + L * B**3 / 12 / V), rel=0.02)   # roll, GM_T
+    assert _stiffness(H, eta0, 4, 4) == pytest.approx(RHO_WATER * G * V * (KB + B * L**3 / 12 / V), rel=0.02)  # pitch, GM_L
+    assert H.buoyancy(eta0, 0.0)[2] == pytest.approx(-m * G)                                             # floats at the right draft
+
+
+def test_hull_buoyancy_force_is_linear_in_draft_when_level():
+    from hydrofoil.forces.hull import HullHydrostatics
+    H = HullHydrostatics(2.0, 0.30, 0.0, 0.6, 0.3)
+    f1 = -H.buoyancy(np.array([0, 0, 0.65, 0, 0, 0.0]), 0.0)[2]
+    f2 = -H.buoyancy(np.array([0, 0, 0.70, 0, 0, 0.0]), 0.0)[2]
+    assert f2 == pytest.approx(2 * f1)
+
+
+def test_hull_rolled_partially_emerged_buoyancy_is_restoring_and_vertical_force_positive():
+    from hydrofoil.forces.hull import HullHydrostatics
+    H = HullHydrostatics(2.0, 0.30, 0.0, 0.6, 0.3)
+    tau = H.buoyancy(np.array([0, 0, 0.62, np.radians(15), 0, 0.0]), 0.0)
+    assert tau[3] < 0.0          # starboard-down roll -> moment back to port
+    assert tau[2] < 0.0          # still lifts (up = -z)
+
+
+def test_floating_hull_rocking_is_damped():
+    p = dict(DEFAULT_PARAMS); p["target_speed"] = 0.0
+    vp = VehiclePhysics(p)
+    s, t = vp.rest_state(), 0.0
+    th = []
+    for _ in range(1500):
+        s, _, _, _, _ = vp.step(s, t, CalmWater()); t += p["dt"]
+        th.append(np.degrees(s[4]))
+    assert max(abs(x) for x in th[-300:]) < 0.5          # initial 2 deg rocking has died away

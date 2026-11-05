@@ -25,7 +25,7 @@ from hydrofoil.forces.foil import (
     MAIN_FOIL_FLAP_EFFECTIVENESS, ELEVATOR_FLAP_EFFECTIVENESS, MAIN_FOIL_OSWALD_EFFICIENCY,
 )
 from hydrofoil.forces.buoyancy import gravity_force
-from hydrofoil.forces.hull import hull_buoyancy_force, hull_drag_force, hull_draft
+from hydrofoil.forces.hull import HullHydrostatics
 from hydrofoil.control.pid import HydrofoilController
 from hydrofoil.control.surge import SurgeController
 from hydrofoil.control.actuator import DEFAULT_ACTUATOR_PARAMS
@@ -55,7 +55,8 @@ class WaveSample:
     load the left and right halves differently and so excite roll.
     """
     elevation: float = 0.0                       # at the body origin [m] (for display)
-    hull_surface_z: float = 0.0                  # NED z of the surface at the hull
+    hull_surface_z: float = 0.0                  # NED z of the surface at the body origin (display)
+    hull_cell_surface_z: object = 0.0            # NED z of the surface under every hull footprint cell (N,) or scalar
     foil_surface_z: dict = field(default_factory=dict)   # name -> NED z of the surface at that foil
     foil_vel_body: dict = field(default_factory=dict)    # name -> wave orbital velocity in body frame [m/s]
 
@@ -69,7 +70,7 @@ class VehiclePhysics:
     main_span, main_pos_x, main_pos_z, main_lateral_offset, elev_chord,
     elev_span, elev_pos_x, elev_pos_z, kp/ki/kd_heave, kp/ki/kd_pitch,
     kp/ki/kd_roll, flying_height, phi_ref, theta_ref, target_speed,
-    kp/ki/kd_speed, max_thrust, waterplane_area, max_draft, hull_offset,
+    kp/ki/kd_speed, max_thrust, hull_length, hull_beam, hull_x, max_draft, hull_offset,
     hull_drag_coeff, dt. Optional: actuator_params (defaults to
     DEFAULT_ACTUATOR_PARAMS). params is kept live (not copied) — mutating
     it externally (e.g. a live "stick" update) takes effect on the next step().
@@ -89,6 +90,10 @@ class VehiclePhysics:
             (p["main_chord"], p["main_span"], p["main_pos_x"]),   # right half
             (p["elev_chord"], p["elev_span"], p["elev_pos_x"]),
         ])
+        # Distributed hull hydrostatics (cross-referenced against Fossen ch.4 GM_T / GM_L, see docs/15).
+        self.hull = HullHydrostatics(p["hull_length"], p["hull_beam"], p["hull_x"],
+                                     p["hull_offset"], p["max_draft"])
+        self.waterplane_area = self.hull.waterplane_area
         self.rigid_body = RigidBody(
             mass=p["mass"], I_b=np.diag([p["ixx"], p["iyy"], p["izz"]]),
             added_mass_heave=added_mass_heave, added_inertia_pitch=added_inertia_pitch,
@@ -143,7 +148,7 @@ class VehiclePhysics:
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
         p = self.params
-        rest_draft = min(p["mass"] / (RHO_WATER * p["waterplane_area"]), p["max_draft"])
+        rest_draft = min(p["mass"] / (RHO_WATER * self.waterplane_area), p["max_draft"])
         z0 = p["hull_offset"] + rest_draft
         eta0 = np.array([0.0, 0.0, z0, 0.0, np.radians(2.0), 0.0])
         nu0 = np.zeros(6)
@@ -159,6 +164,9 @@ class VehiclePhysics:
         smp = WaveSample()
         smp.elevation = wave.elevation(eta[0], eta[1], t)
         smp.hull_surface_z = -smp.elevation          # NED: surface risen -> smaller (more negative) z
+        cells = self.hull.cell_world_xy(eta)         # where each hull footprint cell actually is in the world
+        elev_cells = np.zeros(self.hull.n) + wave.elevation(cells[:, 0], cells[:, 1], t)
+        smp.hull_cell_surface_z = -elev_cells
         for name, foil in self._foils().items():
             pos = eta[:3] + R @ foil.r_attach        # foil AC in the NED world frame
             elev = wave.elevation(pos[0], pos[1], t)
@@ -172,7 +180,7 @@ class VehiclePhysics:
     def calm_sample() -> WaveSample:
         z3 = np.zeros(3)
         names = ("left", "right", "elev", "main_strut", "elev_strut")
-        return WaveSample(0.0, 0.0, {n: 0.0 for n in names}, {n: z3 for n in names})
+        return WaveSample(0.0, 0.0, 0.0, {n: 0.0 for n in names}, {n: z3 for n in names})
 
     def _submergence_over_chord(self, foil, eta, water_surface_z):
         """
@@ -222,11 +230,9 @@ class VehiclePhysics:
         tau += foil_force("left", cmds["delta_main"] - cmds["delta_roll"])
         tau += foil_force("right", cmds["delta_main"] + cmds["delta_roll"])
         tau += foil_force("elev", cmds["delta_elev"])
-        tau += hull_buoyancy_force(eta, p["hull_offset"], p["waterplane_area"], p["max_draft"],
-                                    water_surface_z=env.hull_surface_z)
+        tau += self.hull.buoyancy(eta, env.hull_cell_surface_z)
         tau += gravity_force(p["mass"], eta)
-        tau += hull_drag_force(nu, eta, p["hull_offset"], p["max_draft"], p["hull_drag_coeff"],
-                                water_surface_z=env.hull_surface_z)
+        tau += self.hull.drag(nu, self.hull.mean_draft(eta, env.hull_cell_surface_z), p["hull_drag_coeff"], p["hull_rot_damping"])
         tau[0] += thrust
         tau[2] -= p["heave_damping"] * nu[2]
         return np.concatenate([J(eta) @ nu, self.rigid_body.nu_dot(nu, tau)])
@@ -287,5 +293,5 @@ class VehiclePhysics:
             new_state[6:9] = np.clip(new_state[6:9], -MAX_LINEAR_VEL, MAX_LINEAR_VEL)
             new_state[9:12] = np.clip(new_state[9:12], -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL)
 
-        draft = hull_draft(new_state[:6], p["hull_offset"], p["max_draft"], env.hull_surface_z)
+        draft = self.hull.mean_draft(new_state[:6], env.hull_cell_surface_z)   # footprint-averaged draft
         return new_state, cmds, thrust, draft, wave_elev

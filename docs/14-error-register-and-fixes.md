@@ -84,12 +84,20 @@ Three parallel SISO PIDs (no inner/outer structure). Comments/docs now say so; a
 - **Where:** `forces/hull.py::hull_draft` used `eta[2] − hull_offset`; the foil submergence already rotated by attitude. Now the hull-bottom point (0,0,−hull_offset) is rotated: `z_bottom = η_z − hull_offset·cosφ·cosθ`.
 - **Test:** `test_hull_draft_follows_attitude`.
 
-### E12 — Hull buoyancy acted through the CoG — **FIXED**
+### E12 — Hull buoyancy acted through the CoG — **FIXED (superseded by E20)**
 - **What was wrong:** the centre of buoyancy (≈ hull bottom + half the draft, above the CoG) was ignored, so there was zero hydrostatic roll/pitch stiffness in displacement mode.
 - **Fix:** force applied at `r_cb = (0,0,−(hull_offset + draft/2))`, moment `r_cb × F`.
 - **Test:** `test_hull_buoyancy_gives_restoring_roll_moment`.
 
 ---
+
+### E20 — Lumped hull buoyancy had no waterplane-inertia term (roll 23 % low, pitch 14× too low) — **FIXED**
+- **Found by:** cross-referencing the hull against classical hydrostatics (doc 15): heave stiffness ρ g A_wp was exact, but roll/pitch stiffness should be ρ g ∇ GM with GM = (CB above CoG) + I/∇. The lumped model only had the first term (and used one lever arm for both axes). At the 4 cm rest draft of the 2.0 × 0.30 m hull: roll 152 vs 197 Nm/rad, pitch 152 vs 2163 Nm/rad.
+- **Fix:** `HullHydrostatics` integrates draft over an 11 × 7 grid of footprint cells with the full attitude kinematics and per-cell wave elevation (doc 15 §3). New params `hull_length` (2.0), `hull_beam` (0.30), `hull_x` (0.0) replace `waterplane_area` (= length × beam = 0.6, unchanged); the hull geometry in the viewer follows them.
+- **After:** roll 196.5 (−0.5 %), pitch 2146.6 (−0.8 %) vs theory; force exactly linear in draft; partial emergence handled.
+- **Consequence:** the correct stiffness makes a floating hull ring at ≈ 2.4 Hz with almost no damping, so a **placeholder** `hull_rot_damping` (400 N·m·s/rad × wetted fraction, zero when foilborne) was added; it stands in for radiation damping.
+- **Tests:** `test_hull_hydrostatic_stiffness_matches_metacentric_theory`, `..._linear_in_draft...`, `..._rolled_partially_emerged...`, `test_floating_hull_rocking_is_damped`.
+- **Controller impact:** none in flight (hull dry); gains re-checked, all foilborne metrics unchanged.
 
 ## C. Wave model errors
 
@@ -176,7 +184,7 @@ It carried its own model (flap effectiveness 1.0, speed pinned to 4 m/s, differe
 | Height step (hull to 0.35 m) | n/a | within 2 cm in 8 s |
 | Waves A 0.05 m, λ 5 m: head / beam / oblique 45° max \|φ\| | 0 / 0.6 / 48° (oblique, before struts) | 0.0° / 1.0° / 1.3°, no touchdown |
 | Actuator delay and lag doubled | n/a | metrics unchanged (≤ 0.05 s / 0.1° differences) |
-| Tests | 23 | **42 pass** (≈ 1 min) |
+| Tests | 23 | **46 pass** (≈ 1–2 min) |
 | Physics step cost | ≈ 4 ms | ≈ 3.6 ms (8.6 ms before optimisation, with the extra surfaces) |
 
 Caveats: the "before" oblique-wave figure is from the first corrected-units run before struts existed, not from the original code (which could not be excited by waves at all). The old pitch limit cycle is the old Kp 2 / Kd 2 read as °/° on the corrected plant. Randomised combined-input fuzz was not re-run.

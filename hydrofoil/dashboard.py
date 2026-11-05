@@ -392,7 +392,9 @@ const CONFIG_GROUPS = [
     { key:"izz",  label:"Izz (kg·m²)", min:0.1, max:20,  step:0.1 },
   ]},
   { label: "Hull (buoyancy & drag)", params: [
-    { key:"waterplane_area", label:"Waterplane Area (m²)", min:0.05, max:3,   step:0.05 },
+    { key:"hull_length",     label:"Hull Length (m)",      min:0.5,  max:4,   step:0.1  },
+    { key:"hull_beam",       label:"Hull Beam (m)",        min:0.1,  max:1.5, step:0.05 },
+    { key:"hull_x",          label:"Hull Centre X (m)",    min:-1.0, max:1.0, step:0.05 },
     { key:"max_draft",       label:"Max Draft (m)",        min:0.05, max:1,   step:0.01 },
     { key:"hull_offset",     label:"Hull Above CoG (m)",   min:0,    max:1.5, step:0.05 },
     { key:"hull_drag_coeff", label:"Hull Drag Coeff",      min:0,    max:100, step:1    },
