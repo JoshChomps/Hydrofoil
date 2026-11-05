@@ -65,6 +65,11 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Added placeholder hull roll/pitch damping so the correctly stiff hull does not ring at rest; new params `hull_length`, `hull_beam`, `hull_x`, `hull_rot_damping` (`waterplane_area` now derived).
 - 46 tests pass; foilborne metrics unchanged; gains did not need retuning. Everything remains local (no push), commits on branch `mujoco-viewer`.
 
+### 2026-11-04 — Review packaging
+- Added `tools/audit.py` (portable, reproducible: hydrostatics, linearize, checks, evaluate, sweep-angles, sweep-heave) and `docs/16-review-guide.md` (conventions, equations→code map, assumption ledger, evidence matrix, open questions, unexplained observations).
+- Post-fix cruise values re-measured: trim flap 15.1°, thrust 17.1 N, pitch −0.30°; docs updated (the as-found doc 13 keeps the old figures).
+- Open-loop poles of the corrected plant: +0.25 s⁻¹ lateral spiral-type, +0.029 s⁻¹ undiagnosed slow x-mode.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

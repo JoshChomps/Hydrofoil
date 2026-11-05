@@ -52,7 +52,7 @@ There are **no measured values** anywhere in the repo.
 | roll | 2.0 | 0.0 (keep 0) | 0.2 | 3.5 / 0 / 2.5 |
 | speed | 30.0 | 5.0 | 0.0 | unchanged |
 
-`max_thrust` = 50 N (placeholder). Measured cruise thrust at 4 m/s is ≈ 14 N.
+`max_thrust` = 50 N (placeholder). Measured cruise thrust at 4 m/s is ≈ 17 N (after the 2026-11-04 fixes; ≈ 14 N before).
 
 ### Waves
 `waves_enabled` False; `wave_amplitude` 0.05 m; `wave_wavelength` 5.0 m; `wave_direction` 0° (travel heading, −180…180; 90 = beam seas). **`wave_period` was removed**: the period now follows deep-water dispersion (T = 2π/√(g k) = 1.79 s for 5 m).
@@ -111,8 +111,8 @@ max thrust, and the water density if testing on a lake.
 | Rest draft | 0.041 m |
 | Main-flap lift slope | 10.2 N/deg per half (both halves 20.4 N/deg) |
 | Foil heave stiffness dL/dw | 698 N/(m/s) per half (explicit `heave_damping` = 50 is ~28× smaller) |
-| Trim flap (cruise) | ≈ 14.1° (≈ 72 % of the ±20° limit) |
-| Cruise thrust | ≈ 13–14 N |
+| Trim flap (cruise) | ≈ 15.1° after the fixes (≈ 75 % of the ±20° limit); was 14.1° before the finite-span change |
+| Cruise thrust | ≈ 17.1 N after the fixes (struts add drag); was ≈ 14 N |
 | Minimum foilborne speed (flap-limited) | ≈ 3.1 m/s |
 | Settled pitch | −0.38° |
 | Open-loop eigenvalues | −82.2, −47.2, −22.7, −0.32±0.47j, −0.13±0.98j, −0.025, **+0.178**, 0 ×3 |

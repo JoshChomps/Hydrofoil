@@ -60,9 +60,9 @@
 ## 3. Operating-envelope constraints (derived from the constants; estimates)
 
 - **Minimum foilborne speed** with current geometry ≈ 3 m/s from flap authority alone (doc 03 §7). Throttle min 0 m/s means "no lift, sink" by design.
-- Flap authority: main foil flap ±20° × 0.21 effectiveness = only ±4.2° of effective AoA. Elevator ±20° × 1.0 = ±20° effective, which would hit the polar's stall region (CL_max at 14.4°) — pitch authority is far larger than heave authority. Cruise trim needs ≈ 14–15° of main flap (≈ 72 %), leaving ≈ 5° of headroom for roll differential + heave transients.
+- Flap authority: main foil flap ±20° × 0.21 effectiveness = only ±4.2° of effective AoA. Elevator ±20° × 1.0 = ±20° effective, which would hit the polar's stall region (CL_max at 14.4°) — pitch authority is far larger than heave authority. Cruise trim needs ≈ 15° of main flap (≈ 75 %), leaving ≈ 5° of headroom for roll differential + heave transients.
 - Maximum foil lift at the flap limit scales with V²; at 4 m/s ≈ 400 N vs weight 245 N, i.e. only ~1.6× margin.
-- Thrust: verified the vehicle reaches 4.0 m/s and cruises on ~13–14 N; hull drag at rest draft and 4 m/s would be ~43 N, so takeoff relies on the draft shrinking.
+- Thrust: verified the vehicle reaches 4.0 m/s and cruises on ~17 N (14 N before struts and the finite-span change); hull drag at rest draft and 4 m/s would be ~43 N, so takeoff relies on the draft shrinking.
 - Wave model requires depth ≫ wavelength fraction (deep water); orbital velocity evaluated at the vehicle origin depth, not at each foil.
 
 ## 4. Modelling assumptions and what they exclude

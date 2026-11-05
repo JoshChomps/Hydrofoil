@@ -52,7 +52,7 @@ Modeled after a MyActuator RMD-X8-class direct-drive BLDC over CAN; numbers are 
 | heave | 40 °/m | 6 | 10 | Takeoff 2.9 s, 2 cm settling ≈ 17 s, no overshoot (Ki 15 overshoots; Kp 80 is slower). Integrator still carries the ≈ 14° trim flap |
 | pitch | 1.0 °/° | 0 | 0.1 | Kd > 0.3 only adds flap chatter |
 | roll | 2.0 °/° | **0** | 0.2 | Kd ≥ 1 chatters; Kp ≥ 3.5 uses 13° of flap for a 5° kick |
-| speed | 30 N/(m/s) | 5 | 0 | cruise thrust ≈ 14 N of 50 N |
+| speed | 30 N/(m/s) | 5 | 0 | cruise thrust ≈ 17 N of 50 N |
 
 Procedure: closed-loop sweeps on the corrected plant from a clean settled state (metrics: ISE, residual oscillation, flap total variation and peak, takeoff time, settling, overshoot, bank tracking, wave response, delay/lag-doubling robustness). Details and the earlier contamination pitfall: doc 14 E2.
 The old values (3.5/2.5 roll, 2/2 pitch, 15/1/5 heave) were tuned for a different plant and, once the units were fixed, limit-cycled (pitch) or chattered (roll).
@@ -61,7 +61,7 @@ The old values (3.5/2.5 roll, 2/2 pitch, 15/1/5 heave) were tuned for a differen
 - Algorithm: positional discrete PID, rectangular integral, backward-difference derivative **on measurement** (PI-D), no derivative filter, clamp ±20°, **conditional-integration anti-windup** (fixed).
 - Execution: sample time = integration step (10 ms), ZOH across RK4 stages, then delay (0.02 s) → rate limit (720 °/s) → lag (20 ms).
 - Fixed: rad→deg unit mismatch, surge Kd sign, anti-windup rule, delay-in-steps, gains retuned.
-- Still open: no trim feed-forward (integrator builds the ≈ 14° trim), no speed scheduling (lift ∝ V²), shared main-flap authority between heave and roll, no reference shaping, no derivative filter, exact-state feedback, no formal stability margins.
+- Still open: no trim feed-forward (integrator builds the ≈ 15° trim), no speed scheduling (lift ∝ V²), shared main-flap authority between heave and roll, no reference shaping, no derivative filter, exact-state feedback, no formal stability margins.
 
 ## Pilot interface
 

@@ -30,7 +30,7 @@ Branch `mujoco-viewer`. Tests: `tests/test_method_fixes.py` (new) plus the origi
 | heave | 15 / 1 / 5 °/m | **40 / 6 / 10** | takeoff 9.9 s → 2.9 s; 2 cm settling 62 s → ~16 s; no overshoot; ki 15 overshoots, kp 80 slower |
 | pitch | 2 / 0 / 2 (really 0.035 °/°) | **1.0 / 0 / 0.1** | stable; ISE 2.1; Kd above ~0.3 only adds flap chatter |
 | roll | 3.5 / 0 / 2.5 (really 0.061 °/°) | **2.0 / 0 / 0.2** | 5° disturbance rejected in ~2 s; Kd ≥ 1 chatters; Kp 3.5+ costs 13° of flap for the same job |
-| speed | 30 / 5 / 0 | unchanged | cruise thrust ~14 N, not saturated; Kd sign fixed (E4) |
+| speed | 30 / 5 / 0 | unchanged | cruise thrust ~17 N, not saturated; Kd sign fixed (E4) |
 
 Roll Ki is still 0 (no integral needed; waves can now excite roll, see E12, and the loop is stable). Ki was not re-opened for roll or pitch.
 
