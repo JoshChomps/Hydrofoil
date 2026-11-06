@@ -23,6 +23,13 @@ Done: units fix + retune + committed regression tests (item 1), waves able to ex
 - `estimation/`: complementary/Kalman filter (EKF) from sensor outputs; feed estimator output to the controllers instead of ground truth.
 - **[suggested]** Add a `--noise` option so every controller test can run in both ideal and realistic modes.
 
+## Actuation (doc 17)
+- Move the mixer ahead of the actuators and make limits per physical drive.
+- Drive dynamics in the loop (moteus position PD, current + back-EMF torque limit, hinge moment, rotor inertia), replacing the kinematic `Actuator`.
+- Gain-schedule the flight PIDs by q (constant torque per disturbance, constant loop gain).
+- Firmware torque cap and structure sized for it; bench-measure Kt, R, J_rotor, gearbox η; tow-test hinge moments.
+- Resolve the flap-effectiveness mismatch (0.21 in the sim vs ≈ 0.6–0.75 for a 40 % flap).
+
 ## Model fidelity (suggested)
 - (done) Distributed hull hydrostatics checked against metacentric theory (doc 15). Next: real hull lines, inclining/free-decay measurements, dynamic sinkage/trim, wave-making and the pre-takeoff drag hump.
 - Measured parameters: mass, inertia, CG, foil geometry/positions, hull waterplane/drag, actuator dynamics, thrust curve.

@@ -1,0 +1,183 @@
+# 17 — Control-Surface Drives: moteus r4.11 + BLDC + 20:1 gearbox
+
+How hard the water pushes back on the control surfaces, and what that means for motor current, voltage, power,
+gear ratio and structural stress. Built on top of the existing loops: the flight controller is unchanged and still
+commands surface angles; this layer works out what the hardware has to do to produce them.
+
+Code: `hydrofoil/actuation/` (`hinge.py`, `drive.py`, `loads.py`), `tools/actuator_budget.py`, live read-out in the
+MuJoCo app (`hydrofoil/viewer.py`). Tests: `tests/test_actuation.py`. Figures produced 2026-11-05 with `DEFAULT_PARAMS`.
+
+## 1. The chain and where the load comes from
+
+```
+flight PIDs --(delta_main, delta_roll, delta_elev, virtual)--> mixer --> 3 physical drives
+   left flap  = main - roll        right flap = main + roll        elevator
+each drive:  moteus r4.11 (FOC current loop + position PD)  ->  BLDC  ->  N:1 gearbox (N = 20 now)  ->  surface
+```
+The motor has to supply four things at the surface (positive = trailing edge down = more lift):
+
+| Term | Depends on | Formula (output side) |
+|---|---|---|
+| Steady hinge moment | **boat speed²**, AoA, deflection | flap: `q S_f c_f (C_hα α + C_hδ δ)`; all-moving: `q S c C_L (x_p − x_ac)/c` |
+| Hydrodynamic damping | **boat speed × surface rate** | `B = k_B V`, `M = −B δ̇` (quasi-steady Theodorsen) |
+| Added inertia of water | surface acceleration | `I_added δ̈` (water dragged along with the surface) |
+| Structure, friction, rotor | acceleration, rate sign | `J_struct δ̈`, `τ_f sign δ̇`, and the rotor `J_rotor N² δ̈` |
+
+So yes: the load depends both on how fast the boat goes (q = ½ρV²) and on how fast the surface moves (damping ∝ V δ̇,
+inertia ∝ δ̈). Both effects are in the model.
+
+## 2. Hinge-moment physics (`actuation/hinge.py`)
+
+**Steady coefficients** come from 2-D thin-airfoil theory, solved numerically with a 400-panel lumped-vortex model. It is
+checked against closed forms: C_l = 2π, AC at c/4, and Glauert's flap effectiveness τ = 1 − (θ_h − sin θ_h)/π
+(E = 0.4: 0.7473 vs 0.7478).
+
+| Flap chord E | τ (lift per deflection) | C_hα [/rad] | C_hδ [/rad] |
+|---|---|---|---|
+| 0.2 | 0.549 | −0.499 | −0.925 |
+| 0.3 | 0.660 | −0.627 | −0.967 |
+| 0.4 | 0.747 | −0.745 | −1.014 |
+
+Thin-airfoil theory over-predicts hinge moments of real sections, so the code multiplies by `viscous_factor = 0.8` (PLACEHOLDER).
+It also multiplies by the same Helmbold finite-span factor and free-surface factor that `forces/foil.py` uses for lift.
+
+**Unsteady terms** use quasi-steady Theodorsen with C(k) = 1. With b = c/2 and pivot `a` half-chords from mid-chord:
+`I_added = πρb⁴(1/8 + a²)` and `B = πρb³V(½ − a) − 2πρVb³(a + ½)(½ − a)`. The flap is approximated as an isolated plate hinged
+at its own leading edge (a = −1), which ignores the main element ahead of it. Treat its unsteady numbers as order-of-magnitude.
+
+| Drive | Layout | I_added | J_struct (PH) | B per m/s |
+|---|---|---|---|---|
+| each main flap (0.06 × 0.6 m) | plain flap, hinge 60 % c | 1.8e-3 kg m² | 4e-4 | 0.16 N m s/rad |
+| elevator (0.10 × 0.3 m) | all-moving, pivot 22 % c | 2.7e-3 kg m² | 4e-4 | 0.14 N m s/rad |
+| rotor reflected, 20:1 | — | **2.8e-2 kg m²** | | |
+
+**The motor's own rotor dominates the inertia at 20:1**: J_rotor N² is about 10× the surface plus water. The inertia-matching
+ratio sqrt(J_load/(η J_rotor)) is about 6–7. That is why the current-optimal ratio below is lower than you might expect.
+
+## 3. Key result: the trimmed hinge moment hardly changes with speed, but control moments grow with V²
+
+Closed-loop cruise in calm water (steady state, left flap):
+
+| Speed [m/s] | Trim flap δ [°] | Trim hinge moment [N m] | Extra moment for +5° flap [N m] |
+|---|---|---|---|
+| 3 | 20.0 (saturated, not foiling) | −1.72 | −0.60 |
+| 4 | 15.1 | −2.08 | −1.07 |
+| 5 | 9.8 | −2.09 | −1.67 |
+| 6 | 7.0 | −2.16 | −2.40 |
+| 7 | 5.4 | −2.25 | −3.26 |
+| 8 | 4.4 | −2.36 | −4.25 |
+
+Why this happens: in trim, lift = weight, so q·C_L is fixed. C_L and C_h are both roughly linear in (α, δ), so in trim
+α and δ both scale as 1/q. The hinge moment q·S_f·c_f·C_h is then nearly constant, roughly the trimmed lift times a
+fixed lever (≈ 0.3 c_f here). A **change** in deflection, though, costs ΔM = q S_f c_f C_hδ Δδ, which grows with V².
+
+What this means:
+- **Holding torque** (thermal, continuous current) is set by **weight**, not speed: about 2–2.4 N m per main flap.
+- **Manoeuvring and gust torque** grows with V². The PID gains are fixed in degrees per metre, so at 8 m/s each degree of flap
+  makes 4× the lift (an over-aggressive loop) and needs 4× the torque. **Gain scheduling the flight loop by 1/q fixes both**:
+  the commanded Δδ shrinks as 1/V², so actuator torque per disturbance stays roughly constant across speed.
+- **Low speed is a lift problem, not a torque problem**: at 3 m/s the flap saturates at the controller's 20° limit and the
+  boat cannot take off.
+
+## 4. Budget against the hardware (`tools/actuator_budget.py`)
+
+Hardware assumptions:
+
+| Item | Value | Status |
+|---|---|---|
+| moteus r4.11 supply | 10–44 V (24 V assumed) | sourced (mjbots docs) |
+| moteus phase current | 100 A peak; 10–12 A continuous bare, 20–32 A heatsunk | sourced (sources disagree on continuous) |
+| moteus peak power | 900 W @ 30 V | sourced |
+| Motor | mj5208-like: Kv 330, 1.7 N m peak, 7500 rpm | listing; R_ll 0.10 Ω and J_rotor 7e-5 kg m² are **PLACEHOLDERS** |
+| Kt = Ke | 60/(2π Kv) = 0.0289 N m/A | convention, **verify on the bench** |
+| Gearbox | 20:1, η 0.85, rated 30 N m, output friction 0.05 N m | **PLACEHOLDERS** |
+| Output shaft | Ø 8 mm, 316 SS (shear yield ≈ 140 MPa, SF 2) | **PLACEHOLDER** |
+
+Results at N = 20, V_bus = 24 V (worst of left/right; the elevator is in its own row):
+
+| Scenario | Flap δ range [°] | τ_out peak / rms [N m] | Surface rate peak [°/s] | I peak / rms [A] | V needed peak [V] | P_bus peak [W] |
+|---|---|---|---|---|---|---|
+| takeoff, calm, 4 m/s | 0 … 20 | 2.5 / 2.1 | 240 | 11.2 / 3.8 | 3.0 | 24 |
+| cruise 4 m/s, head seas | 0 … 20 | 2.8 / 2.1 | 240 | 11.2 / 3.8 | 3.0 | 25 |
+| cruise 4 m/s, beam seas | 0 … 22 | 2.7 / 2.1 | 241 | 11.2 / 3.8 | 3.0 | 25 |
+| ±8° bank manoeuvre | −4 … **35** | 6.4 / 2.2 | 240 | 18.6 / 4.0 | 4.1 | 61 |
+| cruise 6 m/s, head seas | 0 … 20 | 3.2 / 2.3 | 240 | 11.2 / 4.0 | 3.0 | 25 |
+| elevator (all cases) | −2 … 4 | 0.2 / 0.07 | 51 | 3.2 / 0.2 | 0.6 | 3 |
+
+Gear-ratio sweep (worst drive over all scenarios):
+
+| N | I peak [A] | I rms [A] | V peak [V] | P peak [W] | Motor rpm peak | Fails |
+|---|---|---|---|---|---|---|
+| 5 | 51.5 | 16.0 | 5.8 | 232 | 200 | continuous current |
+| 10 | 25.2 | 8.0 | 3.7 | 80 | 401 | — |
+| 15 | 18.8 | 5.3 | 3.7 | 62 | 601 | — |
+| **20** | **18.6** | **4.0** | 4.1 | 61 | 802 | — |
+| 30 | 20.8 | 2.8 | 5.1 | 74 | 1203 | — |
+| 40 | 24.5 | 2.2 | 6.4 | 106 | 1603 | — |
+
+What the numbers say:
+1. **20:1 is a good choice.** Peak current is lowest around 15–20:1. Below that, holding torque dominates and current goes up.
+   Above it, accelerating the reflected rotor inertia dominates. RMS (thermal) current keeps falling with N, so 20–30:1 is
+   the sensible window. At 5:1 the continuous rating is exceeded.
+2. **The controller and motor are lightly used.** About 4 A rms against 12 A continuous, and about 19 A peak against 100 A.
+   Voltage needed is about 4 V against 21.6 V usable, because the surfaces only move at about 240°/s, roughly 800 rpm at the
+   motor against 7500 rpm available. Bandwidth is limited by the outer flight loop and the placeholder 20 ms lag, not by
+   the drive.
+3. **Electrical power is negligible**: about 2–3 W per drive average (half of that is board idle) against about 70 W of
+   propulsion (17 N × 4 m/s). Regeneration is about 0.1–0.3 J per manoeuvre, so bus pump-up is not an issue on a battery.
+   On a bench supply that cannot sink current, still fit bus capacitance or a brake resistor.
+4. **The elevator is almost unloaded** because its pivot (22 % c) sits just ahead of the AC (25 % c). Pivot placement is the
+   biggest single lever on hinge moment for an all-moving surface. Pivot ahead of the AC weathervanes the surface toward
+   zero lift if the drive goes limp (fail-safe). Pivot behind the AC is divergent: the surface runs to its stop. The 3 %
+   chord margin assumed here is a PLACEHOLDER. The real AC moves with flap, Reynolds number and free surface, so measure
+   it and keep a margin.
+5. **Stress: design for what the motor can do, not for what the water does.** The worst hydrodynamic case puts 6.4 N m on
+   the output (64 MPa in an 8 mm shaft, inside SF 2). At full current the drive can put out
+   1.7 × 20 × 0.85 ≈ **29 N m**. That is 4.5× the water load, about 290 MPa in that shaft (yields), and right at the
+   placeholder gearbox rating. A jam, a hard stop, a rope or a weed strike, or a large position error at high kp will
+   apply it. Cap it in firmware: set `servo.max_current_A` or the per-command `maximum_torque` (around 10 N m at the output
+   gives 1.6× the worst load). Then size the shaft, keys, linkage and flap root for that cap.
+
+## 5. Things this exposed in the existing model
+
+- **The mixing is ahead of the hardware limits.** The PID clamps each virtual channel to ±20°, but left/right = main ∓ roll,
+  so in the bank manoeuvre a physical flap reached **35°**. Limits, rate limits and lags belong to the three physical
+  drives, after the mixer. The current `Actuator` objects sit on the virtual channels.
+- **Flap effectiveness mismatch.** `MAIN_FOIL_FLAP_EFFECTIVENESS = 0.21`, but a 40 % plain flap gives τ ≈ 0.75 in theory,
+  or roughly 0.5–0.6 in practice. The sim therefore needs about 3× the deflection a real 40 % flap would. That inflates
+  hinge moments for a given lift, so these budgets are conservative. The open question is whether 0.21 was meant to model
+  a part-span flap. If so, `main_flap_frac` and the flap span should say so.
+- **The 20° flap saturation at takeoff** shows up in every scenario (δ pinned at 20° during the climb). It is a flight-control
+  limit, not a drive limit, but it is the binding constraint on takeoff speed.
+
+## 6. Failure modes to design for
+
+| Event | Effect | Mitigation |
+|---|---|---|
+| Drive limp or fault (moteus fault, brown-out) | 20:1 planetary is back-drivable, so the plain flap trails to zero hinge moment and lift is lost, and the boat settles onto the hull. All-moving with pivot ahead of the AC does the same. | Acceptable if the pivot is ahead of the AC; keep it that way. |
+| Pivot aft of the AC | Divergent: surface slams to its stop and the boat pitches violently | Verify the AC; mechanical stops sized for the full drive torque |
+| Current-limited during a gust | Surface lags its command, and the outer loop sees extra delay | Gain-schedule by q; size headroom (currently 5×) |
+| Water ingress / thermal | 4 A rms is easy, but the motor is sealed in a pod | Thermal path to hull/water; use moteus temperature telemetry |
+| Over-torque (jam, strike) | Up to 29 N m on the shaft | Firmware torque cap, shear pin or slip clutch |
+
+## 7. Next step: close the loop through the drive (not done yet)
+
+Right now the drive model only checks trajectories made by the kinematic `Actuator` (720°/s, 20 ms lag). To make
+saturation feed back into flight:
+1. Move the mixer ahead of the actuators: the PIDs produce virtual commands, the mixer produces three physical surface
+   commands, then three drives.
+2. Give each drive a state (δ, δ̇) and integrate it with the rigid body:
+   `(J_struct + I_added + J_rotor N²) δ̈ = N η τ_m − B(V) δ̇ − τ_f sign δ̇ + M_steady(V, α, δ)`.
+3. Model the moteus position mode: `τ_m = clip(kp (δ_cmd − δ) − kd δ̇ + τ_ff, ±τ_max)`, with
+   `τ_max = min(Kt I_max, Kt (k V_bus − Ke ω_m)/R)`. Torque falls off with speed (the voltage limit), so slew rate and
+   lag emerge from the physics instead of being set by hand.
+4. Optional feed-forward `τ_ff = −M_steady/(N η)` using the hinge model, so the position loop only handles the error.
+5. Replace the 20 ms latency placeholder with the real CAN-FD cycle (about 1 ms for a moteus query/command at 1 kHz),
+   plus the flight computer's loop period.
+6. Gain-schedule the flight PIDs by q_ref/q.
+
+## 8. What to measure to replace placeholders
+
+Motor R and Kv (moteus_tool calibration), Kt (torque on a lever plus a scale), rotor inertia (spin-down or datasheet).
+Gearbox efficiency both ways and backlash. Surface mass and inertia (CAD). Flap hinge-moment coefficients, or the
+elevator AC (tow test with a load cell on the drive). Continuous current with the real pod's cooling.

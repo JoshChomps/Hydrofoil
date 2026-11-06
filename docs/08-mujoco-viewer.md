@@ -1,40 +1,52 @@
-# 08 — MuJoCo Viewer (replaces the Unity visualizer)
+# 08 — MuJoCo App (the one interactive front-end)
 
-The Unity project, the UDP bridge (`stream.py`, `control_uplink.py`) and `sim_realtime.py` were removed on branch `mujoco-viewer`
-(recoverable from git history, e.g. `git show 841d501:unity-visualizer/...`). The 709 MB hull `.blend` and the WSL/Unity networking
-setup are no longer needed.
+`python -m hydrofoil.viewer` is now the only interactive tool. It replaced the Unity visualizer (removed 2026-11-03) and the
+browser dashboard (removed 2026-11-05; recover with `git show 58c148e:hydrofoil/dashboard.py`). The motivation: the two front-ends
+ran the same physics but in separate processes with separate live params and duplicated pilot logic, so they could drift apart.
+There is now one process, one params dict and one pilot.
 
 ## Design
-`hydrofoil/viewer.py` runs `VehiclePhysics` **in-process** and uses MuJoCo only as a renderer: every frame the pose is written into
-`qpos` and `mj_forward` is called; `mj_step` is never used (gravity is off in the MJCF). Python stays the sole physics authority.
+`hydrofoil/viewer.py` runs `VehiclePhysics` **in-process** and uses MuJoCo only as renderer and UI. Every frame the pose is
+written into `qpos` and `mj_forward` is called. `mj_step` is never used (gravity is off in the MJCF). Python stays the sole
+physics authority.
 
-- `build_mjcf(params)` generates the model from the same params dict as the sim, so geometry in `DEFAULT_PARAMS` shows up automatically:
-  hull box (`hull_length` × `hull_beam`, `hull_x`, `hull_offset` above CoG), main strut, cross bar, left/right main foil halves each with a hinged 40 % flap, elevator on its own strut
-  (all-moving, hinged), red CoG marker, an infinite checker seabed at z = -3 m for motion cues, and a translucent water plane (mocap body) that follows the vehicle in x/y and rides the wave elevation.
-- `MujocoPose.apply(state, cmds, wave_elev)` maps NED/body to MuJoCo Z-up. World: `D = diag(1,-1,-1)`; body frame (x fwd, y left, z up) vs sim body (x fwd, y stbd, z down): `B = diag(1,-1,-1)`;
-  `R_mj = D R_ned B`, `p_mj = D p_ned`. Flap hinges use `-delta` because a positive MuJoCo rotation about +y (left) raises the trailing edge.
-  Verified numerically: foil, elevator and hull positions match `eta + R r_attach` mapped through `D` to 4 decimals; a +15 deg main flap lowers the trailing edge.
-- `Pilot` replaces the Unity stick. Keys are handled via the viewer's `key_callback` (GLFW key codes), one step per key event:
-  Up/Down height +-0.02 m (-0.3 to 1.0), Left/Right bank +-1 deg (+-8 deg, springs back at 10 deg/s), `[` `]` speed -/+0.25 m/s (0 to 10), `R` reset.
-- Loop: `target_t = wall_elapsed * speed`; step physics until caught up (cap 50 steps/frame, backlog dropped), apply pose, update the on-screen text, `sync`, ~60 fps.
-  A tracking camera follows the vehicle (distance 4.5 m, az 140, el -18); the usual MuJoCo mouse controls still work.
-- Overlay text shows time, FOILBORNE/DISPLACEMENT, speed vs target, hull height vs target, roll/pitch, the three flap angles, thrust/draft and `phi_ref`.
+- **Geometry**: `build_mjcf(params)` generates the model from the same params dict as the sim: hull box (`hull_length` × `hull_beam`,
+  `hull_x`, `hull_offset` above CoG), main strut, cross bar, left/right main-foil halves each with a hinged `main_flap_frac` flap,
+  hinged all-moving elevator, red CoG marker, checker seabed at z = −3 m, and a translucent water plane (mocap) riding the wave elevation.
+- **Sliders**: the `SLIDERS` table becomes zero-gain MuJoCo actuators. They exist only so the viewer's right-hand **Control** panel
+  draws sliders; nothing is ever stepped. Their `ctrl` values are copied into the live params every frame. Covered: height/bank/speed
+  references, wave amplitude/length/direction (amplitude 0 = calm; a change rebuilds the wave object), live PID gains (heave
+  Kp/Ki/Kd, pitch Kp/Kd, roll Kp/Kd; written straight into the running PIDs, so no restart is needed), and the drive's gear ratio and bus voltage.
+  Changing Ki mid-run rescales the stored integral (the PID stores ∫e, not Ki∫e), so expect a small bump.
+- **Keys** (`Pilot`) write into the same slider values, so keys and sliders are one source of truth: Up/Down height ±0.02 m,
+  Left/Right bank ±1° (±8°, springs back at 10°/s; a bank set with the slider holds), `[` `]` speed ∓0.25 m/s, `R` reset.
+- **Plots** (`Plots`, `MjvFigure` through `viewer.set_figures`): left edge, rolling 15 s at 30 Hz. Height vs target, roll/pitch,
+  the three physical surface angles, and the three drive currents.
+- **Drive read-out** (`DriveMonitor`, doc 17): per step, the hinge moment, motor current and bus power for left flap, right flap and
+  elevator, with a limit flag.
+- **Pose mapping** (`MujocoPose.apply`): world `D = diag(1,−1,−1)`, body `B = diag(1,−1,−1)`, `R_mj = D R_ned B`, `p_mj = D p_ned`;
+  surface hinges get `−delta` of the *physical* (mixed) angles, because positive MuJoCo rotation about +y (left) raises the trailing edge.
+- **Loop**: `target_t = wall_elapsed × speed`; step physics until caught up (cap 50 steps/frame, backlog dropped), apply the pose
+  under the viewer lock, update text/figures, `sync`, ~60 fps. Tracking camera (4.5 m, az 140, el −18); normal MuJoCo mouse controls.
 
 ## Run
 ```bash
-pip install mujoco          # already in requirements.txt
-python -m hydrofoil.viewer [--waves] [--wave-dir 45] [--speed 1.0] [--duration 600]
+python -m hydrofoil.viewer [--waves] [--wave-dir 90] [--speed 1.0] [--duration 600]
 ```
-`--wave-dir` is the wave travel direction in degrees from +x (90 = beam seas, which now genuinely load the left and right foils differently). The wave period follows deep-water dispersion.
-Click the viewer window so it has keyboard focus. Needs a desktop with OpenGL (runs natively on Windows, no WSL).
+Click the window for keyboard focus; open the right panel (Tab or the arrow) → **Control** for sliders. Needs a desktop with OpenGL
+(runs natively on Windows). It is not a web server, so it has no `.claude/launch.json` entry.
 
 ## Tested
-Model compiles (nq = 10), pose and flap-sign checks above, and a 6 s smoke run of the viewer exited cleanly. **Not tested:** key events on a real keyboard
-(key codes are GLFW's: 265/264 up/down, 262/263 right/left, 91/93 brackets, `R`), long runs, `--waves` visual quality, other platforms.
+Model compiles with 15 slider actuators; the slider/key/spring-back logic, the drive monitor and the figure builder were exercised
+headlessly over 15 s of flight (foilborne, ≈3 A per flap at cruise). The window opened and ran 20 s and exited cleanly.
+**Not tested by hand:** dragging the Control sliders (relies on the passive viewer writing UI changes into the shared `MjData.ctrl`),
+how the figures look on screen, real key events, other platforms.
+
+## Gone with the dashboard
+Vehicle-config editing at runtime (mass, geometry, dt): edit `DEFAULT_PARAMS` and restart. A geometry change needs a rebuilt MJCF
+anyway. The HTTP/WebSocket API (doc 07 §3) no longer exists. `viz.py` (offline Plotly report for `sim.py`) is unchanged.
 
 ## Known limits / ideas
-- Visual only: no wave-surface mesh (a flat plane moves vertically with the wave elevation at the vehicle), no spray, no flow lines.
-- The viewer shares `DEFAULT_PARAMS` but is not wired to the dashboard sliders; run one or the other. A shared live-params object could unify them.
-- The dashboard (`hydrofoil.dashboard`) remains the tool for plots. The same pose code could render offline video with `mujoco.Renderer`.
-- The struts drawn in the viewer are visual only (fixed size); the physics struts use `main_strut_chord`/`elev_strut_chord` and a wetted length from depth.
-- With the 2026-11-04 fixes the bank command works: ±8° bank holds height and turns the boat slowly (turn rate depends on the placeholder strut chords).
+- Flat moving water plane instead of a wave mesh; no spray, flow lines or track trail.
+- Struts are drawn at fixed size; the physics struts use `main_strut_chord`/`elev_strut_chord` and the wetted length.
+- Offline video: the same `MujocoPose` with `mujoco.Renderer`.

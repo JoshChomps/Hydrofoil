@@ -213,6 +213,14 @@ class Foil:
     def _lift_slope_factor(self, ar: float) -> float:
         return 1.0 / (1.0 + self._a2d / (np.pi * self.oswald_efficiency * ar))
 
+    def flow(self, nu: np.ndarray, r_attach: np.ndarray | None = None) -> tuple[float, float]:
+        """In-plane flow speed [m/s] and geometric angle of attack [rad, excl. flap] at the foil
+        (same kinematics as generalized_force; used by the actuator load model)."""
+        r = self.r_attach if r_attach is None else r_attach
+        V_foil = nu[:3] + _cross(nu[3:], r)
+        V_n = float(V_foil @ self.normal)
+        return float(np.hypot(V_foil[0], V_n)), float(np.arctan2(V_n, V_foil[0]) + np.radians(self.geometry.aoa_offset))
+
     def generalized_force(
         self,
         nu: np.ndarray,

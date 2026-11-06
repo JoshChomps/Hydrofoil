@@ -8,51 +8,41 @@ Requirements: Python ≥ 3.10 (tested 3.12).
 cd "D:/Coding_Projects/Hydrofoil Sim"
 python -m venv .venv
 .venv/Scripts/activate            # Windows (bash: source .venv/Scripts/activate)
-pip install -r requirements.txt   # numpy scipy matplotlib fastapi uvicorn[standard]
+pip install -r requirements.txt   # numpy scipy matplotlib plotly mujoco pytest
 ```
 Run all commands from the repo root so `import hydrofoil...` resolves (there is no installable package / `pyproject.toml`).
 
-## 2. Run the dashboard (main tool)
+## 2. Run the app (MuJoCo)
 
 ```bash
-python -m hydrofoil.dashboard
-```
-Open <http://localhost:8000> (needs internet for the Plotly CDN script). Press **Run**.
-
-Sequence: the vehicle starts at rest floating (draft ≈ 4 cm, pitch 2°), surge PID accelerates toward the target speed, heave PID
-raises the flaps to generate lift, the hull rises until draft = 0 → status flips from **DISPLACEMENT** to **FOILBORNE**.
-
-### Panels
-- **Left, LIVE CONTROLS tab**: ① flight target (hull height, target pitch, target roll), ② propulsion (target speed, speed gains, max thrust),
-  ③–⑤ PID gains for heave/pitch/roll, ⑥ waves.
-- **VEHICLE CONFIG tab**: mass/inertia, hull, main foil, elevator, dt and duration.
-- **Right**: roll front-view, side profile, depth gauge; charts (depth, speed & thrust, angles, flap deflections, last 20 s); telemetry strip.
-
-### What applies live vs. needs restart
-| Change | Live? |
-|---|---|
-| Hull height (`flying_height`), target roll (`phi_ref`), keyboard stick | **live** |
-| Everything else (speed target, gains, waves, geometry, `theta_ref`, dt) | press **Apply & Restart** |
-Run/Stop/Reset: Reset restores `DEFAULT_PARAMS` and clears charts. The run auto-stops at `t_end` (default 60 s).
-
-### Keyboard
-W/↑ climb, S/↓ dive (0.15 m/s of target), A/← bank left, D/→ bank right (20 °/s, ±10°, springs to 0 on release). Bank is tracked well up to the ±8° cap after the 2026-11-04 fixes (doc 14); larger values have not been re-tested.
-
-## 3. 3D viewer (MuJoCo)
-
-```bash
-python -m hydrofoil.viewer                    # calm water, real time
-python -m hydrofoil.viewer --waves --speed 2  # Airy wave (A 0.05, λ 5, T from dispersion), 2x speed
+python -m hydrofoil.viewer                         # calm water, real time
+python -m hydrofoil.viewer --waves --speed 2       # Airy wave (A 0.05, λ 5, T from dispersion), 2x speed
 python -m hydrofoil.viewer --waves --wave-dir 90   # beam seas (excites roll)
 ```
-Click the window for keyboard focus: Up/Down height, Left/Right bank, `[` `]` speed, `R` reset. Details in doc 08.
+Sequence: the vehicle starts at rest floating (draft ≈ 4 cm, pitch 2°). The surge PID accelerates toward the target speed and
+the heave PID raises the flaps; the mode text flips from **DISPLACEMENT** to **FOILBORNE** once the hull is dry.
+
+- **Keys** (click the window first): Up/Down height, Left/Right bank (springs back), `[` `]` speed, `R` reset.
+- **Sliders**: right panel → **Control**: references, waves, PID gains and the drive's gear ratio / bus voltage, all live.
+- **Plots** on the left: height vs target, roll/pitch, surface angles, drive currents (last 15 s).
+- **Top-right text**: state, and per drive the hinge moment, motor current and bus power, with a limit flag.
+Geometry/mass changes: edit `hydrofoil/params.py` and restart. Details in doc 08.
+
+## 3. Actuator budget
+
+```bash
+python tools/actuator_budget.py                  # 5 scenarios at N = 20, then a gear-ratio sweep
+python tools/actuator_budget.py --ratios 15 20 25 --vbus 36
+```
+Prints per drive the deflection range, hinge moment, output torque, rate, current, voltage, bus power, regen energy and
+pass/fail against the moteus/motor/gearbox/shaft limits. Assumptions and interpretation: doc 17.
 
 ## 4. Headless batch (legacy model)
 
 ```bash
 python -m hydrofoil.sim
 ```
-Runs closed-loop and zero-flap open-loop 90 s cases from rest on the **same physics as the dashboard** (it is now a thin wrapper over `VehiclePhysics`), writes PNGs and HTML to `data/` and opens them (WSL-aware; falls back to the default browser).
+Runs closed-loop and zero-flap open-loop 90 s cases from rest on the **same physics as the app** (it is now a thin wrapper over `VehiclePhysics`), writes PNGs and HTML to `data/` and opens them (WSL-aware; falls back to the default browser).
 
 ## 5. Tests
 

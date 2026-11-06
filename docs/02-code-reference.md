@@ -6,7 +6,7 @@ Repo layout (excluding Unity assets/settings):
 README.md, requirements.txt, .gitignore
 data/foil_tables/naca0009_xflr5_re2700000.dat
 hydrofoil/
-  vehicle.py  dashboard.py  params.py  constants.py  viewer.py  sim.py  viz.py  PROJECT_STATE.md   (sim_realtime/stream/control_uplink removed)
+  vehicle.py  params.py  constants.py  viewer.py  sim.py  viz.py  PROJECT_STATE.md   (sim_realtime/stream/control_uplink removed)
   dynamics/   rigid_body.py  kinematics.py
   forces/     foil.py  hull.py  buoyancy.py
   control/    pid.py  surge.py  actuator.py
@@ -42,7 +42,12 @@ params ─► VehiclePhysics.step(state, t, wave)
   - `physics_rhs(state, cmds, thrust, env=None)` → 12-vector derivative (`env` is a `WaveSample`; None = calm). Includes the two struts (side force) and C_A.
   - `step(state, t, wave, cmds_override=None)` → `(new_state, cmds, thrust, draft, wave_elev)`; RK4, safety net. `draft` is measured on the **new** state. `cmds_override` bypasses the controller (open loop).
 
-## `hydrofoil/dashboard.py` (1060 lines) — FastAPI app + embedded HTML/JS
+## `hydrofoil/actuation/` — control-surface drives (doc 17)
+- `hinge.py` — `thin_airfoil_coeffs` (lumped-vortex thin airfoil: C_l, AC, flap τ, C_hα, C_hδ), `SurfaceGeometry`, `HingeMoment` (steady, damping, added inertia; flap or all-moving).
+- `drive.py` — `MotorSpec`, `ControllerSpec` (moteus r4.11), `GearSpec`, `DriveSpec`; `electrical_demand`, `budget`, `limits_at_output`.
+- `loads.py` — mixer to physical drives (`drive_angles`), `surface_models(params)`, `steady_moments`, `output_torque`.
+
+## `hydrofoil/dashboard.py` — REMOVED 2026-11-05 (folded into `viewer.py`, doc 08). Historical notes below.
 - `DEFAULT_PARAMS` — now imported from `hydrofoil/params.py` (doc 04).
 - `SimRunner` — owns params, a thread, a lock and a state dict.
   `start/stop/restart_with(params)/set_live_params(updates)/get_state`. `_run()` loops `vp.step`, publishes

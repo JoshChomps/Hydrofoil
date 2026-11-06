@@ -40,6 +40,8 @@ Any subset of keys. Values are clamped (height −0.3…1.0 m; speed 0…10 m/s;
 
 ## 3. Dashboard HTTP / WebSocket (port 8000)
 
+> **Removed 2026-11-05** with the dashboard (doc 08). Kept below for history.
+
 | Method | Path | Body | Effect |
 |---|---|---|---|
 | GET | `/` | – | Dashboard HTML |
@@ -57,9 +59,9 @@ Note these are **not** the same units as the UDP packet (angles in degrees here,
 ## 4. CLI
 
 ```
-python -m hydrofoil.dashboard
 python -m hydrofoil.sim
-python -m hydrofoil.viewer [--speed X] [--duration 600] [--waves]      # MuJoCo (branch mujoco-viewer)
+python -m hydrofoil.viewer [--speed X] [--duration 600] [--waves]      # the app (doc 08)
+python tools/actuator_budget.py [--ratios 10 20 30] [--vbus 24]
 pytest tests/
 ```
 Viewer keys: Up/Down height, Left/Right bank, [ ] speed, R reset.

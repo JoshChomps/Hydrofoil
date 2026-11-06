@@ -70,6 +70,12 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Post-fix cruise values re-measured: trim flap 15.1°, thrust 17.1 N, pitch −0.30°; docs updated (the as-found doc 13 keeps the old figures).
 - Open-loop poles of the corrected plant: +0.25 s⁻¹ lateral spiral-type, +0.029 s⁻¹ undiagnosed slow x-mode.
 
+### 2026-11-05 — One app (MuJoCo) and the actuator drive model
+- Folded the browser dashboard into the MuJoCo app: sliders (zero-gain actuators in the Control panel) for references, waves, live PID gains and drive settings; rolling plots via `set_figures`; keys and sliders share one value. Removed `dashboard.py`, fastapi/uvicorn, and `.claude/launch.json` (no web server left).
+- Added `hydrofoil/actuation/`: thin-airfoil hinge coefficients (validated vs 2π, c/4, Glauert τ), quasi-steady Theodorsen damping and added inertia, moteus r4.11 + BLDC + gearbox electrical model, per-drive loads after the mixer. `tools/actuator_budget.py` runs 5 scenarios and a gear-ratio sweep.
+- Findings (doc 17): the trimmed hinge moment is ≈ constant with speed (≈ 2.1–2.4 N m per main flap) while the moment per degree grows with V². 20:1 sits at the peak-current optimum, with ≈ 4 A rms / 19 A peak against 12 A / 100 A. The drive can make 29 N m, 4.5× the worst water load, so cap torque in firmware. The mixer sits ahead of the limits (a flap reached 35°). Flap effectiveness 0.21 conflicts with thin-airfoil 0.75.
+- All local, no push.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

@@ -6,7 +6,7 @@ A Python 6-DOF physics simulation (Fossen notation) of a **fully submerged
 T-foil hydrofoil boat**: a hull riding above the water on struts, a main foil
 split into left/right halves (differential flap = roll authority), and an aft
 elevator (pitch authority). It is closed-loop with three independent PID loops (not a true cascade), has a
-live browser dashboard, and a native MuJoCo 3D viewer.
+native MuJoCo app (3D view, sliders, plots, actuator-load read-out).
 Built for the UBC Okanagan Marine Robotics Hydrofoil Club (per README).
 
 Python is the sole physics authority. The MuJoCo viewer is a renderer plus a keyboard pilot input;
@@ -16,8 +16,8 @@ it never simulates anything (Unity and the UDP bridge were removed on branch `mu
 
 | Entry point | Purpose | Uses `vehicle.py`? |
 |---|---|---|
-| `python -m hydrofoil.dashboard` | FastAPI + WebSocket app on `localhost:8000`, sliders, live plots, keyboard "stick". The actively developed entry point. | yes |
-| `python -m hydrofoil.viewer` | MuJoCo 3D viewer, in-process, keyboard pilot (replaced the Unity/UDP path). | yes |
+| `python -m hydrofoil.viewer` | The interactive app: MuJoCo 3D view, sliders (references, waves, gains, drive), live plots, keyboard pilot, drive currents (doc 08). Replaced Unity and the browser dashboard. | yes |
+| `python tools/actuator_budget.py` | Hinge moment → motor torque/current/voltage/power per drive, gear-ratio sweep (doc 17). | yes |
 | `python -m hydrofoil.sim` | Headless batch run (20 s), saves PNG + Plotly HTML into `data/`. Older, simpler model. | **no** (own model) |
 
 ## What exists (inventory)

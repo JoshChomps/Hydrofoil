@@ -55,4 +55,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Roll/pitch damping of the floating hull [N*m*s/rad at full draft], scaled by wetted fraction. PLACEHOLDER
     # standing in for radiation damping (~0.2 of critical in pitch at rest draft).
     "hull_rot_damping": 400.0,
+
+    # Control-surface drives (moteus r4.11 + BLDC + gearbox), see hydrofoil/actuation and docs/17.
+    # Layout: "flap" = 40 % plain flap on each main-foil half (as drawn in the viewer);
+    # "all_moving" = whole surface rotates about pivot_frac * chord from the LE.
+    "main_actuation": "flap", "main_flap_frac": 0.4, "main_pivot_frac": 0.22,
+    "elev_actuation": "all_moving", "elev_pivot_frac": 0.22,   # PLACEHOLDER pivot just ahead of the AC (weathervane-stable)
+    "main_surface_inertia": 4e-4, "elev_surface_inertia": 4e-4, # kg m^2 about the hinge, PLACEHOLDER (composite)
+    "gear_ratio": 20.0,
 }

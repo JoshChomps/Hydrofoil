@@ -1,14 +1,15 @@
 # Hydrofoil Sim
 
 Python 6-DOF physics simulation (Fossen notation) of a fully-submerged T-foil
-hydrofoil, with a live browser dashboard and a native MuJoCo 3D viewer. Built for UBC Okanagan Marine Robotics Hydrofoil Club.
+hydrofoil, with a native MuJoCo app (3D view, sliders, live plots, actuator loads). Built for UBC Okanagan Marine Robotics Hydrofoil Club.
 
 ## What's here
 
 - `hydrofoil/` — the Python simulation. `vehicle.py` is the canonical physics
   (6-DOF rigid body, strip-theory foils, hull buoyancy/drag, wave coupling,
-  PID control). `dashboard.py` is the interactive browser UI. `viewer.py` is
-  the MuJoCo 3D viewer (render-only; the physics stays in `vehicle.py`).
+  PID control). `viewer.py` is the interactive MuJoCo app (render + UI only;
+  the physics stays in `vehicle.py`). `actuation/` models the moteus/BLDC/gearbox
+  surface drives (hinge moment, current, voltage, stress; docs/17).
   `params.py` holds `DEFAULT_PARAMS`.
 - `docs/` — full documentation, math audit and roadmap (start at `docs/README.md`).
 - `tests/` — pytest unit tests (`test_forces.py`, `test_actuator.py`).
@@ -20,15 +21,15 @@ hydrofoil, with a live browser dashboard and a native MuJoCo 3D viewer. Built fo
 ```bash
 pip install -r requirements.txt
 
-# Browser dashboard (sliders for every param, live plots) → localhost:8000
-python -m hydrofoil.dashboard
-
 # Tests
 pytest tests/
 
-# Native 3D viewer (MuJoCo). Click the window, then:
-#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset
+# The app (MuJoCo). Click the window, then:
+#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset; sliders in the right panel -> Control
 python -m hydrofoil.viewer [--waves] [--speed 1.0]
+
+# Actuator budget (hinge moment -> motor current/voltage, gear-ratio sweep)
+python tools/actuator_budget.py
 ```
 
 ## Known state / heads-up for anyone picking this up
