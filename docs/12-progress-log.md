@@ -80,6 +80,12 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - `actuation/servo.py`: per physical drive moteus PD + current/back-EMF/firmware-cap limits + gearbox + rotor/water/structure inertia + hinge moment, 1 ms sub-steps, mechanical stops; mixer moved ahead of the limits. Default `actuator_model = "servo"`; legacy `"kinematic"` kept. Optional q gain schedule (off).
 - Flight metrics essentially unchanged with the gains as they were (doc 17 §7); a 4× weaker drive degrades gracefully; the limp-drive test confirms the fail-safe. The app shows the drives' own telemetry. 57 tests pass. Local only.
 
+### 2026-11-06 — Audit verified against the original code
+- New doc 18 and `tools/verify_original_audit.py`: every claim in docs 13/14/17 re-checked on commit 841d501 (original code) in an isolated interpreter.
+- Confirmed: 7 errors (E1, E2, E3, E12, E13, E15, F1), 2 omissions (E7, E10), 2 latent errors (E4, E5), 4 minor (E8, E9, E11, E16); 5 items were not errors or not in the original.
+- My claims corrected: E7 "energy not conserved" (wrong: νᵀCν = 0), E14 (AiryWave had `direction`; the original "Ki 0.05 blew up" comment is not reproducible), doc 13 W7 (no common limit; the opposite problem), the flap-effectiveness "conflict" (inboard half-span), E2's before-figures (8.5 s / 70.6 s).
+- Found and fixed my own error: the hinge model used the full 0.6 m span for a 0.3 m inboard flap (`main_flap_span_frac`). Hinge loads and currents halved; the current-optimal ratio is ≈ 15:1 (10–20 flat); doc 17 refreshed; the viewer draws the flap inboard. 57 tests pass. Local only.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

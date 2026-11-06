@@ -23,7 +23,7 @@ Scripts were throwaway and are not in the repo; each result below says how to re
 4. **Heave settles in ~60–90 s, not seconds.** Takeoff (draft → 0) is complete by ≈ 10 s and u reaches 4.0 m/s, but z error is 0.36 m at 15 s,
    0.15 m at 30 s, 0.09 m at 40 s, 0.033 m at 60 s (z_ref = 0.05). The default `t_end = 60 s` ends the run before it has settled.
    The flap trim (≈ 14.1° of ±20°) is delivered almost entirely by the integrator (13.65° of 14.1° at 60 s): there is no feed-forward.
-5. **Added-mass Coriolis (Munk moment) is missing.** Adding it moves the open-loop unstable real pole from +0.178 to +0.209 s⁻¹ and the
+5. **Added-mass Coriolis (Munk moment) is missing** (energy is still conserved — doc 18). Adding it moves the open-loop unstable real pole from +0.178 to +0.209 s⁻¹ and the
    phugoid-like mode from 0.98 to 0.73 rad/s (−26 %). Not catastrophic, but a measurable error in the linear model any LQR/MPC would inherit.
 6. Things that **are right**: Coriolis passivity, kinematics, lift/drag directions, RK4 accuracy, free-surface formula against its stated targets (see §1).
 
@@ -107,7 +107,7 @@ followed by delay (2 steps) → 720 °/s rate limit → first-order lag (20 ms).
 4. **Anti-windup freezes the integrator whenever the output is saturated, even when the error is trying to desaturate it** (standard conditional integration only blocks error that pushes further into saturation). Mild with these gains, but it delays recovery from saturation and flatly differs from back-calculation.
 5. **Derivative:** raw finite difference on a noise-free signal. With real sensors this needs a filter (e.g. N-filter or low-pass) — latent now because there is no sensor noise model.
 6. **Surge loop sign:** the derivative-on-measurement trick assumes error and measurement move the same way; for surge `e = ref − u` they move oppositely, so `Kd > 0` is positive feedback. Dormant at Kd = 0 (UI allows up to 20).
-7. **No coupling treatment.** Heave and roll share the main-flap channel with a common ±20° limit; roll uses differential command on top of the symmetric one, so heave demand can steal roll authority (flap already at 14° of 20° in cruise leaves only ±6° for roll).
+7. **No coupling treatment.** ~~Heave and roll share a common ±20° limit, so heave demand can steal roll authority.~~ *[corrected, doc 18]* Wrong: each virtual channel is clamped separately and the plant adds them, so a physical flap can reach 40° (measured 23.5° with main saturated); the real error is that no per-surface limit exists (fixed, doc 17 §7).
 8. **No reference shaping.** Setpoint steps go straight into P and I; no rate limiting of height/bank commands (the pilot UI ramps them, the PID does not).
 9. **Pitch has a hidden degeneracy** (main foil at the CoG): θ_ref and δ_elev are tied only through the elevator's AoA, so the pitch loop is the only thing fixing attitude and there is no incidence-based trim.
 10. **Gains were set with a different plant** (before the flap-effectiveness change); `PROJECT_STATE` "Roll gains reached by sweeping" is no longer true of the code. Everything needs retuning.

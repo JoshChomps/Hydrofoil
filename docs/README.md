@@ -20,6 +20,7 @@ Docs 01–12 were written by reading; doc 13 and the updates it triggered were p
 | [11-known-issues.md](11-known-issues.md) | Bugs, inconsistencies, stale docs, unverified items |
 | [12-progress-log.md](12-progress-log.md) | Dated record of project history and this documentation pass |
 | [13-math-audit-and-pid-critique.md](13-math-audit-and-pid-critique.md) | Math audit as found: PID method and flaws, physics omissions (pre-fix state) |
+| [18-audit-verification.md](18-audit-verification.md) | **Every audit claim re-checked against the original code**: verdicts, evidence, corrections to my own claims |
 | [17-actuators-moteus-drive.md](17-actuators-moteus-drive.md) | Control-surface drives: hinge moments, moteus/BLDC/gearbox current-voltage-power budget, gear-ratio sweep, stress, failure modes, next steps |
 | [15-buoyancy-hydrostatics-cross-reference.md](15-buoyancy-hydrostatics-cross-reference.md) | Hull buoyancy checked against metacentric theory; distributed hydrostatics model; before/after stiffness |
 | [16-review-guide.md](16-review-guide.md) | **Start here for review:** conventions, equations→code map, assumptions ledger, evidence/commands, open questions |

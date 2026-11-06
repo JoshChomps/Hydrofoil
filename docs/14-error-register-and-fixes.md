@@ -8,6 +8,8 @@ Status key: **FIXED** = changed and covered by a test · **FIXED (model)** = phy
 
 Branch `mujoco-viewer`. Tests: `tests/test_method_fixes.py` (new) plus the originals.
 
+> **Verified 2026-11-06 against the original code: see [doc 18](18-audit-verification.md)** (`tools/verify_original_audit.py`). Corrections from that pass are marked *[corrected, doc 18]* below.
+
 ---
 
 ## A. Controller and unit errors
@@ -37,6 +39,7 @@ Roll Ki is still 0 (no integral needed; waves can now excite roll, see E12, and 
 ### E3 — Anti-windup froze the integrator at the wrong time — **FIXED**
 - **Where:** `control/pid.py::PID.update`.
 - **What was wrong:** `if output != clamped: integral -= e*dt` undid the integration step whenever the output was clamped, even when the error was pulling the output *out of* saturation, which delays recovery and mis-handles sign reversals.
+- *[corrected, doc 18]* Narrower than stated: in plain saturation the original never winds up and recovers at once. It fails when the integral grew while P/D held the output in range; then it stays saturated indefinitely (fixed PID: ~1 s). Trade-off: conditional integration can integrate while saturated on the opposite side; back-calculation would avoid both.
 - **Fix:** conditional integration — freeze only while saturated **and** the error pushes further into saturation; otherwise integrate normally.
 - **Test:** `test_anti_windup_keeps_integrating_when_error_desaturates`, `test_anti_windup_freezes_integrator_when_error_pushes_deeper`.
 
@@ -58,7 +61,7 @@ Three parallel SISO PIDs (no inner/outer structure). Comments/docs now say so; a
 ## B. Rigid-body and hydrodynamic math errors
 
 ### E7 — Added-mass Coriolis (Munk moment) missing — **FIXED**
-- **Where:** `dynamics/rigid_body.py::RigidBody.C`. `M` included the heave/pitch added mass but `C` only had the rigid-body terms; the combined model `M ν̇ + C ν` was inconsistent (energy not conserved by the added-mass part, and the destabilising Munk moment `−(Z_ẇ − X_u̇) u w` absent).
+- **Where:** `dynamics/rigid_body.py::RigidBody.C`. `M` included the heave/pitch added mass but `C` only had the rigid-body terms; the combined model `M ν̇ + C ν` was inconsistent: the destabilising Munk moment `−(Z_ẇ − X_u̇) u w` was absent (−9.7 N m at u 4, w 0.1). *[corrected, doc 18: energy WAS conserved — the original C is skew, νᵀCν = 0; the earlier "energy not conserved" claim was wrong.]*
 - **Fix:** added `C_A` with the same skew structure as `C_RB` using `M_A = diag(0,0,m_a,0,I_a,0)` (Fossen 6.43): blocks `−S(A11 v1)` and `−S(A22 v2)`. Passivity preserved (νᵀCν = 0).
 - **Effect (measured):** unstable lateral-pole +0.178 → +0.209 s⁻¹ and height/speed mode 0.98 → 0.73 rad/s before this fix was applied.
 - **Test:** `test_added_mass_coriolis_munk_moment_and_passivity` (C·ν pitch component = −m_a u w).
@@ -107,7 +110,8 @@ Three parallel SISO PIDs (no inner/outer structure). Comments/docs now say so; a
 - **Test:** `test_beam_seas_load_left_and_right_foils_differently_head_seas_do_not`.
 
 ### E14 — Waves could not excite roll or yaw — **FIXED**
-- **What was wrong:** only a head/following sea (direction 0) existed, where left/right are identical by symmetry, so the "roll Ki diverges under waves" test was vacuous (max |φ| = 0.0° for both Ki values).
+- *[corrected, doc 18]* `AiryWave` already had `direction`; no caller set it. Beam seas on the original give only 0.157° (single-point sampling, E13). The original comment "roll Ki 0.05 blew up to 1000+ deg" is not reproducible (0.000°).
+- **What was wrong:** only a head/following sea (direction 0) was used, where left/right are identical by symmetry, so the "roll Ki diverges under waves" test was vacuous (max |φ| = 0.0° for both Ki values).
 - **Fix:** `wave_direction` parameter (degrees, travel heading; UI slider −180…180, viewer `--wave-dir`). Beam/oblique seas now load the two halves differently.
 - **After:** oblique 45° sea, A 0.05 m: max |φ| 0.9° in the final evaluation; the `test_oblique_waves_do_not_destabilise_roll` regression test is in the suite.
 
@@ -127,7 +131,7 @@ Three parallel SISO PIDs (no inner/outer structure). Comments/docs now say so; a
 It carried its own model (flap effectiveness 1.0, speed pinned to 4 m/s, different gains, constant-volume buoyancy). It is now a thin wrapper over `VehiclePhysics` (same plant, same gains), with `cmds_override` for the open-loop case and `T_END = 90 s`. Previously `T_END = 20 s` ended before takeoff settled.
 
 ### E18 — Duplicated physical constants — **FIXED**
-ρ = 1025 and g = 9.81 were hard-coded in six modules; now `hydrofoil/constants.py` (`RHO_WATER`, `G`).
+ρ = 1025 and g = 9.81 were hard-coded (ρ in 7 files, g in 4, all identical values, so hygiene rather than an error, doc 18); now `hydrofoil/constants.py` (`RHO_WATER`, `G`).
 
 ### E19 — Performance (needed after adding surfaces) — **FIXED**
 `np.cross` and a three-matmul rotation matrix dominated the step (≈ 8.6 ms/step after adding the struts — slower than real time). `_cross` helper, closed-form `R_body_to_ned` (tested equal to the matmul form), and the identity `V×(a×V) = a − (a·V)V` bring it to ≈ 3.6 ms/step (while other jobs were running).
@@ -176,8 +180,8 @@ It carried its own model (flap effectiveness 1.0, speed pinned to 4 m/s, differe
 
 | Metric | Before (old gains, unit bug; audit) | After (this pass) |
 |---|---|---|
-| Foilborne time from rest | 9.9 s | **2.9 s** |
-| Height within 2 cm of target | 62 s | **≈ 17.4 s**, no overshoot |
+| Foilborne time from rest | 8.5 s *[corrected, doc 18; was 9.9]* | **2.9 s** |
+| Height within 2 cm of target | 70.6 s *[corrected, doc 18; was 62]* | **≈ 17.4 s**, no overshoot |
 | Roll 5° kick → within 0.5° | diverged (14° at 15 s) | **0.69 s** |
 | Bank 8° command | hull back in the water, φ 21° | **8.45°**, within 1° in 0.55 s, height loss 1.4 cm, no touchdown |
 | Pitch 3° kick → within 0.5° | limit cycle (not settling) with unit-fixed old gains | **0.56 s** |

@@ -60,6 +60,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Layout: "flap" = 40 % plain flap on each main-foil half (as drawn in the viewer);
     # "all_moving" = whole surface rotates about pivot_frac * chord from the LE.
     "main_actuation": "flap", "main_flap_frac": 0.4, "main_pivot_frac": 0.22,
+    # The flap covers only the INBOARD half of each main-foil half-span (per the MAIN_FOIL_FLAP_EFFECTIVENESS
+    # comment in forces/foil.py), so the hinge carries main_span * main_flap_span_frac of flap.
+    "main_flap_span_frac": 0.5,
     "elev_actuation": "all_moving", "elev_pivot_frac": 0.22,   # PLACEHOLDER pivot just ahead of the AC (weathervane-stable)
     "main_surface_inertia": 4e-4, "elev_surface_inertia": 4e-4, # kg m^2 about the hinge, PLACEHOLDER (composite)
     "gear_ratio": 20.0,

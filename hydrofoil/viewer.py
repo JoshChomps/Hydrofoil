@@ -90,13 +90,20 @@ def build_mjcf(p: dict) -> str:
     ex, ez = p["elev_pos_x"], p["elev_pos_z"]
     flap_frac = p.get("main_flap_frac", 0.4)
 
+    fs = ms * p.get("main_flap_span_frac", 1.0)      # flap span (inboard part of each half)
+
     def half(name, y):
+        # y is the half's centre (MuJoCo y = left); the flap sits on the INBOARD side (toward y = 0)
+        inboard = -1.0 if y > 0 else 1.0
+        fy = inboard * (ms - fs) / 2                   # flap centre relative to the half's centre
+        oy = -inboard * fs / 2                         # fixed trailing-edge strip on the outboard part
         return f"""
         <body name="{name}" pos="{mx} {y} {-mz}">
           <geom type="box" size="{mc*(1-flap_frac)/2} {ms/2} 0.008" pos="{mc*flap_frac/2} 0 0" material="foil"/>
-          <body name="{name}_flap" pos="{-mc*(1-flap_frac)/2 + mc*flap_frac/2} 0 0">
+          <geom type="box" size="{mc*flap_frac/2} {(ms-fs)/2 + 1e-4} 0.008" pos="{-mc*(1-flap_frac)/2} {oy} 0" material="foil"/>
+          <body name="{name}_flap" pos="{-mc*(1-flap_frac)/2 + mc*flap_frac/2} {fy} 0">
             <joint name="{name}_hinge" type="hinge" axis="0 1 0" limited="true" range="-60 60"/>
-            <geom type="box" size="{mc*flap_frac/2} {ms/2} 0.008" pos="{-mc*flap_frac/2} 0 0" material="flap"/>
+            <geom type="box" size="{mc*flap_frac/2} {fs/2} 0.008" pos="{-mc*flap_frac/2} 0 0" material="flap"/>
           </body>
         </body>"""
 

@@ -17,7 +17,8 @@ DRIVES = ("left", "right", "elev")
 
 
 def surface_models(p: dict) -> dict[str, HingeMoment]:
-    main = SurfaceGeometry(chord=p["main_chord"], span=p["main_span"], layout=p["main_actuation"],
+    flap_span = p["main_span"] * (p.get("main_flap_span_frac", 1.0) if p["main_actuation"] == "flap" else 1.0)
+    main = SurfaceGeometry(chord=p["main_chord"], span=flap_span, layout=p["main_actuation"],
                            flap_frac=p["main_flap_frac"], pivot_frac=p["main_pivot_frac"],
                            j_struct=p["main_surface_inertia"])
     elev = SurfaceGeometry(chord=p["elev_chord"], span=p["elev_span"], layout=p["elev_actuation"],
