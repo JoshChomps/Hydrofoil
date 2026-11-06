@@ -23,7 +23,9 @@ Keys (click the viewer window first):
     R                reset to rest
 
 Left of the window: plots (height vs target, roll/pitch, surface angles, drive currents).
-Top-left text: state, and per drive the hinge moment, motor current and bus power (docs/17).
+Top-right text: state, and per drive the hinge moment, motor current and bus power (docs/17).
+With actuator_model = "servo" (default) these are the simulated drives' own values and the drives'
+limits act on the flight; with "kinematic" they are estimated from the flap trajectory.
 
 Frames: the sim is NED/body (x fwd, y stbd, z down). MuJoCo is Z-up, so world
 coordinates are mapped with D = diag(1,-1,-1) (a proper 180 deg rotation about x):
@@ -252,8 +254,9 @@ class DriveMonitor:
 
     def flags(self) -> str:
         c = self.spec.ctrl
-        bad = [d for d in DRIVES if abs(self.out[d]["I"]) > c.i_peak or self.out[d].get("V", 0) > c.k_mod * c.v_bus]
-        return "LIMIT: " + ",".join(bad) if bad else "within limits"
+        bad = [d for d in DRIVES if self.out[d].get("limited")
+               or abs(self.out[d]["I"]) > c.i_peak or self.out[d].get("V", 0) > c.k_mod * c.v_bus]
+        return "AT LIMIT: " + ",".join(bad) if bad else "within limits"
 
 
 class Plots:
@@ -386,7 +389,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
 
             if pilot.reset_flag:
                 pilot.reset_flag = False
-                vp.controller.reset(); vp.surge.reset(); drives.reset(); plots.clear()
+                vp.reset(); drives.reset(); plots.clear()
                 state, t = vp.rest_state(), 0.0
                 wall0 = now
 
@@ -396,8 +399,11 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                 state, cmds, thrust, draft, wave_elev = vp.step(state, t, wave)
                 t += dt
                 steps += 1
-                env = vp.wave_sample(state[:6], t, wave)
-                dm = drives.update(vp, state, cmds, env, dt, params["gear_ratio"], params["v_bus"])
+                if "drive" in cmds:     # servo model: the drives' own simulated current/power
+                    dm = drives.out = cmds["drive"]
+                else:                   # kinematic model: estimate loads from the trajectory
+                    env = vp.wave_sample(state[:6], t, wave)
+                    dm = drives.update(vp, state, cmds, env, dt, params["gear_ratio"], params["v_bus"])
                 ang = drive_angles(cmds)
                 plots.push(t, {
                     "height": -state[2] + params["hull_offset"], "target": params["flying_height"],

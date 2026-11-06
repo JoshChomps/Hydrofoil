@@ -29,7 +29,7 @@ Per step `VehiclePhysics.step` ([vehicle.py:240](../hydrofoil/vehicle.py)):
 
 1. **Controller** (held over the step): `z_ref = hull_offset − flying_height`; heave error `e_z = z − z_ref` [m]; pitch/roll errors `e = deg(θ−θ_ref)`, `deg(φ−φ_ref)`.
    Each PID: `I⁺ = I + e·dt; u = Kp e + Ki I⁺ + Kd (y−y_prev)/dt; clip ±20°`; integrate only unless (saturated ∧ error pushes deeper) ([pid.py:52](../hydrofoil/control/pid.py)).
-   Outputs go through `Actuator`: delay (`round(delay_s/dt)` steps) → rate limit (720°/s·dt) → first-order lag `α = dt/(τ+dt)` ([actuator.py:49](../hydrofoil/control/actuator.py)).
+   Default (`actuator_model = "servo"`): raw PID outputs → mixer → three drives `ServoDrive.update` ([servo.py](../hydrofoil/actuation/servo.py)), each integrating `J δ̈ = τ_out + M_hyd(δ) − B δ̇ − τ_f` in 1 ms sub-steps with moteus PD + current/voltage/cap limits; the plant gets the mixed-back actual angles. Legacy (`"kinematic"`): outputs go through `Actuator`: delay (`round(delay_s/dt)` steps) → rate limit (720°/s·dt) → first-order lag `α = dt/(τ+dt)` ([actuator.py:49](../hydrofoil/control/actuator.py)).
    Thrust: `SurgeController` PID on `e = u_ref − u` with measurement `−u` for D ([surge.py:20](../hydrofoil/control/surge.py)).
 2. **Wave sample** `wave_sample` ([vehicle.py:161](../hydrofoil/vehicle.py)): elevation, local surface z and orbital velocity (`R·`…) at the hull cells and at each of 5 surfaces' world positions.
 3. **Dynamics** `physics_rhs` ([vehicle.py:199](../hydrofoil/vehicle.py)): `ẋ = [J(η)ν ; M⁻¹(τ − C(ν)ν)]`, with
@@ -108,7 +108,7 @@ Mode content (eigenvector, scaled states): −0.21±0.76j is x–u–θ–q (spe
 9. **Frozen wave field across RK4 stages** and the 10 ms zero-order hold on controls: acceptable for dt = 10 ms? (RK4 error vs dt: 9e-6 near trim, 4e-4 for an aggressive off-trim state.)
 10. **Safety clamps in the plant.** Should they be removed from the design model and moved to the UI layer before any linearisation/LQR work?
 11. **Euler angles vs quaternions** for roll/pitch up to ±70° and turning flight.
-12. **Unit of the flap command.** Flap angle is treated as the actuator angle; should the model include hinge moment/torque limits on the actuators?
+12. **Drive model (now in the loop, doc 17).** Check the hinge-moment sign conventions, the thin-airfoil viscous factor 0.8, the flap-as-isolated-plate unsteady approximation, and the back-drive efficiency rule `τ_out = N τ_m/η`.
 
 ## 7. Things that look odd or are not fully explained
 - The **+0.029 s⁻¹ open-loop mode** (x-dominated) was not traced to a physical mechanism; with the speed PID in the loop it is irrelevant but it should be understood.

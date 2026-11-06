@@ -29,6 +29,9 @@ from hydrofoil.forces.hull import HullHydrostatics
 from hydrofoil.control.pid import HydrofoilController
 from hydrofoil.control.surge import SurgeController
 from hydrofoil.control.actuator import DEFAULT_ACTUATOR_PARAMS
+from hydrofoil.actuation.drive import DriveSpec
+from hydrofoil.actuation.loads import surface_models, flow_models
+from hydrofoil.actuation.servo import ServoDrive, DEFAULT_SERVO_PARAMS
 
 
 # Safety bounds for VehiclePhysics.step() — this drives a real-time interactive
@@ -145,6 +148,44 @@ class VehiclePhysics:
         self.surge = SurgeController(Kp=p["kp_speed"], Ki=p["ki_speed"], Kd=p["kd_speed"],
                                       dt=p["dt"], max_thrust=p["max_thrust"])
 
+        # Surface drives. "servo" (default): three PHYSICAL drives (left flap, right flap, elevator) after the
+        # mixer, each a moteus position loop + BLDC + gearbox against the hinge moment (actuation/servo.py,
+        # docs/17). "kinematic": the legacy delay -> rate limit -> lag on the three virtual channels.
+        self.actuator_model = p.get("actuator_model", "servo")
+        self.hinges = surface_models(p)
+        sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
+        self.drives = {}
+        for name, stop in (("left", p["flap_stop_deg"]), ("right", p["flap_stop_deg"]), ("elev", p["elev_stop_deg"])):
+            spec = DriveSpec()
+            spec.gear.ratio = p["gear_ratio"]
+            spec.ctrl.v_bus = p["v_bus"]
+            self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp)
+
+    def reset(self):
+        """Reset controllers and drive states (e.g. on a sim restart)."""
+        self.controller.reset()
+        self.surge.reset()
+        for d in self.drives.values():
+            d.reset()
+
+    def _servo_commands(self, raw: dict, state, env) -> dict:
+        """Mix the virtual PID channels onto the physical drives and advance the drive dynamics."""
+        p = self.params
+        u = max(float(state[6]), 0.1)
+        vs = p.get("q_schedule_speed", 0.0)
+        k = float(np.clip((vs / u) ** 2, 0.25, 1.0)) if vs > 0 else 1.0   # gain-schedule flap commands by 1/q above vs
+        main, roll, elev = k * raw["delta_main"], k * raw["delta_roll"], k * raw["delta_elev"]
+        target = {"left": main - roll, "right": main + roll, "elev": elev}
+        flows = flow_models(self, state, env, self.hinges)
+        for d in self.drives.values():                     # live gear ratio / bus voltage (UI sliders)
+            d.spec.gear.ratio, d.spec.ctrl.v_bus = p["gear_ratio"], p["v_bus"]
+        ang = {n: self.drives[n].update(target[n], flows[n]) for n in self.drives}
+        return {"delta_main": 0.5 * (ang["left"] + ang["right"]),
+                "delta_roll": 0.5 * (ang["right"] - ang["left"]),
+                "delta_elev": ang["elev"],
+                "target": target,
+                "drive": {n: dict(self.drives[n].telemetry) for n in self.drives}}
+
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
         p = self.params
@@ -258,7 +299,15 @@ class VehiclePhysics:
         z_ref = p["hull_offset"] - p["flying_height"]
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
-        if cmds_override is None:
+        env = self.wave_sample(eta, t, wave)
+        if cmds_override is None and self.actuator_model == "servo":
+            raw = self.controller.pid_commands(
+                z_ref,                       eta[2],
+                np.radians(p["phi_ref"]),    eta[3],
+                np.radians(p["theta_ref"]),  eta[4],
+            )
+            cmds = self._servo_commands(raw, state, env)
+        elif cmds_override is None:
             cmds = self.controller.update(
                 z_ref,                       eta[2],
                 np.radians(p["phi_ref"]),    eta[3],
@@ -267,7 +316,6 @@ class VehiclePhysics:
         else:
             cmds = dict(cmds_override)
         thrust = self.surge.update(p["target_speed"], nu[0])
-        env = self.wave_sample(eta, t, wave)
         wave_elev = env.elevation
 
         def rhs(s):
@@ -285,8 +333,7 @@ class VehiclePhysics:
             # regains control instead of the app streaming NaN forever.
             new_state = state.copy()
             new_state[6:] = 0.0
-            self.controller.reset()
-            self.surge.reset()
+            self.reset()
         else:
             new_state[3] = np.clip(new_state[3], -MAX_ATTITUDE_RAD, MAX_ATTITUDE_RAD)
             new_state[4] = np.clip(new_state[4], -MAX_ATTITUDE_RAD, MAX_ATTITUDE_RAD)

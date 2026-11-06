@@ -32,11 +32,25 @@ def drive_angles(cmds: dict) -> dict[str, float]:
             "elev": cmds["delta_elev"]}
 
 
-def steady_moments(vp, state, cmds, env, hinges) -> dict[str, float]:
-    """Steady hydrodynamic hinge moment on each drive [N m] at one instant (+ = TE down)."""
+class _Flow:
+    """Steady hinge moment of one drive as a function of its deflection, at a frozen flow."""
+
+    def __init__(self, hm: HingeMoment, foil, V: float, alpha: float, lf: float):
+        self.hm, self.foil, self.V, self.alpha, self.lf = hm, foil, V, alpha, lf
+
+    def __call__(self, delta_rad: float) -> float:
+        hm = self.hm
+        if hm.g.layout == "flap":
+            return hm.steady(self.V, self.alpha, delta_rad, lift_factor=self.lf)
+        # all-moving: the deflection IS angle of attack (times the foil's effectiveness)
+        cl = float(self.foil.tables.cl(np.degrees(self.alpha) + self.foil.flap_effectiveness * np.degrees(delta_rad))) * self.lf
+        return hm.steady(self.V, self.alpha, delta_rad, cl=cl)
+
+
+def flow_models(vp, state, env, hinges) -> dict[str, _Flow]:
+    """Per drive: the flow seen by its surface (relative velocity incl. waves, free-surface and 3-D factors)."""
     eta, nu = state[:6], state[6:]
     foils = {"left": vp.left_foil, "right": vp.right_foil, "elev": vp.elev_foil}
-    ang = drive_angles(cmds)
     out = {}
     for name, foil in foils.items():
         nu_rel = nu.copy()
@@ -44,15 +58,17 @@ def steady_moments(vp, state, cmds, env, hinges) -> dict[str, float]:
         V, alpha = foil.flow(nu_rel)
         h_c = vp._submergence_over_chord(foil, eta, env.foil_surface_z[name])
         lf = foil.lift_slope_factor * free_surface_lift_factor(h_c)
-        d = np.radians(ang[name])
-        hm = hinges[name]
-        if hm.g.layout == "flap":
-            out[name] = hm.steady(V, alpha, d, lift_factor=lf)
-        else:
-            # all-moving: the deflection IS angle of attack (times the foil's effectiveness)
-            cl = float(foil.tables.cl(np.degrees(alpha) + foil.flap_effectiveness * ang[name])) * lf
-            out[name] = hm.steady(V, alpha, d, cl=cl)
-        out[name + "_V"] = V
+        out[name] = _Flow(hinges[name], foil, V, alpha, lf)
+    return out
+
+
+def steady_moments(vp, state, cmds, env, hinges) -> dict[str, float]:
+    """Steady hydrodynamic hinge moment on each drive [N m] at one instant (+ = TE down)."""
+    ang = drive_angles(cmds)
+    out = {}
+    for name, f in flow_models(vp, state, env, hinges).items():
+        out[name] = f(np.radians(ang[name]))
+        out[name + "_V"] = f.V
     return out
 
 

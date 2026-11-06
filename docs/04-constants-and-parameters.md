@@ -79,7 +79,13 @@ Polar: NACA 0009, XFLR5 v6.61, Re 2.7e6, Ncrit 9, α −10°…+17.8°, CL_max �
 |---|---|---|
 | Flap command limit | ±20° (all three PIDs) | `control/pid.py` (`lim`) |
 | Speed PID limit | ±`max_thrust` | `control/surge.py` |
-| `DEFAULT_ACTUATOR_PARAMS` | rate 720°/s, τ 0.02 s, **delay 0.02 s** | `control/actuator.py` — placeholder for MyActuator RMD-X8-class |
+| `DEFAULT_ACTUATOR_PARAMS` | rate 720°/s, τ 0.02 s, **delay 0.02 s** | `control/actuator.py`, used only with `actuator_model = "kinematic"` |
+| `actuator_model` | `"servo"` | params: `"servo"` = drive dynamics in the loop (doc 17), `"kinematic"` = legacy lag |
+| `DEFAULT_SERVO_PARAMS` | kp 250 N m/rad, kd 4.5 N m s/rad, torque cap 10 N m, delay 0.01 s, 10 sub-steps, no feed-forward | `actuation/servo.py` (PLACEHOLDER tuning) |
+| `flap_stop_deg` / `elev_stop_deg` | 30 / 20 ° | params: mechanical stops of the physical surfaces (PLACEHOLDER) |
+| `gear_ratio`, `v_bus` | 20, 24 V | params: drive gearbox and moteus supply |
+| `q_schedule_speed` | 0 (off) | params: gain-schedule flap commands by (v/u)² above this speed |
+| Motor / moteus / gearbox specs | Kv 330, R_ll 0.10 Ω, J_rotor 7e-5, 1.7 N m; 100 A peak, 12 A cont., k_mod 0.9; η 0.85 | `actuation/drive.py` (sourced vs placeholder: doc 17 §4) |
 
 The delay is now specified in **seconds** and converted to whole steps (`round(delay_s/dt)`), so changing dt no longer changes the latency.
 

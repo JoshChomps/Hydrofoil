@@ -165,6 +165,16 @@ class HydrofoilController:
         dict with 'delta_main', 'delta_elev', 'delta_roll' in [deg] — actual
         (actuator-filtered) flap angles, not raw PID output.
         """
+        raw = self.pid_commands(z_ref, z_meas, phi_ref, phi_meas, theta_ref, theta_meas)
+        return {
+            'delta_main': self.main_actuator.update(raw['delta_main']),
+            'delta_elev': self.elev_actuator.update(raw['delta_elev']),
+            'delta_roll': self.roll_actuator.update(raw['delta_roll']),
+        }
+
+    def pid_commands(self, z_ref, z_meas, phi_ref, phi_meas, theta_ref, theta_meas) -> dict:
+        """Raw PID outputs [deg] on the three virtual channels, before any actuator model
+        (used directly by the servo drive model, which mixes them onto the physical drives)."""
         heave_err = z_meas - z_ref      # +ve: too deep → need more lift to rise
         pitch_err = np.degrees(theta_meas - theta_ref)  # +ve: nose up → need upward rear force → –M_y → nose down
         roll_err  = np.degrees(phi_meas - phi_ref)      # +ve: rolled right → need upward left force
@@ -173,11 +183,7 @@ class HydrofoilController:
         cmd_elev = self.pitch_pid.update(pitch_err, np.degrees(theta_meas))
         cmd_roll = self.roll_pid.update(roll_err, np.degrees(phi_meas))
 
-        return {
-            'delta_main': self.main_actuator.update(cmd_main),
-            'delta_elev': self.elev_actuator.update(cmd_elev),
-            'delta_roll': self.roll_actuator.update(cmd_roll),
-        }
+        return {'delta_main': cmd_main, 'delta_elev': cmd_elev, 'delta_roll': cmd_roll}
 
     def reset(self):
         self.heave_pid.reset()

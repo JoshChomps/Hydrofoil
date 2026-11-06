@@ -1,8 +1,8 @@
 # 17 — Control-Surface Drives: moteus r4.11 + BLDC + 20:1 gearbox
 
 How hard the water pushes back on the control surfaces, and what that means for motor current, voltage, power,
-gear ratio and structural stress. Built on top of the existing loops: the flight controller is unchanged and still
-commands surface angles; this layer works out what the hardware has to do to produce them.
+gear ratio and structural stress. Built on top of the existing loops: the flight controller is unchanged and still commands surface angles.
+Since §7 the drives are simulated in the loop (default), so their limits act on the flight.
 
 Code: `hydrofoil/actuation/` (`hinge.py`, `drive.py`, `loads.py`), `tools/actuator_budget.py`, live read-out in the
 MuJoCo app (`hydrofoil/viewer.py`). Tests: `tests/test_actuation.py`. Figures produced 2026-11-05 with `DEFAULT_PARAMS`.
@@ -160,21 +160,53 @@ What the numbers say:
 | Water ingress / thermal | 4 A rms is easy, but the motor is sealed in a pod | Thermal path to hull/water; use moteus temperature telemetry |
 | Over-torque (jam, strike) | Up to 29 N m on the shaft | Firmware torque cap, shear pin or slip clutch |
 
-## 7. Next step: close the loop through the drive (not done yet)
+## 7. The drive in the loop (done 2026-11-05, now the default)
 
-Right now the drive model only checks trajectories made by the kinematic `Actuator` (720°/s, 20 ms lag). To make
-saturation feed back into flight:
-1. Move the mixer ahead of the actuators: the PIDs produce virtual commands, the mixer produces three physical surface
-   commands, then three drives.
-2. Give each drive a state (δ, δ̇) and integrate it with the rigid body:
-   `(J_struct + I_added + J_rotor N²) δ̈ = N η τ_m − B(V) δ̇ − τ_f sign δ̇ + M_steady(V, α, δ)`.
-3. Model the moteus position mode: `τ_m = clip(kp (δ_cmd − δ) − kd δ̇ + τ_ff, ±τ_max)`, with
-   `τ_max = min(Kt I_max, Kt (k V_bus − Ke ω_m)/R)`. Torque falls off with speed (the voltage limit), so slew rate and
-   lag emerge from the physics instead of being set by hand.
-4. Optional feed-forward `τ_ff = −M_steady/(N η)` using the hinge model, so the position loop only handles the error.
-5. Replace the 20 ms latency placeholder with the real CAN-FD cycle (about 1 ms for a moteus query/command at 1 kHz),
-   plus the flight computer's loop period.
-6. Gain-schedule the flight PIDs by q_ref/q.
+`params["actuator_model"] = "servo"` (`actuation/servo.py`, wired in `VehiclePhysics._servo_commands`):
+1. **The mixer comes first.** The PIDs give raw virtual commands; left = main − roll, right = main + roll, elevator. Limits are now
+   **per physical surface**: mechanical stops at ±30° (flaps) and ±20° (elevator), placeholders.
+2. **Each drive has state (δ, δ̇)**, integrated in 10 × 1 ms semi-implicit sub-steps per sim step:
+   `(J_struct + I_added + J_rotor N²) δ̈ = τ_out + M_hyd(V, α, δ) − B(V) δ̇ − τ_f tanh(δ̇/0.05)`.
+   The flow at each surface (relative velocity incl. waves, 3-D and free-surface factors) is frozen over the step, like the wave field.
+3. **moteus position mode**: `τ_cmd = kp(δ_cmd − δ) − kd δ̇ (+ optional −M_hyd feed-forward)`, kp 250 N m/rad, kd 4.5 N m s/rad
+   at the output (≈ 15 Hz, ζ ≈ 0.8 against J_tot ≈ 0.03 kg m²; PLACEHOLDER tuning). Motor torque is clipped by
+   `min(Kt I_peak, motor peak, torque_cap/N)` (cap 10 N m at the output) and by the back-EMF limit `I ≤ (k V_bus − s Ke ω_m)/R`.
+   Gearbox: `τ_out = N η τ_m` when driving, `N τ_m/η` when back-driven.
+4. **Transport delay 10 ms** (flight-computer loop + CAN-FD), replacing the 20 ms placeholder.
+5. **Gain scheduling by q** is available (`q_schedule_speed`: flap commands × (v/u)² above that speed, clipped to [0.25, 1]). It is
+   **off** by default; it is not tuned or evaluated yet.
+6. The plant sees the drives' **actual** angles; the app shows the drives' own current, power and an AT LIMIT flag.
+The legacy kinematic actuator remains available as `actuator_model = "kinematic"`. Cost: 2.3 vs 1.9 ms per step.
+
+**Servo alone** (10° step command): 90 % in ≈ 60 ms after the 10 ms delay. The peak current is 17.3 A, which is the 10 N m firmware
+cap doing its job. The steady droop from the hinge moment is 0.4° at 4 m/s and 1.3° at 8 m/s; the outer heave loop's integrator
+absorbs it (`feedforward` would remove it).
+
+**Flight with the drives in the loop** (`tools/audit.py` scenarios; the gains were not changed):
+
+| Metric | Kinematic (old) | Servo (default) | Weak servo (kp/4, cap 5 N m, delay 20 ms) |
+|---|---|---|---|
+| Foilborne at [s] | 2.90 | 3.00 | 3.41 |
+| Height within 2 cm [s] | 17.3 | 18.1 | 21.8 |
+| Roll 5° kick settles 0.5° [s] | 0.69 | 0.70 | 0.66 |
+| 8° bank: final / settle / height loss | 8.46° / 0.55 s / 1.4 cm | 8.47° / 0.56 s / 1.5 cm | 8.53° / 0.55 s / 1.9 cm |
+| Pitch 3° kick [s] | 0.56 | 0.57 | 0.54 |
+| Height step 0.2 m settles 2 cm [s] | 8.1 | 8.9 | 10.1 |
+| Beam / oblique waves max roll [°] | 0.99 / 1.28 | 1.02 / 1.32 | 1.25 / 1.49 |
+| Hull touch after takeoff | none | none | none |
+
+So the existing gains are robust to real drive dynamics, and a 4× weaker drive degrades gracefully. A retune was not needed.
+
+**Budget flown with the servo** (`python tools/actuator_budget.py --model servo`): the servo moves the surfaces faster than the old
+placeholder (peak 467 vs 240°/s). Peak current is 14 A in cruise and 16 A in the bank manoeuvre, rms ≈ 4 A, motor ≤ 1560 rpm,
+≤ 5.4 V, ≤ 67 W peak, regen < 1 J. All within limits. Thanks to the per-surface stops the bank manoeuvre's flap now peaks at **29°**
+(it was 35°). (The tool's ratio sweep re-analyses trajectories flown at the params' N = 20; for a true sweep, set `gear_ratio`.)
+
+**Failure test** (`tests/test_servo.py`): with the torque cut to zero in cruise, the flaps trail back toward the stream, lift is lost
+and the hull returns to the water. That is the expected fail-safe for a plain flap and a pivot-ahead elevator.
+
+Still open: integral action in the drive (moteus has `ki`), a tuned q-schedule, PID anti-windup that knows about **drive**
+saturation (the PID only knows its own ±20° clamp), gearbox backlash and compliance, and motor/board thermal state.
 
 ## 8. What to measure to replace placeholders
 

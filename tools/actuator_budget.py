@@ -6,9 +6,9 @@ and check it against the moteus r4.11 + motor + gearbox limits, for a sweep of g
     python tools/actuator_budget.py                 # all scenarios, N = 20 detail + ratio sweep
     python tools/actuator_budget.py --ratios 10 20 30 --scenarios cruise4_head
 
-The trajectories come from the CURRENT kinematic actuator model (720 deg/s, 20 ms lag), i.e. this
-answers "can this hardware do what the flight controller is asking for?" -- not yet what happens
-when it cannot (that needs the drive model inside the loop, docs/17 section 7).
+By default the trajectories are flown with the kinematic actuator (720 deg/s, 20 ms lag): "can this
+hardware do what the flight controller asks for?". With --model servo they are flown with the drive
+dynamics in the loop (actuation/servo.py), so limits shape the trajectory itself (docs/17 section 7).
 """
 
 from __future__ import annotations
@@ -39,9 +39,10 @@ SCENARIOS = {
 }
 
 
-def fly(name: str, params: dict):
+def fly(name: str, params: dict, model: str = "kinematic"):
     speed, wave_cfg, t_end, bank = SCENARIOS[name]
     p = copy.deepcopy(params)
+    p["actuator_model"] = model
     p["target_speed"] = speed
     wave = (AiryWave(amplitude=p["wave_amplitude"], wavelength=p["wave_wavelength"],
                      direction=np.radians(wave_cfg["direction"])) if wave_cfg else CalmWater())
@@ -88,6 +89,8 @@ def main():
     ap.add_argument("--scenarios", nargs="*", default=list(SCENARIOS))
     ap.add_argument("--ratios", nargs="*", type=float, default=[5, 10, 15, 20, 30, 40])
     ap.add_argument("--vbus", type=float, default=24.0)
+    ap.add_argument("--model", choices=["kinematic", "servo"], default="kinematic",
+                    help="actuator model that FLIES the trajectories (kinematic = what the controller asks for; servo = what the drives deliver)")
     a = ap.parse_args()
 
     base = DriveSpec()
@@ -109,7 +112,7 @@ def main():
 
     runs = {}
     for s in a.scenarios:
-        rec, hinges, p = fly(s, DEFAULT_PARAMS)
+        rec, hinges, p = fly(s, DEFAULT_PARAMS, a.model)
         runs[s] = (rec, hinges)
         res = analyse(rec, hinges, base, dt)
         print(f"\n== {s}  (N = {base.gear.ratio:.0f}, V_bus = {base.ctrl.v_bus:.0f} V)  "

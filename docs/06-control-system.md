@@ -39,7 +39,17 @@ if not pushing_deeper: I = candidate                  # conditional integration 
 - Angle loops: `HydrofoilController.update` takes angles in **radians** and converts errors/measurements to **degrees** before the PID, so Kp/Kd are ° of flap per ° (per °/s) (fixed, E1).
 - Surge: the measurement fed to the PID is `−u` so Kd opposes acceleration (fixed, E4).
 
-## Actuator model (`control/actuator.py`)
+## Actuator models (`params["actuator_model"]`)
+
+**`"servo"` (default since 2026-11-05)**, `actuation/servo.py`, doc 17 §7. The PIDs' raw virtual commands are **mixed first**
+(left = main − roll, right = main + roll, elevator). Each physical surface then has its own drive: a transport delay of 10 ms,
+moteus position PD (`kp` 250 N m/rad, `kd` 4.5 N m s/rad at the output), the firmware torque cap (10 N m), current and back-EMF
+voltage limits, gearbox efficiency, rotor + water + structure inertia, hydrodynamic damping, and the steady hinge moment at the
+surface's own flow. All of this is integrated in 1 ms sub-steps against mechanical stops (flaps ±30°, elevator ±20°). Slew rate,
+lag and saturation come out of the physics. The plant sees the drives' actual angles. Optional `q_schedule_speed` scales the flap
+commands by (v/u)² above that speed.
+
+**`"kinematic"` (legacy)**, `control/actuator.py`, described below. It acts on the virtual channels before mixing.
 
 Per channel: `delayed = buffer[0]` (FIFO of `delay_steps`) → `target = pos + clip(delayed − pos, ±rate·dt)` →
 `pos += dt/(τ+dt) · (target − pos)`. The returned angle is what the plant sees (and what the viewer animates).

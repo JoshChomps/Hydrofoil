@@ -63,4 +63,11 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "elev_actuation": "all_moving", "elev_pivot_frac": 0.22,   # PLACEHOLDER pivot just ahead of the AC (weathervane-stable)
     "main_surface_inertia": 4e-4, "elev_surface_inertia": 4e-4, # kg m^2 about the hinge, PLACEHOLDER (composite)
     "gear_ratio": 20.0,
+    "v_bus": 24.0,                       # moteus supply [V] (10-44 V allowed)
+    # "servo": drives with dynamics, current/voltage limits and hinge moments in the loop (default);
+    # "kinematic": legacy delay -> rate limit -> lag on the virtual channels (control/actuator.py).
+    "actuator_model": "servo",
+    "servo_params": None,                # overrides of actuation.servo.DEFAULT_SERVO_PARAMS (kp, kd, torque_cap, delay_s, ...)
+    "flap_stop_deg": 30.0, "elev_stop_deg": 20.0,   # mechanical stops of the PHYSICAL surfaces, PLACEHOLDER
+    "q_schedule_speed": 0.0,             # >0: scale flap commands by (v/u)^2 above this speed (gain scheduling on q); 0 = off
 }

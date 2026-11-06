@@ -76,6 +76,10 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Findings (doc 17): the trimmed hinge moment is ≈ constant with speed (≈ 2.1–2.4 N m per main flap) while the moment per degree grows with V². 20:1 sits at the peak-current optimum, with ≈ 4 A rms / 19 A peak against 12 A / 100 A. The drive can make 29 N m, 4.5× the worst water load, so cap torque in firmware. The mixer sits ahead of the limits (a flap reached 35°). Flap effectiveness 0.21 conflicts with thin-airfoil 0.75.
 - All local, no push.
 
+### 2026-11-05 — Drives closed into the loop
+- `actuation/servo.py`: per physical drive moteus PD + current/back-EMF/firmware-cap limits + gearbox + rotor/water/structure inertia + hinge moment, 1 ms sub-steps, mechanical stops; mixer moved ahead of the limits. Default `actuator_model = "servo"`; legacy `"kinematic"` kept. Optional q gain schedule (off).
+- Flight metrics essentially unchanged with the gains as they were (doc 17 §7); a 4× weaker drive degrades gracefully; the limp-drive test confirms the fail-safe. The app shows the drives' own telemetry. 57 tests pass. Local only.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title
