@@ -207,7 +207,12 @@ def evaluate(gains=None, verbose=True, waves=True, T_takeoff=60.0):
 def cmd_evaluate(a):
     print("gains:", {k: v for k, v in DEFAULT_PARAMS.items() if k.startswith(("kp_", "ki_", "kd_"))})
     evaluate(waves=not a.no_waves)
-    print("-- robustness: actuator delay and lag doubled")
+    # The default actuator model is "servo", which ignores actuator_params; the doubled delay/lag only
+    # means something on the kinematic actuator, so run the nominal AND the doubled case on it.
+    DEFAULT_PARAMS["actuator_model"] = "kinematic"
+    print("-- kinematic actuator, nominal (20 ms delay, 20 ms lag)")
+    evaluate(waves=False)
+    print("-- kinematic actuator, delay and lag doubled")
     DEFAULT_PARAMS["actuator_params"] = {"rate_limit_deg_s": 720.0, "tau": 0.04, "delay_s": 0.04}
     evaluate(waves=False)
 

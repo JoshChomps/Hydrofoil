@@ -109,6 +109,11 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Caveats: the propulsion current is a guess (real motor/ESC efficiency, takeoff thrust, regen not modelled); the rail limit is checked in the budget tool, not enforced in the flight loop; actuator regen is not netted against propulsion.
 - Not done: flight metrics re-measured at 40 V (tests pass; `audit.py evaluate` not re-run).
 
+### 2026-11-10 — Robustness block of the audit fixed
+- `audit.py evaluate`'s "delay and lag doubled" block printed the nominal numbers because it only set `actuator_params`, which only the kinematic actuator reads (the default is now the servo). It now flies the kinematic actuator nominal (20 ms delay/lag) and doubled (40 ms).
+- Results: doubled delay/lag changes almost nothing (foilborne 3.05 → 3.06 s, 2 cm settle 18.84 → 18.87 s, roll 0.69 → 0.64 s, pitch 0.60 → 0.57 s, height step 3.85 → 3.83 s). Servo model for reference: 3.11 s / 14.6 s / 0.70 s / 0.62 s / 3.55 s. Wave cases not re-run in this block.
+- Not done: flight metrics at 40 V were not isolated from this run's servo numbers beyond the above (they match the 24 V figures, so 40 V made no visible difference to flight).
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title
