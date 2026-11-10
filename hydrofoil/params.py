@@ -67,7 +67,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "elev_actuation": "all_moving", "elev_pivot_frac": 0.22,   # PLACEHOLDER pivot just ahead of the AC (weathervane-stable)
     "main_surface_inertia": 4e-4, "elev_surface_inertia": 4e-4, # kg m^2 about the hinge, PLACEHOLDER (composite)
     "gear_ratio": 20.0,
-    "v_bus": 24.0,                       # moteus supply [V] (10-44 V allowed)
+    "v_bus": 40.0,                       # moteus supply [V] (10-44 V allowed); battery -> PDB -> motors is 40 V
+    "supply_i_max": 25.0,                # PDB output limit [A] shared by everything on the rail
     # "servo": drives with dynamics, current/voltage limits and hinge moments in the loop (default);
     # "kinematic": legacy delay -> rate limit -> lag on the virtual channels (control/actuator.py).
     "actuator_model": "servo",

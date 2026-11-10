@@ -85,7 +85,8 @@ Hardware assumptions:
 
 | Item | Value | Status |
 |---|---|---|
-| moteus r4.11 supply | 10–44 V (24 V assumed) | sourced (mjbots docs) |
+| moteus r4.11 supply | 10–44 V; **40 V** battery → PDB → motors (user-stated 2026-11-10, replaces the 24 V placeholder) | sourced / user |
+| PDB output limit | 25 A for the whole rail (`supply_i_max`) | user-stated |
 | moteus phase current | 100 A peak; 10–12 A continuous bare, 20–32 A heatsunk | sourced (sources disagree on continuous) |
 | moteus peak power | 900 W @ 30 V | sourced |
 | Motor | mj5208-like: Kv 330, 1.7 N m peak, 7500 rpm | listing; R_ll 0.10 Ω and J_rotor 7e-5 kg m² are **PLACEHOLDERS** |
@@ -93,7 +94,7 @@ Hardware assumptions:
 | Gearbox | 20:1, η 0.85, rated 30 N m, output friction 0.05 N m | **PLACEHOLDERS** |
 | Output shaft | Ø 8 mm, 316 SS (shear yield ≈ 140 MPa, SF 2) | **PLACEHOLDER** |
 
-Results at N = 20, V_bus = 24 V (worst of left/right; the elevator is in its own row):
+Results at N = 20, V_bus = 24 V (pre-2026-11-10 default; the tool now defaults to 40 V, see doc 12) (worst of left/right; the elevator is in its own row):
 
 | Scenario | Flap δ range [°] | τ_out peak / rms [N m] | Surface rate peak [°/s] | I peak / rms [A] | V needed peak [V] | P_bus peak [W] |
 |---|---|---|---|---|---|---|

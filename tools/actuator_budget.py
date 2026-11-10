@@ -25,9 +25,11 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 from hydrofoil.params import DEFAULT_PARAMS                           # noqa: E402
 from hydrofoil.vehicle import VehiclePhysics                         # noqa: E402
 from hydrofoil.waves.airy import AiryWave, CalmWater                 # noqa: E402
-from hydrofoil.actuation.drive import DriveSpec, budget, limits_at_output   # noqa: E402
+from hydrofoil.actuation.drive import DriveSpec, budget, limits_at_output, electrical_demand   # noqa: E402
 from hydrofoil.actuation.loads import (DRIVES, surface_models, drive_angles,   # noqa: E402
                                        steady_moments, output_torque)
+
+PROP_EFF = 0.35   # PLACEHOLDER overall propulsion efficiency (ESC x motor x prop) for the rough rail-current estimate
 
 SCENARIOS = {
     # name: (target speed, wave or None, duration, bank schedule)
@@ -49,7 +51,7 @@ def fly(name: str, params: dict, model: str = "kinematic"):
     vp = VehiclePhysics(p)
     hinges = surface_models(p)
     state, t, dt = vp.rest_state(), 0.0, p["dt"]
-    rec = {k: [] for k in ("t", "u", "draft")}
+    rec = {k: [] for k in ("t", "u", "draft", "thrust")}
     for d in DRIVES:
         rec[d] = []; rec[d + "_M"] = []; rec[d + "_V"] = []
     while t < t_end:
@@ -63,7 +65,7 @@ def fly(name: str, params: dict, model: str = "kinematic"):
         env = vp.wave_sample(state[:6], t, wave)
         m = steady_moments(vp, state, cmds, env, hinges)
         ang = drive_angles(cmds)
-        rec["t"].append(t); rec["u"].append(state[6]); rec["draft"].append(draft)
+        rec["thrust"].append(thrust); rec["t"].append(t); rec["u"].append(state[6]); rec["draft"].append(draft)
         for d in DRIVES:
             rec[d].append(np.radians(ang[d])); rec[d + "_M"].append(m[d]); rec[d + "_V"].append(m[d + "_V"])
     return {k: np.asarray(v) for k, v in rec.items()}, hinges, p
@@ -81,6 +83,12 @@ def analyse(rec, hinges, spec: DriveSpec, dt: float, t_skip: float = 0.0):
         b["m_hyd_mean"] = float(np.mean(rec[d + "_M"][sel]))
         b["delta_range_deg"] = (float(np.degrees(rec[d][sel].min())), float(np.degrees(rec[d][sel].max())))
         res[d] = b
+        e = electrical_demand(spec, dd[sel], ddd[sel], tau[sel])
+        p_sum = e["p_bus"] if d == DRIVES[0] else p_sum + e["p_bus"]
+    # All three drives share one rail: supply current = summed bus power / V_bus (time-aligned).
+    i_sup = p_sum / spec.ctrl.v_bus
+    res["_supply"] = {"i_peak": float(i_sup.max()), "i_mean": float(i_sup.mean()),
+                      "i_prop_est": float(np.max(rec["thrust"][sel] * rec["u"][sel]) / (PROP_EFF * spec.ctrl.v_bus))}
     return res
 
 
@@ -88,7 +96,7 @@ def main():
     ap = argparse.ArgumentParser()
     ap.add_argument("--scenarios", nargs="*", default=list(SCENARIOS))
     ap.add_argument("--ratios", nargs="*", type=float, default=[5, 10, 15, 20, 30, 40])
-    ap.add_argument("--vbus", type=float, default=24.0)
+    ap.add_argument("--vbus", type=float, default=40.0)
     ap.add_argument("--model", choices=["kinematic", "servo"], default="kinematic",
                     help="actuator model that FLIES the trajectories (kinematic = what the controller asks for; servo = what the drives deliver)")
     a = ap.parse_args()
@@ -119,6 +127,9 @@ def main():
               f"final u = {rec['u'][-1]:.2f} m/s, foilborne = {rec['draft'][-1] <= 1e-6}")
         print("  drive  delta range [deg]  M_hyd mean/peak [Nm]  tau_out pk/rms [Nm]  rate pk [deg/s]  "
               "I pk/rms [A]  V pk [V]  P_bus pk/mean [W]  regen [J]  ok")
+        sp = res["_supply"]
+        print(f"  rail: actuators peak {sp['i_peak']:.2f} A / mean {sp['i_mean']:.2f} A; propulsion est. peak {sp['i_prop_est']:.1f} A "
+              f"(thrust x u / {PROP_EFF}); total {sp['i_peak'] + sp['i_prop_est']:.1f} A vs {base.ctrl.supply_i_max:.0f} A PDB limit")
         for d in DRIVES:
             r = res[d]
             print(f"  {d:5s}  {r['delta_range_deg'][0]:6.1f} .. {r['delta_range_deg'][1]:5.1f}   "
@@ -134,15 +145,17 @@ def main():
         spec.ctrl.v_bus = a.vbus
         spec.gear.ratio = N
         worst = {"i_peak": 0, "i_rms": 0, "v_peak": 0, "p_bus_peak": 0, "tau_out_peak": 0, "rpm_peak": 0}
-        fails = set()
+        fails = set(); worst_sup = 0.0
         for s, (rec, hinges) in runs.items():
             for d, r in analyse(rec, hinges, spec, dt).items():
+                if d == "_supply":
+                    worst_sup = max(worst_sup, r["i_peak"]); continue
                 for k in worst:
                     worst[k] = max(worst[k], r[k])
                 fails |= {k[3:] for k, v in r.items() if k.startswith("ok_") and not v}
         print(f"  {N:4.0f}  {worst['i_peak']:9.1f}  {worst['i_rms']:8.1f}  {worst['v_peak']:9.1f}  "
               f"{worst['p_bus_peak']:9.0f}  {worst['tau_out_peak']:13.2f}  {worst['rpm_peak']:7.0f}   "
-              + (",".join(sorted(fails)) or "-"))
+              + (",".join(sorted(fails)) or "-") + f"   rail {worst_sup:.1f} A")
 
 
 if __name__ == "__main__":

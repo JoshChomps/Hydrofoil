@@ -103,6 +103,12 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Flight metrics barely change with the lag (z-settle 14.7 → 14.6 s, height step 3.58 → 3.55 s). `physics_rhs` called directly (audit linearize) sees the frozen last delayed value, so the linearised model omits the downwash dynamics.
 - Drive budget re-run (`actuator_budget.py --model servo`, N = 20, cruise 4 and 6 m/s head seas), new model vs old (no flap moment/downwash, trim 15.1°): peak current 13.7 A and peak voltage 5.4 V unchanged (set by the takeoff step to the 20° stop); rms current 1.9 → 2.0 A (4 m/s) and 2.0 → 2.2 A (6 m/s); peak output torque 1.40 → 1.47 and 1.83 → 1.89 N m; elevator unchanged. The flap section moment reaches the drives only through the achieved flap angle; hinge loads scale with V². All within the moteus/BLDC limits. Not swept: other gear ratios with the new model.
 
+### 2026-11-10 — 40 V / 25 A supply and rail-current check
+- Supply is now 40 V from battery through the PDB to the motors, limited to 25 A (user-stated): `v_bus` 24 → 40 (params, `ControllerSpec`, `actuator_budget.py --vbus`), new `supply_i_max` = 25 A. The budget tool sums the three drives' bus power (time-aligned) into a rail current and prints it with a rough propulsion estimate thrust·u/η (η = 0.35 PLACEHOLDER) against the 25 A limit.
+- Results (servo model, N = 20): actuators peak 3.1 A (mean 0.13 A); with propulsion ≈ 8.4 A at 4 m/s and 15.5 A at 6 m/s the rail totals 11.5 A / 18.6 A vs 25 A, all scenarios OK. Gear sweep (worst rail for actuators only): N = 5 → 2.8 A, 20 → 3.1 A, 40 → 11.4 A; peak phase current 13.8 A at N = 15, 14.1 A at 20, 27 A at N = 5 and 40; rate limit at N = 20 rises 2138 → 3564 deg/s. 60 tests pass.
+- Caveats: the propulsion current is a guess (real motor/ESC efficiency, takeoff thrust, regen not modelled); the rail limit is checked in the budget tool, not enforced in the flight loop; actuator regen is not netted against propulsion.
+- Not done: flight metrics re-measured at 40 V (tests pass; `audit.py evaluate` not re-run).
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

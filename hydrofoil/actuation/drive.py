@@ -49,7 +49,8 @@ class MotorSpec:
 @dataclass
 class ControllerSpec:
     """moteus r4.11."""
-    v_bus: float = 24.0             # supply [V] PLACEHOLDER (6S); allowed 10-44 V
+    v_bus: float = 40.0             # supply [V] (battery -> PDB -> motors, 40 V); allowed 10-44 V
+    supply_i_max: float = 25.0      # A, PDB output limit for the whole rail
     i_peak: float = 100.0           # A phase, peak
     i_cont: float = 12.0            # A phase, continuous WITHOUT heat sinking (20-32 A with) -- conservative
     p_peak: float = 900.0           # W
