@@ -101,7 +101,7 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 ### 2026-11-09 — Downwash transport lag and drive-load consistency
 - Tail downwash is now delayed by l/u (wing-to-tail distance / forward speed) from a history buffer in `VehiclePhysics` (`downwash_lag`, default on). The elevator drive's hinge-load flow (`actuation/loads.flow_models`) now subtracts the same downwash, so elevator hinge moment/current are consistent with the force model.
 - Flight metrics barely change with the lag (z-settle 14.7 → 14.6 s, height step 3.58 → 3.55 s). `physics_rhs` called directly (audit linearize) sees the frozen last delayed value, so the linearised model omits the downwash dynamics.
-- Not done: re-running `tools/actuator_budget.py` to see how the new trim (16.1° flap), flap moment and downwash change currents/voltages across gear ratios and speeds (flap-moment effects reach the drives only through the achieved flap angle; hinge loads scale with V^2). Do this next.
+- Drive budget re-run (`actuator_budget.py --model servo`, N = 20, cruise 4 and 6 m/s head seas), new model vs old (no flap moment/downwash, trim 15.1°): peak current 13.7 A and peak voltage 5.4 V unchanged (set by the takeoff step to the 20° stop); rms current 1.9 → 2.0 A (4 m/s) and 2.0 → 2.2 A (6 m/s); peak output torque 1.40 → 1.47 and 1.83 → 1.89 N m; elevator unchanged. The flap section moment reaches the drives only through the achieved flap angle; hinge loads scale with V². All within the moteus/BLDC limits. Not swept: other gear ratios with the new model.
 
 ### Template for future entries
 ```
