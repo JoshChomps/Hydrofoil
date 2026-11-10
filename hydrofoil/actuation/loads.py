@@ -57,6 +57,8 @@ def flow_models(vp, state, env, hinges) -> dict[str, _Flow]:
         nu_rel = nu.copy()
         nu_rel[:3] -= env.foil_vel_body[name]
         V, alpha = foil.flow(nu_rel)
+        if name == "elev":
+            alpha -= vp._eps_used                      # the tail flies in the wing's downwash
         h_c = vp._submergence_over_chord(foil, eta, env.foil_surface_z[name])
         lf = foil.lift_slope_factor * free_surface_lift_factor(h_c)
         out[name] = _Flow(hinges[name], foil, V, alpha, lf)

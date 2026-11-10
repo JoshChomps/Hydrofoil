@@ -149,6 +149,7 @@ class VehiclePhysics:
         }
         actuator_params = p.get("actuator_params") or DEFAULT_ACTUATOR_PARAMS
         self.controller = HydrofoilController(pid_gains, dt=p["dt"], actuator_params=actuator_params)
+        self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0   # wing->tail downwash history (transport lag)
         self.surge = SurgeController(Kp=p["kp_speed"], Ki=p["ki_speed"], Kd=p["kd_speed"],
                                       dt=p["dt"], max_thrust=p["max_thrust"])
 
@@ -167,6 +168,7 @@ class VehiclePhysics:
 
     def reset(self):
         """Reset controllers and drive states (e.g. on a sim restart)."""
+        self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0
         self.controller.reset()
         self.surge.reset()
         for d in self.drives.values():
@@ -189,6 +191,21 @@ class VehiclePhysics:
                 "delta_elev": ang["elev"],
                 "target": target,
                 "drive": {n: dict(self.drives[n].telemetry) for n in self.drives}}
+
+    def _downwash_qs(self) -> float:
+        """Quasi-steady downwash angle at the tail [rad] from the main foils' latest corrected CL:
+        eps = k * 2 CL / (pi AR_wing), AR on the full two-panel span."""
+        l, r = self.left_foil, self.right_foil
+        ar_w = (l.geometry.span + r.geometry.span) / l.geometry.chord
+        return self.params.get("downwash_factor", 1.0) * (l.last_CL + r.last_CL) / (np.pi * ar_w)
+
+    def _downwash_lagged(self, t: float, u: float) -> float:
+        """Downwash the tail sees NOW: the wing's value from l/u seconds ago (the wake must be convected
+        the wing->tail distance). params['downwash_lag'] = False uses the instantaneous value."""
+        if not self.params.get("downwash_lag", True) or not self._dw_t:
+            return self._downwash_qs() if not self.params.get("downwash_lag", True) else 0.0
+        l = abs(self.elev_foil.r_attach[0] - self.left_foil.r_attach[0])
+        return float(np.interp(t - l / max(float(u), 0.5), self._dw_t, self._dw_eps))
 
     def _trim_ff(self, u: float) -> float:
         """Speed-scheduled trim flap angle [deg] (lift ~ u^2 => delta_trim ~ 1/u^2), added to the heave
@@ -284,11 +301,8 @@ class VehiclePhysics:
         tau += strut_force("elev_strut")
         tau += foil_force("left", cmds["delta_main"] - cmds["delta_roll"])
         tau += foil_force("right", cmds["delta_main"] + cmds["delta_roll"])
-        # Wing -> tail downwash (quasi-steady, no transport lag): eps = k * 2 CL / (pi AR_wing), AR on the full span.
-        cl_w = 0.5 * (self.left_foil.last_CL + self.right_foil.last_CL)
-        ar_w = (self.left_foil.geometry.span + self.right_foil.geometry.span) / self.left_foil.geometry.chord
-        eps = p.get("downwash_factor", 1.0) * 2.0 * cl_w / (np.pi * ar_w)
-        tau += foil_force("elev", cmds["delta_elev"], downwash=eps)
+        # Wing -> tail downwash: self._eps_used (transport-lagged, see _downwash_lagged)
+        tau += foil_force("elev", cmds["delta_elev"], downwash=self._eps_used)
         tau += self.hull.buoyancy(eta, env.hull_cell_surface_z)
         tau += gravity_force(p["mass"], eta)
         tau += self.hull.drag(nu, self.hull.mean_draft(eta, env.hull_cell_surface_z), p["hull_drag_coeff"], p["hull_rot_damping"])
@@ -318,6 +332,7 @@ class VehiclePhysics:
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
         env = self.wave_sample(eta, t, wave)
+        self._eps_used = self._downwash_lagged(t, nu[0])      # frozen over the step; drive loads use it too
         if cmds_override is None and self.actuator_model == "servo":
             ff = self._trim_ff(nu[0])
             self.controller.heave_pid.output_min = -20.0 - ff   # anti-windup judges the TOTAL flap command
@@ -362,5 +377,9 @@ class VehiclePhysics:
             new_state[6:9] = np.clip(new_state[6:9], -MAX_LINEAR_VEL, MAX_LINEAR_VEL)
             new_state[9:12] = np.clip(new_state[9:12], -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL)
 
+        # last_CL is from the final RK stage (~ end of step): record it for the transport delay
+        self._dw_t.append(t + dt); self._dw_eps.append(self._downwash_qs())
+        while len(self._dw_t) > 1 and self._dw_t[1] < t + dt - 5.0:
+            del self._dw_t[0], self._dw_eps[0]
         draft = self.hull.mean_draft(new_state[:6], env.hull_cell_surface_z)   # footprint-averaged draft
         return new_state, cmds, thrust, draft, wave_elev
