@@ -229,3 +229,15 @@ def test_floating_hull_rocking_is_damped():
         s, _, _, _, _ = vp.step(s, t, CalmWater()); t += p["dt"]
         th.append(np.degrees(s[4]))
     assert max(abs(x) for x in th[-300:]) < 0.5          # initial 2 deg rocking has died away
+
+
+def test_trim_feedforward_schedules_with_speed_and_can_be_disabled():
+    from hydrofoil.params import DEFAULT_PARAMS
+    from hydrofoil.vehicle import VehiclePhysics
+    p = dict(DEFAULT_PARAMS)
+    vp = VehiclePhysics(p)
+    assert abs(vp._trim_ff(p["trim_ff_speed"]) - p["trim_ff_deg"]) < 1e-9
+    assert abs(vp._trim_ff(2 * p["trim_ff_speed"]) - p["trim_ff_deg"] / 4) < 1e-9
+    assert vp._trim_ff(0.0) <= 20.0                       # clamped at low speed
+    p["trim_ff_deg"] = 0.0
+    assert VehiclePhysics(p)._trim_ff(4.0) == 0.0

@@ -186,6 +186,15 @@ class VehiclePhysics:
                 "target": target,
                 "drive": {n: dict(self.drives[n].telemetry) for n in self.drives}}
 
+    def _trim_ff(self, u: float) -> float:
+        """Speed-scheduled trim flap angle [deg] (lift ~ u^2 => delta_trim ~ 1/u^2), added to the heave
+        PID output so the integrator no longer has to ramp up to the weight-supporting angle."""
+        p = self.params
+        d0, vs = p.get("trim_ff_deg", 0.0), p.get("trim_ff_speed", 0.0)
+        if d0 == 0.0 or vs <= 0.0:
+            return 0.0
+        return float(np.clip(d0 * (vs / max(float(u), 0.5 * vs)) ** 2, -20.0, 20.0))
+
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
         p = self.params
@@ -301,11 +310,15 @@ class VehiclePhysics:
         # angles are radians (Fossen convention) — convert before compare.
         env = self.wave_sample(eta, t, wave)
         if cmds_override is None and self.actuator_model == "servo":
+            ff = self._trim_ff(nu[0])
+            self.controller.heave_pid.output_min = -20.0 - ff   # anti-windup judges the TOTAL flap command
+            self.controller.heave_pid.output_max = 20.0 - ff
             raw = self.controller.pid_commands(
                 z_ref,                       eta[2],
                 np.radians(p["phi_ref"]),    eta[3],
                 np.radians(p["theta_ref"]),  eta[4],
             )
+            raw["delta_main"] += ff
             cmds = self._servo_commands(raw, state, env)
         elif cmds_override is None:
             cmds = self.controller.update(

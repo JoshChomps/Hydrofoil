@@ -86,6 +86,11 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - My claims corrected: E7 "energy not conserved" (wrong: νᵀCν = 0), E14 (AiryWave had `direction`; the original "Ki 0.05 blew up" comment is not reproducible), doc 13 W7 (no common limit; the opposite problem), the flap-effectiveness "conflict" (inboard half-span), E2's before-figures (8.5 s / 70.6 s).
 - Found and fixed my own error: the hinge model used the full 0.6 m span for a 0.3 m inboard flap (`main_flap_span_frac`). Hinge loads and currents halved; the current-optimal ratio is ≈ 15:1 (10–20 flat); doc 17 refreshed; the viewer draws the flap inboard. 57 tests pass. Local only.
 
+### 2026-11-09 — Trim feed-forward (roadmap Phase 0 item 2)
+- `vehicle._trim_ff`: δ_ff = `trim_ff_deg` (15.1°) · (`trim_ff_speed` (4 m/s) / u)², clamped ±20°, added to the heave PID output; the heave PID's clamp is shifted by the FF so anti-windup judges the total flap command. `trim_ff_deg = 0` disables it. New params in `params.py`; test added.
+- Verified (`tools/audit.py evaluate`, calm water): height-step 2 cm settling 8.6 s → 2.7 s; settling after takeoff 17.7 s → 12.2 s; takeoff 2.95 s, bank/roll/pitch metrics unchanged. 58 tests pass. Without the clamp shift the post-takeoff settling was worse (32 s: integrator wound up on top of the FF). Not re-run: wave cases, the doubled-delay robustness block.
+- Follow-ups: the trim angle is a measured constant, not computed from W/(2qA·CLα·k); the remaining 12 s post-takeoff settle is the speed ramp (surge loop).
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

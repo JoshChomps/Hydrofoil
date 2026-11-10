@@ -3,7 +3,7 @@
 Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggested]** = my recommendation from reading the code.
 
 ## Phase 0 — Fix the baseline (from doc 13) — mostly DONE 2026-11-04, see doc 14
-Done: units fix + retune + committed regression tests (item 1), waves able to excite roll/yaw with dispersion lock (3), strut side force and buoyancy lever arm, Munk moment (4, partly), anti-windup/surge sign (5). Open: trim feed-forward (2), wing–tail downwash and flap section moment (4), clamps out of the plant / quaternions (6).
+Done: units fix + retune + committed regression tests (item 1), waves able to excite roll/yaw with dispersion lock (3), strut side force and buoyancy lever arm, Munk moment (4, partly), anti-windup/surge sign (5). Trim feed-forward (2) done 2026-11-09 (doc 12). Open: wing–tail downwash and flap section moment (4), clamps out of the plant / quaternions (6).
 1. Fix the rad/deg unit mismatch in the roll/pitch PIDs (convert error to degrees or scale gains ×57.3), retune, and commit the bank-step and disturbance-recovery tests (the sweeps in doc 05's re-test table are the acceptance criteria).
 2. Speed-scheduled feed-forward trim δ_trim ≈ W/(2·q·A·CLα·k_flap) so height settles in seconds; raise default `t_end`.
 3. Make waves able to excite roll/yaw (per-foil phase, directional spread, lateral components); lock λ–T by dispersion.

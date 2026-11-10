@@ -30,6 +30,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # main strut's midpoint sits right at the waterline once flying — half
     # the shaft above water, half below.
     "flying_height": 0.55,
+    "trim_ff_deg": 15.1, "trim_ff_speed": 4.0,   # speed-scheduled trim flap feed-forward (0 = off)
     "phi_ref": 0.0, "theta_ref": 0.0,
     "waves_enabled": False,
     # Period is derived from wavelength by the deep-water dispersion relation. Direction is the
