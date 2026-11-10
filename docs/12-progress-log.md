@@ -91,6 +91,13 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Verified (`tools/audit.py evaluate`, calm water): height-step 2 cm settling 8.6 s → 2.7 s; settling after takeoff 17.7 s → 12.2 s; takeoff 2.95 s, bank/roll/pitch metrics unchanged. 58 tests pass. Without the clamp shift the post-takeoff settling was worse (32 s: integrator wound up on top of the FF). Not re-run: wave cases, the doubled-delay robustness block.
 - Follow-ups: the trim angle is a measured constant, not computed from W/(2qA·CLα·k); the remaining 12 s post-takeoff settle is the speed ramp (surge loop).
 
+### 2026-11-09 — Wing–tail downwash and flap section moment (roadmap Phase 0 item 4, rest)
+- Flap moment: `thin_airfoil_coeffs` now returns `cm_alpha` (≈ 0, AC at c/4) and `cm_delta` (−0.588/rad for a 40 % flap, equals Glauert −½ sinθ(1−cosθ)). `Foil(flap_cm_delta=…)` adds q·A·c·Cm_δ·δ to the pitch moment of each main half; scaled by `main_flap_span_frac` (0.5) and `flap_cm_factor` (0.8, same viscous placeholder as the hinge model). Switch: `flap_moment`.
+- Downwash: tail AoA reduced by ε = `downwash_factor` · 2·CL_wing / (π·AR_wing), AR on the full 1.2 m span, using the main foils' corrected CL (`Foil.last_CL`). Quasi-steady: NO transport lag (l/V ≈ 0.3 s), and no strut/hull wake effect.
+- Effect: cruise trim flap 15.1° → 16.1° (so `trim_ff_deg` 15.1 → 16.1), elevator −0.30° → −0.36°, thrust 17.1 → 18.0 N. Calm-water metrics: takeoff 2.95 → 3.10 s, post-takeoff 2 cm settle 12.2 → 14.6 s, height step 2.7 → 3.6 s, bank/roll/pitch unchanged, no touchdowns, wave roll unchanged.
+- 60 tests pass (2 new: Glauert match, downwash/moment signs). Note: the "delay and lag doubled" block of `audit.py evaluate` printed identical numbers to the nominal block, so it does not appear to alter the servo-model path — not investigated.
+- Follow-ups: transport-lagged downwash (affects short-period damping), retune if the lag is added, wing-wake on the elevator strut.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

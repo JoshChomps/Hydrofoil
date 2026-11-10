@@ -26,6 +26,7 @@ from hydrofoil.forces.foil import (
 )
 from hydrofoil.forces.buoyancy import gravity_force
 from hydrofoil.forces.hull import HullHydrostatics
+from hydrofoil.actuation.hinge import thin_airfoil_coeffs
 from hydrofoil.control.pid import HydrofoilController
 from hydrofoil.control.surge import SurgeController
 from hydrofoil.control.actuator import DEFAULT_ACTUATOR_PARAMS
@@ -108,19 +109,22 @@ class VehiclePhysics:
         # (asymmetric lift x lateral offset); the existing 6-DOF dynamics
         # turn that into an actual bank. Closed-loop via self.controller's
         # roll_pid — see control/pid.py.
+        # Flap section pitching moment (thin-airfoil Cm_delta x inboard span fraction x viscous factor).
+        flap_cm = (thin_airfoil_coeffs(p["main_flap_frac"])["cm_delta"] * p["main_flap_span_frac"]
+                   * p.get("flap_cm_factor", 0.8)) if p.get("flap_moment", True) else 0.0
         self.left_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"]),
             polar,
             r_attach=np.array([p["main_pos_x"], -p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
-            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY,
+            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
         )
         self.right_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"]),
             polar,
             r_attach=np.array([p["main_pos_x"], p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
-            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY,
+            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
         )
         self.elev_foil = Foil(
             FoilGeometry(chord=p["elev_chord"], span=p["elev_span"]),
@@ -256,13 +260,14 @@ class VehiclePhysics:
         env = env or self.calm_sample()
         eta, nu = state[:6], state[6:]
 
-        def foil_force(name, delta):
+        def foil_force(name, delta, downwash=0.0):
             foil = self._foils()[name]
             nu_rel = nu.copy()
             nu_rel[:3] -= env.foil_vel_body[name]
             return foil.generalized_force(
                 nu_rel, delta=delta,
-                submergence_over_chord=self._submergence_over_chord(foil, eta, env.foil_surface_z[name]))
+                submergence_over_chord=self._submergence_over_chord(foil, eta, env.foil_surface_z[name]),
+                downwash_rad=downwash)
 
         def strut_force(name):
             strut = self._foils()[name]
@@ -279,7 +284,11 @@ class VehiclePhysics:
         tau += strut_force("elev_strut")
         tau += foil_force("left", cmds["delta_main"] - cmds["delta_roll"])
         tau += foil_force("right", cmds["delta_main"] + cmds["delta_roll"])
-        tau += foil_force("elev", cmds["delta_elev"])
+        # Wing -> tail downwash (quasi-steady, no transport lag): eps = k * 2 CL / (pi AR_wing), AR on the full span.
+        cl_w = 0.5 * (self.left_foil.last_CL + self.right_foil.last_CL)
+        ar_w = (self.left_foil.geometry.span + self.right_foil.geometry.span) / self.left_foil.geometry.chord
+        eps = p.get("downwash_factor", 1.0) * 2.0 * cl_w / (np.pi * ar_w)
+        tau += foil_force("elev", cmds["delta_elev"], downwash=eps)
         tau += self.hull.buoyancy(eta, env.hull_cell_surface_z)
         tau += gravity_force(p["mass"], eta)
         tau += self.hull.drag(nu, self.hull.mean_draft(eta, env.hull_cell_surface_z), p["hull_drag_coeff"], p["hull_rot_damping"])

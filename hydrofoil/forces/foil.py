@@ -174,6 +174,7 @@ class Foil:
         flap_effectiveness: float = 1.0,
         oswald_efficiency: float = 0.80,
         normal_axis: np.ndarray | None = None,
+        flap_cm_delta: float = 0.0,
     ):
         self.geometry = geometry
         self.tables = tables
@@ -196,6 +197,11 @@ class Foil:
         # ELEVATOR_FLAP_EFFECTIVENESS above for this vehicle's real values.
         self.flap_effectiveness = flap_effectiveness
         self.oswald_efficiency = oswald_efficiency
+        # Section pitching-moment slope of the flap about the quarter chord [per rad of REAL flap
+        # deflection, nose-up positive, already scaled by flap span fraction]. A flap-down force
+        # increment acts aft of c/4, so it also adds a nose-down couple. 0 = none (all-moving foil).
+        self.flap_cm_delta = flap_cm_delta
+        self.last_CL = 0.0   # corrected CL of the latest generalized_force call (read by the tail downwash)
         # Aspect ratio of this panel from its own span/chord (rectangular
         # planform assumed). Each main-foil half is modeled as its own Foil
         # at its own half-span, so this is that half-panel's local AR, not
@@ -228,6 +234,7 @@ class Foil:
         submergence_over_chord: float | None = None,
         span: float | None = None,
         r_attach: np.ndarray | None = None,
+        downwash_rad: float = 0.0,
     ) -> np.ndarray:
         """
         Compute 6-DOF generalized force contribution of this foil.
@@ -242,6 +249,8 @@ class Foil:
                 free-surface correction entirely (factor == 1.0) — callers
                 that don't track submergence (e.g. sim.py) get unchanged
                 behavior.
+
+        downwash_rad : downwash angle at this foil from an upstream wing [rad]; reduces the AoA.
 
         span, r_attach : optional per-call overrides of the geometric span and the
                 aerodynamic-centre position (used for struts whose wetted length
@@ -281,7 +290,7 @@ class Foil:
         # actually becomes angle-of-attack — 1 deg of flap is NOT 1 deg of AoA
         # (see class docstring / module-level *_FLAP_EFFECTIVENESS constants).
         aoa_rad = np.arctan2(V_n, V_foil[0])
-        aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * delta
+        aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * delta - np.degrees(downwash_rad)
 
         q = 0.5 * self.rho * speed**2
         A = self.geometry.chord * span
@@ -298,6 +307,8 @@ class Foil:
         # didn't supply a known submergence).
         if submergence_over_chord is not None:
             CL *= free_surface_lift_factor(submergence_over_chord)
+
+        self.last_CL = float(CL)
 
         # 4. Induced drag from the corrected (3D, free-surface-adjusted) CL,
         # added on top of 2D profile drag. Must come last — it depends on
@@ -322,4 +333,6 @@ class Foil:
         tau = np.zeros(6)
         tau[:3] = force
         tau[3:] = moment
+        if self.flap_cm_delta:
+            tau[4] += q * A * self.geometry.chord * self.flap_cm_delta * np.radians(delta)
         return tau

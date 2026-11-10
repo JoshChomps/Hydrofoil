@@ -241,3 +241,29 @@ def test_trim_feedforward_schedules_with_speed_and_can_be_disabled():
     assert vp._trim_ff(0.0) <= 20.0                       # clamped at low speed
     p["trim_ff_deg"] = 0.0
     assert VehiclePhysics(p)._trim_ff(4.0) == 0.0
+
+
+def test_flap_section_moment_matches_glauert_and_has_right_sign():
+    from hydrofoil.actuation.hinge import thin_airfoil_coeffs
+    for cf in (0.2, 0.4):
+        th = np.arccos(1 - 2 * (1 - cf))                      # hinge angle from the LE
+        glauert = -0.5 * np.sin(th) * (1 - np.cos(th))        # Cm_delta about c/4, per rad
+        c = thin_airfoil_coeffs(cf)
+        assert abs(c["cm_delta"] - glauert) < 5e-3 and abs(c["cm_alpha"]) < 1e-9
+
+
+def test_downwash_lowers_tail_lift_and_flap_moment_is_nose_down():
+    from hydrofoil.params import DEFAULT_PARAMS
+    from hydrofoil.vehicle import VehiclePhysics
+    state = np.zeros(12); state[2] = 0.3; state[6] = 4.0
+    cmds = {"delta_main": 10.0, "delta_roll": 0.0, "delta_elev": 2.0}
+    def tau(**kw):
+        p = dict(DEFAULT_PARAMS); p.update(kw)
+        vp = VehiclePhysics(p)
+        vp.physics_rhs(state, cmds, 0.0)
+        return vp
+    on, off = tau(), tau(downwash_factor=0.0, flap_moment=False)
+    assert on.left_foil.flap_cm_delta < 0 and off.left_foil.flap_cm_delta == 0
+    z_on = on.elev_foil.generalized_force(state[6:], 2.0, downwash_rad=0.05)
+    z_off = on.elev_foil.generalized_force(state[6:], 2.0)
+    assert z_on[2] > z_off[2]                             # less upward (negative z) lift

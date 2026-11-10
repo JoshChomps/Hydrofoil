@@ -59,7 +59,7 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400) -> dict:
     2-D thin-airfoil coefficients for a unit-chord plate with a plain flap of chord fraction
     ``flap_frac`` (0 = no flap). Per radian. Hinge moment is referenced to q * c_f^2 (per span).
 
-    Returns dict: cl_alpha, cl_delta, tau (= cl_delta/cl_alpha), x_ac,
+    Returns dict: cl_alpha, cl_delta, tau (= cl_delta/cl_alpha), x_ac, cm_alpha / cm_delta (about c/4),
                   ch_alpha, ch_delta   (flap only; 0 when flap_frac == 0).
     """
     h = 1.0 / n
@@ -78,8 +78,12 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400) -> dict:
     cl_a, cl_d = 2.0 * g_alpha.sum(), 2.0 * g_delta.sum()
     x_ac = float((g_alpha * xv).sum() / g_alpha.sum())
 
+    # Section pitching moment about the quarter chord (nose-up positive): each bound vortex's
+    # lift acts at x_v, so M = sum G (0.25 - x_v); C_m = 2 M (rho = V = c = 1). A flap-down gives < 0.
+    cm_a, cm_d = 2.0 * (g_alpha * (0.25 - xv)).sum(), 2.0 * (g_delta * (0.25 - xv)).sum()
+
     out = {"cl_alpha": cl_a, "cl_delta": cl_d, "tau": cl_d / cl_a, "x_ac": x_ac,
-           "ch_alpha": 0.0, "ch_delta": 0.0}
+           "cm_alpha": cm_a, "cm_delta": cm_d, "ch_alpha": 0.0, "ch_delta": 0.0}
     if flap_frac > 0:
         cf = flap_frac
         arm = np.where(on_flap_v, xv - x_h, 0.0)
