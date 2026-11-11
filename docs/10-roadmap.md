@@ -11,7 +11,7 @@ Done: units fix + retune + committed regression tests (item 1), waves able to ex
 5. Replace the freeze-style anti-windup with conditional integration or back-calculation; add a derivative filter; fix the surge Kd sign.
 6. Move the safety clamps out of the design plant; consider quaternion attitude.
 
-## Phase 3 — Advanced control (stated roadmap)
+## Phase 3 — Advanced control (stated roadmap) — linearisation, scheduled LQR and sensors/Kalman estimator DONE 2026-11-11 (doc 19); MPC, drive-aware design and bias states remain
 1. **[stated]** Linearised state-space model (A, B) about a foilborne trim point. Nothing exists yet.
    - **[suggested]** Add `hydrofoil/linearize.py` with a trim solver (solve `physics_rhs = 0` for δ_main, δ_elev, thrust at given u, flying_height) and a central-difference Jacobian; add tests that A has the expected open-loop poles/stability.
 2. **[stated]** LQR / MPC as a coupled MIMO controller to replace the three SISO PIDs; expected to cure the combined-input divergence (doc 05 §2.4).

@@ -158,6 +158,15 @@ class VehiclePhysics:
         # docs/17). "kinematic": the legacy delay -> rate limit -> lag on the three virtual channels.
         self.actuator_model = p.get("actuator_model", "servo")
         self.hinges = surface_models(p)
+        self.lqr = None
+        self.sensors = None
+        self._last_cmds = dict.fromkeys(("delta_main", "delta_elev", "delta_roll"), 0.0)
+        if p.get("sensors", "ideal") == "noisy":
+            self._build_estimation()
+        if p.get("controller", "pid") == "lqr":
+            if self.actuator_model != "servo":
+                raise ValueError("controller='lqr' needs actuator_model='servo'")
+            self._build_lqr()
         sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
         self.drives = {}
         for name, stop in (("left", p["flap_stop_deg"]), ("right", p["flap_stop_deg"]), ("elev", p["elev_stop_deg"])):
@@ -166,8 +175,57 @@ class VehiclePhysics:
             spec.ctrl.v_bus = p["v_bus"]
             self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp)
 
+    def _build_lqr(self):
+        """Scheduled LQR (control/lqr.py), designed on a PID-configured copy of this plant."""
+        from hydrofoil.control.lqr import LQRController
+        p = dict(self.params, controller="pid")
+        self.lqr = LQRController(VehiclePhysics(p), p["dt"], weights=p.get("lqr_weights"))
+
+    def _build_estimation(self):
+        """Noisy sensors + Kalman estimator (params['sensors'] = 'noisy'); controllers then see estimates."""
+        from hydrofoil.sensors.models import SensorSuite
+        from hydrofoil.estimation.kalman import KalmanEstimator
+        p = dict(self.params, controller="pid", sensors="ideal")
+        self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0))
+        self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"])
+        self._est_ready = False
+        self._u_meas = 0.0
+
+    def _control_state(self, state, t: float) -> np.ndarray:
+        """The state the controllers see: truth when sensors are 'ideal'; otherwise measurements (below the
+        foilborne speed) or the Kalman estimate (above it). Physics always uses the true state."""
+        if self.sensors is None:
+            return state
+        p = self.params
+        meas = self.sensors.measure(state, t, p["dt"])
+        if "u" in meas:
+            self._u_meas = float(meas["u"])
+        if not all(k in meas for k in ("z", "phi", "theta", "p", "q", "r")) and not self._est_ready:
+            return state                                   # sensors not all up yet (first few ms)
+        c = state.copy()
+        z_trim = p["hull_offset"] - p["flying_height"]
+        if self._u_meas < 3.0 and not self._est_ready:
+            for k, i in (("z", 2), ("phi", 3), ("theta", 4), ("p", 9), ("q", 10), ("r", 11)):
+                if k in meas:
+                    c[i] = meas[k]
+            c[6] = self._u_meas
+            return c
+        if not self._est_ready:
+            self.estimator.init(meas, z_trim)
+            self._est_ready = True
+        last = self._last_cmds
+        est = self.estimator.update(meas, [last["delta_main"], last["delta_elev"], last["delta_roll"]],
+                                    self._u_meas, z_trim)
+        c[[2, 3, 4, 7, 8, 9, 10, 11]] = est
+        c[6] = self._u_meas
+        return c
+
     def reset(self):
         """Reset controllers and drive states (e.g. on a sim restart)."""
+        if getattr(self, "sensors", None) is not None:
+            self.sensors.reset(); self.estimator.reset(); self._est_ready = False; self._last_cmds = dict.fromkeys(("delta_main", "delta_elev", "delta_roll"), 0.0)
+        if getattr(self, "lqr", None) is not None:
+            self.lqr.reset()
         self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0
         self.controller.reset()
         self.surge.reset()
@@ -332,17 +390,21 @@ class VehiclePhysics:
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
         env = self.wave_sample(eta, t, wave)
+        cstate = self._control_state(state, t)               # what the controllers see (== state if sensors ideal)
+        ceta, cnu = cstate[:6], cstate[6:]
         self._eps_used = self._downwash_lagged(t, nu[0])      # frozen over the step; drive loads use it too
         if cmds_override is None and self.actuator_model == "servo":
-            ff = self._trim_ff(nu[0])
+            ff = self._trim_ff(cnu[0])
             self.controller.heave_pid.output_min = -20.0 - ff   # anti-windup judges the TOTAL flap command
             self.controller.heave_pid.output_max = 20.0 - ff
             raw = self.controller.pid_commands(
-                z_ref,                       eta[2],
-                np.radians(p["phi_ref"]),    eta[3],
-                np.radians(p["theta_ref"]),  eta[4],
+                z_ref,                       ceta[2],
+                np.radians(p["phi_ref"]),    ceta[3],
+                np.radians(p["theta_ref"]),  ceta[4],
             )
             raw["delta_main"] += ff
+            if self.lqr is not None:
+                raw = self.lqr.update(cstate, z_ref, np.radians(p["phi_ref"]), np.radians(p["theta_ref"]), raw)
             cmds = self._servo_commands(raw, state, env)
         elif cmds_override is None:
             cmds = self.controller.update(
@@ -352,7 +414,8 @@ class VehiclePhysics:
             )
         else:
             cmds = dict(cmds_override)
-        thrust = self.surge.update(p["target_speed"], nu[0])
+        thrust = self.surge.update(p["target_speed"], cnu[0])
+        self._last_cmds = {k: cmds[k] for k in ("delta_main", "delta_elev", "delta_roll")}
         wave_elev = env.elevation
 
         def rhs(s):

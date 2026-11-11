@@ -31,6 +31,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # the shaft above water, half below.
     "flying_height": 0.55,
     "trim_ff_deg": 16.1, "trim_ff_speed": 4.0,   # speed-scheduled trim flap feed-forward (0 = off)
+    "sensors": "ideal",                  # "ideal" (controllers read ground truth) or "noisy" (sensor models + Kalman estimator)
+    "controller": "pid",                 # "pid" (three SISO loops) or "lqr" (scheduled MIMO, needs the servo actuator model)
     "phi_ref": 0.0, "theta_ref": 0.0,
     "waves_enabled": False,
     # Period is derived from wavelength by the deep-water dispersion relation. Direction is the
