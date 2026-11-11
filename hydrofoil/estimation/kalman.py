@@ -33,8 +33,10 @@ class KalmanEstimator:
         d = np.radians
         s = {"z": 0.01, "phi": d(0.3), "theta": d(0.3), "p": d(0.2), "q": d(0.2), "r": d(0.2)}
         s.update(sigmas or {})
-        # process noise std per sqrt(s) on the states (unmodelled forces / waves); PLACEHOLDER tuning
-        q = {"z": 1e-4, "phi": 1e-4, "theta": 1e-4, "v": 0.3, "w": 0.15, "p": 0.5, "q": 0.5, "r": 0.3}
+        # process noise std per sqrt(s) on the states (unmodelled forces / waves); PLACEHOLDER tuning. Too small on the
+        # angles/height and the filter rejects real attitude changes (3 deg pitch kick took 4 s); too large and noise
+        # leaks into the flaps (see docs/19).
+        q = {"z": 3e-3, "phi": 5e-3, "theta": 5e-3, "v": 0.3, "w": 0.15, "p": 0.5, "q": 0.5, "r": 0.3}
         q.update(process or {})
         self.dt, self.speeds = dt, np.asarray(speeds, float)
         Rv = np.diag([s[k] ** 2 for k in MEAS_NAMES])

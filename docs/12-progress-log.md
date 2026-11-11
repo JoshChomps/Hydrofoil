@@ -120,6 +120,12 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Defaults unchanged (PID, ideal sensors). Trim finding: the PID's 16.1° flap at 4 m/s is the closed-loop value at θ = −0.37°; level trim is 14.1°.
 - Full noisy-sensor evaluate (doc 19): mostly mild degradation, but the 3° pitch kick settles in 4.36 s vs 0.21 s with ideal sensors (undiagnosed); bank height loss 4.8 → 15.3 mm. Not done: LQR in the viewer UI; drive dynamics in the LQR model; rail-current enforcement.
 
+### 2026-11-11 — Estimator retune, PID vs LQR decision, LQR default
+- Pitch-kick slowdown under noisy sensors: Kalman process noise on z/φ/θ was far too small (1e-4); retuned to 3e-3 / 5e-3 (`estimation/kalman.py`, override `kf_process`). Kick 4.4 s → 0.3 s with elevator jitter 0.5°.
+- Compared PID and LQR with ideal and noisy sensors, and on four perturbed plants with the LQR designed on the nominal model (doc 19). LQR equal or better almost everywhere, much better on perturbed plants (PID never settles height at mass ×1.3 or tail arm −25 %).
+- `controller` default PID → LQR (PID selectable; non-servo actuator model falls back to PID with a warning). 67 tests pass with the new default. Vehicle construction ≈ 3.7 s.
+- Not covered: larger/combined model errors, noise plus model error, thrust/surge under the LQR, viewer UI for the controller choice.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

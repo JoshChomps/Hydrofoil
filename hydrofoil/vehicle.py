@@ -165,8 +165,10 @@ class VehiclePhysics:
             self._build_estimation()
         if p.get("controller", "pid") == "lqr":
             if self.actuator_model != "servo":
-                raise ValueError("controller='lqr' needs actuator_model='servo'")
-            self._build_lqr()
+                import warnings
+                warnings.warn("controller='lqr' needs actuator_model='servo'; falling back to the PID loops")
+            else:
+                self._build_lqr()
         sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
         self.drives = {}
         for name, stop in (("left", p["flap_stop_deg"]), ("right", p["flap_stop_deg"]), ("elev", p["elev_stop_deg"])):
@@ -187,7 +189,7 @@ class VehiclePhysics:
         from hydrofoil.estimation.kalman import KalmanEstimator
         p = dict(self.params, controller="pid", sensors="ideal")
         self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0))
-        self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"])
+        self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"], process=p.get("kf_process"))
         self._est_ready = False
         self._u_meas = 0.0
 

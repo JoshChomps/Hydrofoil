@@ -32,7 +32,9 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "flying_height": 0.55,
     "trim_ff_deg": 16.1, "trim_ff_speed": 4.0,   # speed-scheduled trim flap feed-forward (0 = off)
     "sensors": "ideal",                  # "ideal" (controllers read ground truth) or "noisy" (sensor models + Kalman estimator)
-    "controller": "pid",                 # "pid" (three SISO loops) or "lqr" (scheduled MIMO, needs the servo actuator model)
+    # "lqr" (default): scheduled MIMO LQR after takeoff (control/lqr.py, doc 19), needs the servo actuator model (falls
+    # back to PID otherwise); "pid": the three SISO loops, which also fly takeoff. The PID gains below stay in use for takeoff.
+    "controller": "lqr",
     "phi_ref": 0.0, "theta_ref": 0.0,
     "waves_enabled": False,
     # Period is derived from wavelength by the deep-water dispersion relation. Direction is the
