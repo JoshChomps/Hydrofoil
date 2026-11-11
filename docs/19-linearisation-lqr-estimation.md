@@ -42,3 +42,14 @@ Noisy sensors + Kalman estimator, quick check (LQR, 10 s of cruise after settlin
 - Only the servo actuator model is supported with the LQR. Thrust is still PID; the 25 A rail limit is not enforced.
 - LQR is not selectable in the viewer UI; set `params["controller"]` / `params["sensors"]` before `VehiclePhysics(...)`.
 - Re-tune weights (and re-run `evaluate`) after real parameters arrive; the scheduling speeds (3–7 m/s) must cover the operating envelope.
+
+Full evaluation with noisy sensors + Kalman estimator (same scenarios, true-state metrics):
+| Metric | LQR ideal | LQR noisy |
+|---|---|---|
+| takeoff / 2 cm settle | 3.11 / 13.2 s | 2.92 / 14.6 s |
+| 2 cm height step | 1.18 s | 1.58 s |
+| 5° roll kick to 0.5° | 0.63 s | 0.68 s |
+| 8° bank: final / settle / height loss | 8.00° / 0.61 s / 4.8 mm | 7.95° / 0.23 s / 15.3 mm |
+| **3° pitch kick to 0.5°** | 0.21 s | **4.36 s** |
+| head / beam / oblique wave roll | 0 / 0.39 / 0.26° | 0.13 / 0.51 / 0.56° |
+Nothing touches down. The pitch-kick settling is the one real degradation and is **not diagnosed** (suspects: estimator pitch dynamics after a state jump the model did not predict, and the 0.3° attitude noise against the 0.5° band). Everything else degrades mildly.

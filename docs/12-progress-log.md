@@ -118,7 +118,7 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - New: `linearize.py` (trim + Jacobian), `control/lqr.py` (scheduled MIMO LQR with integral action, PID takeoff with bumpless latched handover), `sensors/models.py`, `estimation/kalman.py`; params `controller` ("pid" default / "lqr") and `sensors` ("ideal" default / "noisy"). Doc 19.
 - Verified: 67 tests pass (7 new). LQR vs PID on the audit scenarios: height step 3.55 → 1.18 s, pitch kick 0.62 → 0.21 s, wave roll (beam/oblique) 0.99/1.30° → 0.39/0.26°, bank height loss 17.7 → 4.8 mm, roll kick 0.70 → 0.63 s; bank settle 0.56 → 0.61 s. Roll weight tuned 2° → 0.8° (roll kick 1.38 → 0.62 s). With noisy sensors the boat still flies (3.3 mm rms height).
 - Defaults unchanged (PID, ideal sensors). Trim finding: the PID's 16.1° flap at 4 m/s is the closed-loop value at θ = −0.37°; level trim is 14.1°.
-- Not done: full evaluate table with noisy sensors beyond the quick check; LQR in the viewer UI; drive dynamics in the LQR model; rail-current enforcement.
+- Full noisy-sensor evaluate (doc 19): mostly mild degradation, but the 3° pitch kick settles in 4.36 s vs 0.21 s with ideal sensors (undiagnosed); bank height loss 4.8 → 15.3 mm. Not done: LQR in the viewer UI; drive dynamics in the LQR model; rail-current enforcement.
 
 ### Template for future entries
 ```
