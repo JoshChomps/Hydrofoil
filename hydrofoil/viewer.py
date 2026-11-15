@@ -8,6 +8,7 @@ mj_forward -- mj_step is never called.
 
 Run:
     python -m hydrofoil.viewer [--waves] [--wave-dir 90] [--speed 1.0] [--duration 600]
+                               [--controller lqr|pid] [--sensors ideal|noisy]
 
 Sliders: open the right-hand panel's "Control" section. Each slider is a zero-gain MuJoCo actuator
 used only as a UI control; its value is read every frame:
@@ -21,6 +22,9 @@ Keys (click the viewer window first):
     Left / Right     bank left / right (bank_ref, +-8 deg, springs back to 0)
     [  /  ]          speed_ref down / up (holds)
     R                reset to rest
+    C                switch PID <-> LQR (restarts from rest; the PID always flies takeoff)
+
+The PID gain sliders act on the PID loops, which fly takeoff in both modes and everything in PID mode.
 
 Left of the window: plots (height vs target, roll/pitch, surface angles, drive currents).
 Top-right text: state, and per drive the hinge moment, motor current and bus power (docs/17).
@@ -193,6 +197,7 @@ class Pilot:
     def __init__(self, ctrl: np.ndarray):
         self.ctrl = ctrl
         self.reset_flag = False
+        self.toggle_ctrl = False
         self.bank_spring = False   # True after a key bank input; a slider-set bank holds
         self.key_bank_value = None
 
@@ -215,6 +220,8 @@ class Pilot:
             self._nudge("speed_ref", -SPEED_STEP)
         elif code in (ord("R"), ord("r")):
             self.reset_flag = True
+        elif code in (ord("C"), ord("c")):
+            self.toggle_ctrl = True
 
     def spring_back(self, dt: float):
         if not self.bank_spring:
@@ -343,9 +350,20 @@ def _apply_gains(vp: VehiclePhysics, p: dict):
     c.roll_pid.Kp, c.roll_pid.Kd = p["kp_roll"], p["kd_roll"]
 
 
-def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.0):
+def _ctrl_label(vp: VehiclePhysics) -> str:
+    if vp.lqr is None:
+        return "PID"
+    return "LQR" if vp.lqr.engaged else "LQR (PID takeoff)"
+
+
+def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.0,
+        controller: str | None = None, sensors: str | None = None):
     params = dict(DEFAULT_PARAMS)
     params["v_bus"] = DriveSpec().ctrl.v_bus
+    if controller:
+        params["controller"] = controller
+    if sensors:
+        params["sensors"] = sensors
     if wave_cfg:
         params.update(wave_cfg)
     else:
@@ -353,6 +371,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
     dt = params["dt"]
 
     vp = VehiclePhysics(params)
+    lqr_spare = None            # the LQR not in use, kept so the C key can swap without a redesign
     pose = MujocoPose(params)
     ctrl = pose.data.ctrl
     for i, (_n, key, _lo, _hi) in enumerate(SLIDERS):
@@ -394,6 +413,16 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             if wk != wave_key:
                 wave, wave_key = _wave_from(params), wk
 
+            if pilot.toggle_ctrl:          # switch PID <-> LQR; restarts from rest (no mid-flight handover)
+                pilot.toggle_ctrl = False
+                if vp.lqr is not None:
+                    vp.lqr, lqr_spare = None, vp.lqr
+                elif vp.actuator_model == "servo":
+                    if lqr_spare is None:
+                        vp._build_lqr()    # ~3 s: designs the gains
+                    else:
+                        vp.lqr, lqr_spare = lqr_spare, None
+                pilot.reset_flag = True
             if pilot.reset_flag:
                 pilot.reset_flag = False
                 vp.reset(); drives.reset(); plots.clear()
@@ -427,12 +456,13 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             mode = "FOILBORNE" if draft <= 1e-6 else "DISPLACEMENT"
             v.set_texts((None, mujoco.mjtGridPos.mjGRID_TOPRIGHT,
                          "t / mode / speed (target)\nheight above water (target)\nroll / pitch (bank ref)\n"
-                         "thrust / draft\n\ndrive  hinge M / motor I / bus P\n  left\n  right\n  elev\n"
+                         "thrust / draft\ncontroller / sensors\ndrive  hinge M / motor I / bus P\n  left\n  right\n  elev\n"
                          f"N = {params['gear_ratio']:.0f}:1, V_bus = {params['v_bus']:.0f} V",
                          f"{t:6.1f}s  {mode}  {state[6]:.2f} ({params['target_speed']:.2f}) m/s\n"
                          f"{-(state[2]) + params['hull_offset']:.2f} ({params['flying_height']:.2f}) m\n"
                          f"{np.degrees(state[3]):.1f} / {np.degrees(state[4]):.1f} deg ({params['phi_ref']:.1f})\n"
-                         f"{thrust:.1f} N / {draft:.3f} m\n\n\n"
+                         f"{thrust:.1f} N / {draft:.3f} m\n"
+                         f"{_ctrl_label(vp)} / {'Kalman' if vp.sensors is not None else 'ideal'}  [C]\n\n"
                          + "".join(f"{dm[d]['M']:+6.2f} Nm  {dm[d]['I']:+6.1f} A  {dm[d]['P']:6.1f} W\n" for d in DRIVES)
                          + drives.flags()))
             v.set_figures(plots.figures(v.viewport))
@@ -446,9 +476,11 @@ def main():
     ap.add_argument("--duration", type=float, default=600.0, help="run length [sim s]")
     ap.add_argument("--waves", action="store_true", help="start with an Airy wave (amp/len/dir also on sliders)")
     ap.add_argument("--wave-dir", type=float, default=0.0, help="wave travel direction [deg from +x]; try 90 for beam seas")
+    ap.add_argument("--controller", choices=("lqr", "pid"), help="flight controller (default: params)")
+    ap.add_argument("--sensors", choices=("ideal", "noisy"), help="ideal truth, or noisy sensors + Kalman")
     a = ap.parse_args()
     wave_cfg = dict(wave_amplitude=0.05, wave_wavelength=5.0, wave_direction=a.wave_dir) if a.waves else None
-    run(speed=a.speed, wave_cfg=wave_cfg, duration=a.duration)
+    run(speed=a.speed, wave_cfg=wave_cfg, duration=a.duration, controller=a.controller, sensors=a.sensors)
 
 
 if __name__ == "__main__":

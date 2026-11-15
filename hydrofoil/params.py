@@ -11,6 +11,13 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "main_chord": 0.15, "main_span": 0.6,
     "elev_chord": 0.10, "elev_span": 0.3,
     "main_pos_x": 0.0,  "main_pos_z": 0.5, "main_lateral_offset": 0.35,
+    # Fixed mounting incidence of the main foil [deg]. Carries most of the weight at cruise so the flap trims
+    # near neutral and keeps authority both ways (at 0 the flap sat at 14 deg of a 20 deg limit at 4 m/s and
+    # clipped in 10 cm waves). 2.5 deg puts the trim flap at about +12 deg at 3 m/s and -7 deg at 7 m/s.
+    "main_incidence_deg": 2.5,
+    # Centre-of-gravity shift from the nominal layout (dx forward, dy to starboard) [m], e.g. a rider's position.
+    # VehiclePhysics.set_cg_offset() changes it mid-flight.
+    "cg_offset": (0.0, 0.0),
     "elev_pos_x": -1.2, "elev_pos_z": 0.4,
     # Vertical struts: give the side force that makes bank turn the boat instead of letting it
     # skid (without them a banked boat slides sideways and yaw has the wrong sign). Chord is a
@@ -19,7 +26,7 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # Heave gains are tuned higher than sim.py's — here the vehicle starts at rest
     # and must generate real lift to take off, not just trim near an already-flying point.
     "kp_heave": 40.0, "ki_heave": 6.0, "kd_heave": 10.0,
-    "kp_pitch": 1.0, "ki_pitch": 0.0, "kd_pitch": 0.1,
+    "kp_pitch": 1.0, "ki_pitch": 1.0, "kd_pitch": 0.1,   # ki_pitch: holds theta = theta_ref (P-only sagged nose-down and stalled takeoff on short-tail / aft-foil plants)
     # Ki must stay 0 here — any nonzero integral term reliably diverges under
     # wave disturbance (verified: Ki=0.05 blew up to 1000+ deg within 90s).
     "kp_roll":  2.0, "ki_roll":  0.0, "kd_roll":  0.2,
@@ -30,11 +37,12 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # main strut's midpoint sits right at the waterline once flying — half
     # the shaft above water, half below.
     "flying_height": 0.55,
-    "trim_ff_deg": 16.1, "trim_ff_speed": 4.0,   # speed-scheduled trim flap feed-forward (0 = off)
+    "trim_ff_deg": 1.63, "trim_ff_speed": 4.0,   # speed-scheduled trim flap feed-forward (0 = off); = linearize.trim(theta=0) main flap at trim_ff_speed (a test checks it)
     "sensors": "ideal",                  # "ideal" (controllers read ground truth) or "noisy" (sensor models + Kalman estimator)
     # "lqr" (default): scheduled MIMO LQR after takeoff (control/lqr.py, doc 19), needs the servo actuator model (falls
     # back to PID otherwise); "pid": the three SISO loops, which also fly takeoff. The PID gains below stay in use for takeoff.
     "controller": "lqr",
+    "lqr_delay_s": None,                 # loop latency the LQR is designed for [s]; None = the drive model's delay_s
     "phi_ref": 0.0, "theta_ref": 0.0,
     "waves_enabled": False,
     # Period is derived from wavelength by the deep-water dispersion relation. Direction is the

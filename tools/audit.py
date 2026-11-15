@@ -193,9 +193,13 @@ def evaluate(gains=None, verbose=True, waves=True, T_takeoff=60.0):
     r["hstep_settle_2cm"] = settle_time([x[0] for x in rec], np.array([x[1][2] for x in rec]) - zr, 0.02, rec[0][0])
 
     if waves:
-        for name, ddeg in (("head", 0.0), ("beam", 90.0), ("oblique", 45.0)):
+        # direction = the way the wave TRAVELS: 0 = same way as the boat (following sea, slow encounter, the worst
+        # case for height), 180 = against it (head sea, fast encounter). ("head" used to be direction 0.)
+        zr = p["hull_offset"] - p["flying_height"]
+        for name, ddeg in (("following", 0.0), ("head", 180.0), ("beam", 90.0), ("oblique", 45.0)):
             p, vp, s, t = fresh(); rec = []
             advance(vp, s, t, AiryWave(0.05, 5.0, direction=np.radians(ddeg)), 40.0, rec)
+            r[f"wave_{name}_z_rms_mm"] = float(1e3 * np.std([x[1][2] - zr for x in rec[500:]]))
             r[f"wave_{name}_max_phi_deg"] = float(max(abs(np.degrees(x[1][3])) for x in rec))
             r[f"wave_{name}_touch"] = float(max(x[3] for x in rec))
     if verbose:

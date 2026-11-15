@@ -113,14 +113,14 @@ class VehiclePhysics:
         flap_cm = (thin_airfoil_coeffs(p["main_flap_frac"])["cm_delta"] * p["main_flap_span_frac"]
                    * p.get("flap_cm_factor", 0.8)) if p.get("flap_moment", True) else 0.0
         self.left_foil = Foil(
-            FoilGeometry(chord=p["main_chord"], span=p["main_span"]),
+            FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], -p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
             oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
         )
         self.right_foil = Foil(
-            FoilGeometry(chord=p["main_chord"], span=p["main_span"]),
+            FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
@@ -141,6 +141,9 @@ class VehiclePhysics:
         self.elev_strut = Foil(FoilGeometry(chord=p["elev_strut_chord"], span=1.0), polar,
                                r_attach=np.array([p["elev_pos_x"], 0.0, p["elev_pos_z"]]),
                                normal_axis=np.array([0.0, 1.0, 0.0]))
+
+        self._r_nominal = {n: f.r_attach.copy() for n, f in self._foils().items()}
+        self.set_cg_offset(p.get("cg_offset", (0.0, 0.0)))
 
         pid_gains = {
             "heave": {"Kp": p["kp_heave"], "Ki": p["ki_heave"], "Kd": p["kd_heave"]},
@@ -177,31 +180,53 @@ class VehiclePhysics:
             spec.ctrl.v_bus = p["v_bus"]
             self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp)
 
+    def set_cg_offset(self, offset):
+        """Move the centre of gravity by (dx forward, dy to starboard) [m] relative to the nominal layout, e.g. a
+        rider shifting their weight. The body frame stays at the CG, so every foil and strut moves by -offset.
+        Can be called mid-flight. Not shifted: the hull footprint (matters only while floating), the inertias and
+        the added-mass terms; mass is set by params['mass'] at construction."""
+        d = np.array([float(offset[0]), float(offset[1]), 0.0])
+        for n, f in self._foils().items():
+            f.r_attach = self._r_nominal[n] - d
+
     def _build_lqr(self):
         """Scheduled LQR (control/lqr.py), designed on a PID-configured copy of this plant."""
         from hydrofoil.control.lqr import LQRController
         p = dict(self.params, controller="pid")
-        self.lqr = LQRController(VehiclePhysics(p), p["dt"], weights=p.get("lqr_weights"))
+        # design latency: the loop delay the gains are computed for. Defaults to the drive model's command
+        # delay; on hardware set lqr_delay_s to the MEASURED sensor-to-surface latency.
+        delay = p.get("lqr_delay_s")
+        if delay is None:
+            delay = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))["delay_s"]
+        self.lqr = LQRController(VehiclePhysics(p), p["dt"], weights=p.get("lqr_weights"), delay_s=delay)
 
     def _build_estimation(self):
         """Noisy sensors + Kalman estimator (params['sensors'] = 'noisy'); controllers then see estimates."""
         from hydrofoil.sensors.models import SensorSuite
-        from hydrofoil.estimation.kalman import KalmanEstimator
+        from hydrofoil.estimation.kalman import KalmanEstimator, HeaveFilter
         p = dict(self.params, controller="pid", sensors="ideal")
         self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0))
         self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"], process=p.get("kf_process"))
+        self.heave = HeaveFilter(p["dt"], wave=p.get("kf_wave"))
         self._est_ready = False
         self._u_meas = 0.0
 
-    def _control_state(self, state, t: float) -> np.ndarray:
+    def _control_state(self, state, t: float, surface_elev: float = 0.0) -> np.ndarray:
         """The state the controllers see: truth when sensors are 'ideal'; otherwise measurements (below the
         foilborne speed) or the Kalman estimate (above it). Physics always uses the true state."""
         if self.sensors is None:
             return state
         p = self.params
-        meas = self.sensors.measure(state, t, p["dt"])
+        meas = self.sensors.measure(state, t, p["dt"], surface_elev)
         if "u" in meas:
             self._u_meas = float(meas["u"])
+        # Height: the ranging sensor is slow, late and sees the local wave surface; the heave filter turns it
+        # (with the accelerometer) into height above the mean surface and a vertical speed, from t = 0 on.
+        if "z" in meas:
+            if not self.heave.ready:
+                self.heave.init(meas["z"])
+            self.heave.step(meas.get("az"), meas["z"], "z" in self.sensors.fresh)
+            meas = dict(meas, z=self.heave.z)
         if not all(k in meas for k in ("z", "phi", "theta", "p", "q", "r")) and not self._est_ready:
             return state                                   # sensors not all up yet (first few ms)
         c = state.copy()
@@ -220,12 +245,16 @@ class VehiclePhysics:
                                     self._u_meas, z_trim)
         c[[2, 3, 4, 7, 8, 9, 10, 11]] = est
         c[6] = self._u_meas
+        # heave velocity from the kinematic filter (it sees wave and payload forces through the accelerometer,
+        # which the model-based filter cannot): vz = -u sin(theta) + w cos(theta) cos(phi)
+        c[2] = self.heave.z
+        c[8] = (self.heave.vz + self._u_meas * np.sin(c[4])) / (np.cos(c[4]) * np.cos(c[3]))
         return c
 
     def reset(self):
         """Reset controllers and drive states (e.g. on a sim restart)."""
         if getattr(self, "sensors", None) is not None:
-            self.sensors.reset(); self.estimator.reset(); self._est_ready = False; self._last_cmds = dict.fromkeys(("delta_main", "delta_elev", "delta_roll"), 0.0)
+            self.sensors.reset(); self.estimator.reset(); self.heave.reset(); self._est_ready = False; self._last_cmds = dict.fromkeys(("delta_main", "delta_elev", "delta_roll"), 0.0)
         if getattr(self, "lqr", None) is not None:
             self.lqr.reset()
         self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0
@@ -268,13 +297,16 @@ class VehiclePhysics:
         return float(np.interp(t - l / max(float(u), 0.5), self._dw_t, self._dw_eps))
 
     def _trim_ff(self, u: float) -> float:
-        """Speed-scheduled trim flap angle [deg] (lift ~ u^2 => delta_trim ~ 1/u^2), added to the heave
-        PID output so the integrator no longer has to ramp up to the weight-supporting angle."""
+        """Speed-scheduled trim flap angle [deg], added to the heave PID output so the integrator no longer
+        has to ramp up to the weight-supporting angle. Lift ~ u^2, so the angle of attack the wing needs goes
+        as 1/u^2; the fixed incidence supplies part of it and the flap the rest:
+            eff * delta_trim(u) + incidence = (eff * d0 + incidence) * (vs / u)^2."""
         p = self.params
         d0, vs = p.get("trim_ff_deg", 0.0), p.get("trim_ff_speed", 0.0)
         if d0 == 0.0 or vs <= 0.0:
             return 0.0
-        return float(np.clip(d0 * (vs / max(float(u), 0.5 * vs)) ** 2, -20.0, 20.0))
+        inc = p.get("main_incidence_deg", 0.0) / MAIN_FOIL_FLAP_EFFECTIVENESS    # incidence in flap degrees
+        return float(np.clip((d0 + inc) * (vs / max(float(u), 0.5 * vs)) ** 2 - inc, -20.0, 20.0))
 
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
@@ -392,7 +424,7 @@ class VehiclePhysics:
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
         env = self.wave_sample(eta, t, wave)
-        cstate = self._control_state(state, t)               # what the controllers see (== state if sensors ideal)
+        cstate = self._control_state(state, t, env.elevation)   # what the controllers see (== state if sensors ideal)
         ceta, cnu = cstate[:6], cstate[6:]
         self._eps_used = self._downwash_lagged(t, nu[0])      # frozen over the step; drive loads use it too
         if cmds_override is None and self.actuator_model == "servo":
@@ -406,7 +438,10 @@ class VehiclePhysics:
             )
             raw["delta_main"] += ff
             if self.lqr is not None:
-                raw = self.lqr.update(cstate, z_ref, np.radians(p["phi_ref"]), np.radians(p["theta_ref"]), raw)
+                dl, dr, de = (self.drives[n] for n in ("left", "right", "elev"))   # drive encoders: angle, rate
+                act = ([0.5 * np.degrees(dl.delta + dr.delta), np.degrees(de.delta), 0.5 * np.degrees(dr.delta - dl.delta)],
+                       [0.5 * np.degrees(dl.rate + dr.rate), np.degrees(de.rate), 0.5 * np.degrees(dr.rate - dl.rate)])
+                raw = self.lqr.update(cstate, z_ref, np.radians(p["phi_ref"]), np.radians(p["theta_ref"]), raw, act)
             cmds = self._servo_commands(raw, state, env)
         elif cmds_override is None:
             cmds = self.controller.update(

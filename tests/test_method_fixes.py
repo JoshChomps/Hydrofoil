@@ -237,7 +237,10 @@ def test_trim_feedforward_schedules_with_speed_and_can_be_disabled():
     p = dict(DEFAULT_PARAMS)
     vp = VehiclePhysics(p)
     assert abs(vp._trim_ff(p["trim_ff_speed"]) - p["trim_ff_deg"]) < 1e-9
-    assert abs(vp._trim_ff(2 * p["trim_ff_speed"]) - p["trim_ff_deg"] / 4) < 1e-9
+    # the wing's total angle of attack (incidence + flap effectiveness * flap) scales as 1/u^2
+    from hydrofoil.forces.foil import MAIN_FOIL_FLAP_EFFECTIVENESS as eff
+    aoa = lambda u: p["main_incidence_deg"] + eff * vp._trim_ff(u)
+    assert abs(aoa(2 * p["trim_ff_speed"]) - aoa(p["trim_ff_speed"]) / 4) < 1e-9
     assert vp._trim_ff(0.0) <= 20.0                       # clamped at low speed
     p["trim_ff_deg"] = 0.0
     assert VehiclePhysics(p)._trim_ff(4.0) == 0.0
@@ -267,3 +270,14 @@ def test_downwash_lowers_tail_lift_and_flap_moment_is_nose_down():
     z_on = on.elev_foil.generalized_force(state[6:], 2.0, downwash_rad=0.05)
     z_off = on.elev_foil.generalized_force(state[6:], 2.0)
     assert z_on[2] > z_off[2]                             # less upward (negative z) lift
+
+
+def test_trim_feedforward_matches_the_trim_solver():
+    """trim_ff_deg must track the plant: the level (theta = 0) trim flap at trim_ff_speed. Re-derive it
+    (linearize.trim) whenever geometry / mass parameters change, e.g. when real CAD values arrive."""
+    from hydrofoil.params import DEFAULT_PARAMS
+    from hydrofoil.vehicle import VehiclePhysics
+    from hydrofoil.linearize import trim
+    p = dict(DEFAULT_PARAMS, controller="pid", sensors="ideal")
+    _x, u = trim(VehiclePhysics(p), p["trim_ff_speed"])
+    assert abs(u[0] - p["trim_ff_deg"]) < 0.3, f"trim_ff_deg {p['trim_ff_deg']} vs solver {u[0]:.2f}"

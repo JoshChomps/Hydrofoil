@@ -126,6 +126,24 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - `controller` default PID → LQR (PID selectable; non-servo actuator model falls back to PID with a warning). 67 tests pass with the new default. Vehicle construction ≈ 3.7 s.
 - Not covered: larger/combined model errors, noise plus model error, thrust/surge under the LQR, viewer UI for the controller choice.
 
+### 2026-11-15 — Delay-aware LQR, main-foil incidence
+- Changed: `control/lqr.py` (drive model + command-delay chain + command-rate penalty in a discrete design; controller feeds back drive angles/rates and past commands), `vehicle.py` (incidence on the main foil, trim feed-forward formula, drive state passed to the LQR), `params.py`, tests. Doc 19, last section.
+- Why: the old LQR limit-cycled once the command delay reached 30 ms (2.2° rms flap in calm water); the flap trimmed at 14.1° of ±20° and clipped in 10 cm waves.
+- Verified: 71 tests pass (3 new: 80 ms delay with nominal gains stays quiet, design stable at every scheduled speed, trim flap near neutral). Delay/drive mismatch sweep, wave sweep and `audit.py evaluate` in doc 19.
+- Parameter changes: `main_incidence_deg` new = 2.5; `trim_ff_deg` 14.1 → 1.63; `lqr_delay_s` new = None; LQR weights `du_main/du_elev/du_roll` new = 250 °/s.
+- Follow-ups: true head seas in `evaluate`; height sensor relative to the local surface; Kalman update only on fresh samples; wave disturbance state; kinematic-actuator PID slowdown not investigated.
+
+### 2026-11-15 — Realistic height sensor, heave filter, CG offset, true head seas
+- Changed: `sensors/models.py` (height relative to the local wave surface, `fresh` flags, accelerometer), `estimation/kalman.py` (`HeaveFilter`), `vehicle.py` (heave filter feeds height and heave velocity; `set_cg_offset`), `params.py` (`cg_offset`), `tools/audit.py` (following / head / beam / oblique with height rms). Doc 19, last section.
+- Why: the height sensor measured depth relative to still water (not measurable); the Kalman filter reused held samples; "head" in the audit was a following sea; rider weight and CG shifts were untested.
+- Verified: 74 tests pass (3 new). Noisy-sensor wave sweep, `evaluate` with ideal and noisy sensors, mass/CG sweep: doc 19.
+- Findings: without a wave state the boat chases waves (flaps ±20°, 17 A peaks). Following and quartering seas remain weak with noisy sensors (59 mm rms at 5 cm amplitude). A 100 kg all-up weight cannot take off at 4 m/s / 50 N on these foils.
+- Follow-ups: following-sea height estimation; irregular seas; sensor position and tilt; re-size foils/thrust for the real all-up weight.
+
+### 2026-11-15 — Assessment, sensor list and carried-forward findings noted
+- Changed: doc 19, end ("Is it good enough?", "Sensors required on the real boat", "Other findings to carry forward").
+- Open decision: real all-up weight (boat plus rider); it drives foil, speed and thrust sizing.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

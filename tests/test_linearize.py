@@ -17,7 +17,7 @@ def plant():
 def test_trim_is_an_equilibrium_and_flap_grows_as_speed_drops(plant):
     vp, x, u, _, _ = plant
     assert np.max(np.abs(_rhs(vp, x, u)[[6, 8, 10]])) < 1e-8
-    assert 5.0 < u[0] < 25.0 and abs(u[1]) < 3.0 and 0.0 < u[3] < 50.0
+    assert -5.0 < u[0] < 5.0 and abs(u[1]) < 3.0 and 0.0 < u[3] < 50.0   # incidence carries the weight at cruise
     _, u6 = trim(vp, 6.0)
     assert u6[0] < u[0]                      # lift ~ u^2: less flap needed when faster
 

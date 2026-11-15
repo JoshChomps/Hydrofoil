@@ -5,7 +5,8 @@ State estimated: [z phi theta v w p q r] (surge u comes straight from the speed 
 foilborne plant linearised at trim for a few speeds, discretised at the control rate; the filter gain is the
 steady-state (DARE) gain per speed, interpolated in the measured speed. Inputs are the ACHIEVED flap angles
 relative to trim. Measurements are whatever arrived this step (z, phi, theta, p, q, r); missing sensors are
-simply skipped. Latency is not compensated (the delayed height sample is treated as current).
+simply skipped. Height and heave velocity come from `HeaveFilter` (below), which handles the slow, late and
+wave-contaminated ranging sensor; this filter receives that height as its z measurement every step.
 """
 
 from __future__ import annotations
@@ -87,3 +88,90 @@ class KalmanEstimator:
         out = self.x.copy()
         out[0] += z_trim
         return out
+
+
+class HeaveFilter:
+    """
+    Height / vertical-speed estimator that does not use the boat model: the accelerometer drives the motion and
+    the ranging sensor corrects it (the classic hydrofoil height loop).
+
+        x = [ z, vz, b_a, xi, eta_w ]
+        z' = vz,  vz' = a_meas - b_a                      (kinematics; b_a = accelerometer bias, random walk)
+        xi' = eta_w,  eta_w' = -w0^2 xi - 2 zeta w0 eta_w + noise
+                                                          (wave elevation under the sensor as BAND-PASS noise,
+                                                           transfer s / (s^2 + 2 zeta w0 s + w0^2): no content at
+                                                           zero frequency, so a steady height offset is never
+                                                           mistaken for a wave)
+        h_meas = z + eta_w                                (the ranging sensor sees the local surface)
+
+    So the slow part of the range reading is taken as real height, the wave-band part as the surface moving, and
+    the boat's own fast motion comes from the accelerometer. z is then height relative to the MEAN surface, which
+    is what the controller holds ("platforming"). Because no mass, CG or foil data enter, it is unaffected by a
+    rider or payload. Height samples are used only when new. A sample is `latency` old, so it is modelled as
+    the state a moment ago, z - vz L + eta_w - eta_w' L (first order in L). Samples further than `gate`
+    standard deviations from the prediction are dropped as glitches; after `max_reject` in a row the filter
+    accepts that it is the one that is wrong, widens its height uncertainty and takes the sample. wave = {"w0": rad/s, "zeta": -, "sigma": m}; sigma = 0 switches the wave state off
+    (the range reading is then taken as height, i.e. the boat follows every wave).
+    bias_walk is deliberately ~10x the sensor's own figure: replaying simulated flights, the matched value let a
+    slow drift build up (25 mm rms in calm water against 7 mm with 0.02).
+    """
+
+    def __init__(self, dt: float, sigma_h: float = 0.01, sigma_a: float = 0.05, bias_walk: float = 0.02,
+                 latency: float = 0.05, wave: dict | None = None, gate: float = 5.0, max_reject: int = 4):
+        w = dict({"w0": 4.0, "zeta": 1.0, "sigma": 0.10}, **(wave or {}))
+        self.dt, self.gate, self.wave, self.max_reject = dt, gate, w, max_reject
+        Aw = np.array([[0.0, 1.0], [-w["w0"] ** 2, -2.0 * w["zeta"] * w["w0"]]])
+        F = np.eye(5)
+        F[0, 1], F[0, 2], F[1, 2] = dt, -0.5 * dt * dt, -dt
+        F[3:, 3:] = expm(Aw * dt)
+        self.F, self.G = F, np.array([0.5 * dt * dt, dt, 0.0, 0.0, 0.0])
+        Q = np.outer(self.G, self.G) * sigma_a ** 2
+        Q[0, 0] += 1e-10
+        Q[2, 2] += bias_walk ** 2 * dt
+        Q[4, 4] += 4.0 * w["zeta"] * w["w0"] * w["sigma"] ** 2 * dt          # stationary std of eta_w = sigma
+        self.Q, self.R = Q, sigma_h ** 2
+        on = 1.0 if w["sigma"] > 0 else 0.0
+        self.H = np.array([1.0, -latency, 0.0, on * latency * w["w0"] ** 2,
+                           on * (1.0 + 2.0 * w["zeta"] * w["w0"] * latency)])
+        self.reset()
+
+    def reset(self):
+        self.x = np.zeros(5)
+        self.P = np.eye(5)
+        self.ready = False
+        self._rejected = 0
+
+    def init(self, h: float):
+        s, w0 = max(self.wave["sigma"], 1e-3), self.wave["w0"]
+        self.x = np.array([h, 0.0, 0.0, 0.0, 0.0])
+        self.P = np.diag([0.05 ** 2, 0.5 ** 2, 0.1 ** 2, (s / w0) ** 2, s ** 2])
+        self.ready = True
+
+    def step(self, az: float | None, h: float | None, fresh_h: bool):
+        """One control step: propagate with the accelerometer, correct with a NEW height sample if there is one."""
+        self.x = self.F @ self.x + self.G * (0.0 if az is None else az)
+        self.P = self.F @ self.P @ self.F.T + self.Q
+        if fresh_h and h is not None:
+            innov = h - self.H @ self.x
+            PH = self.P @ self.H
+            S = self.H @ PH + self.R
+            if innov * innov >= self.gate ** 2 * S and self._rejected < self.max_reject:
+                self._rejected += 1
+            else:
+                if self._rejected >= self.max_reject:
+                    self.P[0, 0] += innov * innov
+                    PH = self.P @ self.H
+                    S = self.H @ PH + self.R
+                self._rejected = 0
+                K = PH / S
+                self.x = self.x + K * innov
+                self.P = self.P - np.outer(K, PH)
+        return self.x
+
+    @property
+    def z(self) -> float:
+        return float(self.x[0])
+
+    @property
+    def vz(self) -> float:
+        return float(self.x[1])
