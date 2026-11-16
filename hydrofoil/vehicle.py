@@ -174,11 +174,17 @@ class VehiclePhysics:
                 self._build_lqr()
         sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
         self.drives = {}
+        self._last_target = None
         for name, stop in (("left", p["flap_stop_deg"]), ("right", p["flap_stop_deg"]), ("elev", p["elev_stop_deg"])):
             spec = DriveSpec()
             spec.gear.ratio = p["gear_ratio"]
             spec.ctrl.v_bus = p["v_bus"]
             self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp)
+        # Flight-mode supervisor (control/supervisor.py): off unless params["supervisor"] is True or a config dict.
+        self.supervisor = None
+        if p.get("supervisor"):
+            from hydrofoil.control.supervisor import Supervisor
+            self.supervisor = Supervisor(self, p["supervisor"] if isinstance(p["supervisor"], dict) else None)
 
     def set_cg_offset(self, offset):
         """Move the centre of gravity by (dx forward, dy to starboard) [m] relative to the nominal layout, e.g. a
@@ -192,22 +198,26 @@ class VehiclePhysics:
     def _build_lqr(self):
         """Scheduled LQR (control/lqr.py), designed on a PID-configured copy of this plant."""
         from hydrofoil.control.lqr import LQRController
-        p = dict(self.params, controller="pid")
+        # designed on the NOMINAL CG: the controller cannot know where the rider sits (cg_offset is the truth)
+        p = dict(self.params, controller="pid", cg_offset=(0.0, 0.0), supervisor=False)
         # design latency: the loop delay the gains are computed for. Defaults to the drive model's command
         # delay; on hardware set lqr_delay_s to the MEASURED sensor-to-surface latency.
         delay = p.get("lqr_delay_s")
         if delay is None:
             delay = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))["delay_s"]
-        self.lqr = LQRController(VehiclePhysics(p), p["dt"], weights=p.get("lqr_weights"), delay_s=delay)
+        self.lqr = LQRController(VehiclePhysics(p), p["dt"], weights=p.get("lqr_weights"), delay_s=delay,
+                                 speeds=tuple(p.get("lqr_speeds", (3.0, 4.0, 5.0, 6.0, 7.0))),
+                                 engage_speed=p.get("lqr_engage_speed", 3.2))
 
     def _build_estimation(self):
         """Noisy sensors + Kalman estimator (params['sensors'] = 'noisy'); controllers then see estimates."""
         from hydrofoil.sensors.models import SensorSuite
         from hydrofoil.estimation.kalman import KalmanEstimator, HeaveFilter
-        p = dict(self.params, controller="pid", sensors="ideal")
+        p = dict(self.params, controller="pid", sensors="ideal", cg_offset=(0.0, 0.0), supervisor=False)   # nominal CG model
         self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0))
-        self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"], process=p.get("kf_process"))
-        self.heave = HeaveFilter(p["dt"], wave=p.get("kf_wave"))
+        self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"], process=p.get("kf_process"),
+                                         speeds=tuple(p.get("lqr_speeds", (3.0, 4.0, 5.0, 6.0, 7.0))))
+        self.heave = HeaveFilter(p["dt"], wave=p.get("kf_wave"), **(p.get("kf_heave") or {}))
         self._est_ready = False
         self._u_meas = 0.0
 
@@ -231,7 +241,7 @@ class VehiclePhysics:
             return state                                   # sensors not all up yet (first few ms)
         c = state.copy()
         z_trim = p["hull_offset"] - p["flying_height"]
-        if self._u_meas < 3.0 and not self._est_ready:
+        if self._u_meas < p.get("est_engage_speed", 3.0) and not self._est_ready:
             for k, i in (("z", 2), ("phi", 3), ("theta", 4), ("p", 9), ("q", 10), ("r", 11)):
                 if k in meas:
                     c[i] = meas[k]
@@ -260,6 +270,8 @@ class VehiclePhysics:
         self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0
         self.controller.reset()
         self.surge.reset()
+        if getattr(self, "supervisor", None) is not None:
+            self.supervisor.reset()
         for d in self.drives.values():
             d.reset()
 
@@ -271,7 +283,11 @@ class VehiclePhysics:
         k = float(np.clip((vs / u) ** 2, 0.25, 1.0)) if vs > 0 else 1.0   # gain-schedule flap commands by 1/q above vs
         main, roll, elev = k * raw["delta_main"], k * raw["delta_roll"], k * raw["delta_elev"]
         target = {"left": main - roll, "right": main + roll, "elev": elev}
+        if self.supervisor is not None:
+            target = self.supervisor.mix(target)          # jammed-flap reconfiguration
+        self._last_target = target
         flows = flow_models(self, state, env, self.hinges)
+        self._last_flows = flows                          # hinge model at this flow (supervisor fault residuals)
         for d in self.drives.values():                     # live gear ratio / bus voltage (UI sliders)
             d.spec.gear.ratio, d.spec.ctrl.v_bus = p["gear_ratio"], p["v_bus"]
         ang = {n: self.drives[n].update(target[n], flows[n]) for n in self.drives}
@@ -420,11 +436,13 @@ class VehiclePhysics:
         dt = p["dt"]
         eta, nu = state[:6], state[6:]
 
-        z_ref = p["hull_offset"] - p["flying_height"]
         # phi_ref/theta_ref are stored in degrees (UI convention); eta's
         # angles are radians (Fossen convention) — convert before compare.
         env = self.wave_sample(eta, t, wave)
         cstate = self._control_state(state, t, env.elevation)   # what the controllers see (== state if sensors ideal)
+        if self.supervisor is not None and cmds_override is None:
+            self.supervisor.update(t, cstate)                  # mode, references, limits (control/supervisor.py)
+        z_ref = p["hull_offset"] - p["flying_height"]
         ceta, cnu = cstate[:6], cstate[6:]
         self._eps_used = self._downwash_lagged(t, nu[0])      # frozen over the step; drive loads use it too
         if cmds_override is None and self.actuator_model == "servo":
@@ -442,6 +460,8 @@ class VehiclePhysics:
                 act = ([0.5 * np.degrees(dl.delta + dr.delta), np.degrees(de.delta), 0.5 * np.degrees(dr.delta - dl.delta)],
                        [0.5 * np.degrees(dl.rate + dr.rate), np.degrees(de.rate), 0.5 * np.degrees(dr.rate - dl.rate)])
                 raw = self.lqr.update(cstate, z_ref, np.radians(p["phi_ref"]), np.radians(p["theta_ref"]), raw, act)
+            if self.supervisor is not None:
+                raw = self.supervisor.shape_raw(raw, cstate)
             cmds = self._servo_commands(raw, state, env)
         elif cmds_override is None:
             cmds = self.controller.update(

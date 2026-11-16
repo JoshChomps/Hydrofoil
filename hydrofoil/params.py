@@ -88,3 +88,53 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "flap_stop_deg": 30.0, "elev_stop_deg": 20.0,   # mechanical stops of the PHYSICAL surfaces, PLACEHOLDER
     "q_schedule_speed": 0.0,             # >0: scale flap commands by (v/u)^2 above this speed (gain scheduling on q); 0 = off
 }
+
+
+# Manned boat, 250-300 kg all-up (boat + rider), sized 2026-11-15 (docs/19, "Manned sizing"). Same layout as the
+# model (T-foil, split flapped main foil at the CG, all-moving elevator aft), scaled: the main foil is 0.62 m^2
+# (2 x 0.28 x 1.1 m) at 3 deg incidence so the trim flap is near neutral at the 8 m/s cruise and takeoff is
+# about 5 m/s. The CG sits in the hull, 0.35 m above the hull bottom (hull_offset < 0), the foil 0.9 m under
+# the surface and the hull 0.5 m clear of it when flying (1.4 m struts). Inertias, hull, damping, thrust and
+# drive figures are PLACEHOLDERS scaled from the model, not measured.
+MANNED_PARAMS: dict[str, Any] = dict(DEFAULT_PARAMS)
+MANNED_PARAMS.update({
+    "mass": 275.0,
+    "ixx": 80.0, "iyy": 260.0, "izz": 280.0,
+    # what the 275 kg is made of, for the boat editor (hydrofoil/design.py): the empty boat plus these point masses,
+    # positions relative to the nominal CG [m] (x forward, y starboard, z up). PLACEHOLDER rider position.
+    "default_payloads": [{"name": "Rider", "mass": 75.0, "x": -0.43, "y": 0.0, "z": 0.33}],
+    "heave_damping": 600.0,
+    "main_chord": 0.28, "main_span": 1.1, "main_lateral_offset": 0.60,
+    "main_incidence_deg": 3.0,
+    "main_pos_x": 0.0, "main_pos_z": 1.75,
+    "elev_chord": 0.17, "elev_span": 0.5, "elev_pos_x": -2.0, "elev_pos_z": 1.65,
+    "main_strut_chord": 0.16, "elev_strut_chord": 0.12,
+    "hull_offset": -0.35, "flying_height": 0.5,
+    "hull_length": 3.6, "hull_beam": 1.2, "hull_x": 0.0, "max_draft": 0.3,
+    "hull_drag_coeff": 120.0, "hull_rot_damping": 6000.0,
+    "target_speed": 8.0, "max_thrust": 1000.0,
+    "kp_speed": 360.0, "ki_speed": 60.0,
+    "main_surface_inertia": 9e-3, "elev_surface_inertia": 6e-3,
+    # hinge moments reach 12-13 N m (takeoff, waves): the 10 N m firmware cap left the flap short and the boat
+    # rolled over with a 10 cm lateral CG; 28 N m is just under the mj5208 x 20:1 peak (1.7 x 20 x 0.85)
+    "servo_params": {"torque_cap": 28.0},
+    # heave filter for 8 m/s: encounter frequencies are lower (following / quartering 15 m waves about 1-1.5 rad/s);
+    # a slower, larger wave band and a slower bias trade 13 mm calm wander (6 mm at the defaults) for 67-117 mm
+    # instead of 90-260 mm rms in following seas (docs/19, "Manned sizing")
+    "kf_wave": {"w0": 2.0, "zeta": 1.0, "sigma": 0.15}, "kf_heave": {"bias_walk": 0.005},
+    "trim_ff_deg": 6.57, "trim_ff_speed": 6.0,
+    # PID gains from the autotuner (2026-11-15): these fly takeoff (and everything in PID mode). The relay-test rule
+    # sets (Ziegler-Nichols etc.) scored best with perfect sensors but held the drives at their torque limit on noisy
+    # ones; with drive effort charged properly the search kept gains near the model's. Following sea 95 -> 64 mm rms,
+    # rider shift peak 183 -> 113 mm, takeoff settle 15.1 -> 13.8 s.
+    "kp_heave": 44.94, "ki_heave": 6.488, "kd_heave": 7.906,
+    "kp_pitch": 1.818, "ki_pitch": 1.038, "kd_pitch": 0.0987,
+    "kp_roll": 2.0, "kd_roll": 0.191,
+    # LQR weights from the autotuner (hydrofoil/tuning, docs/19 "Autotuner"), 2026-11-15: Bryson's rule, 4 rounds of
+    # re-weighting, then 6 rounds of search over 5 scenarios incl. noisy sensors. Acceptable excursions, overriding
+    # control.lqr.DEFAULT_WEIGHTS: tighter on height, heave rate and the height integral, looser on roll and pitch
+    # rate, and a 2.3x larger command-rate allowance. Head / following sea height rms 27 / 36 -> 18 / 18 mm.
+    "lqr_weights": {"z": 0.01084, "phi": 0.07882, "theta": 0.0348, "w": 0.08196, "q": 0.2391, "iz": 0.01292,
+                    "du_main": 566.2, "du_elev": 566.2, "du_roll": 566.2},
+    "lqr_speeds": (4.5, 5.5, 6.5, 8.0, 9.5), "lqr_engage_speed": 4.8, "est_engage_speed": 4.5,
+})

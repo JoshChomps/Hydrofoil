@@ -70,7 +70,7 @@ def trim(vp: VehiclePhysics, speed: float, theta: float = 0.0, flying_height: fl
             e = np.zeros(4); e[k] = 1e-4
             J[:, j] = (res(u + e) - res(u - e)) / 2e-4
         step = np.linalg.solve(J, -r)
-        u[free] += np.clip(step, -5.0, 5.0)
+        u[free] += np.clip(step, [-5.0, -5.0, -200.0], [5.0, 5.0, 200.0])   # deg, deg, N
     raise RuntimeError(f"trim did not converge at {speed} m/s (residual {np.max(np.abs(res(u))):.3g})")
 
 

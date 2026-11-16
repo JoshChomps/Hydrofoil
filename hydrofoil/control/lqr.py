@@ -67,17 +67,35 @@ def design(vp, speed: float, weights: dict | None = None):
     return K, u0[:3].copy()
 
 
+def hinge_stiffness(vp, name: str, speed: float) -> float:
+    """Restoring hydrodynamic hinge stiffness -dM/d(delta) [N m/rad] of one drive's surface at level flight
+    (`speed`, nominal flying depth). It grows with q c_f^2: about 4 N m/rad on the 25 kg model at 4 m/s, about
+    100 N m/rad on the manned flap at 8 m/s, against the servo kp of 250, so it cannot be left out."""
+    from hydrofoil.forces.foil import free_surface_lift_factor
+    p = vp.params
+    foil = {"left": vp.left_foil, "right": vp.right_foil, "elev": vp.elev_foil}[name]
+    h = vp.hinges[name]
+    depth = (p["hull_offset"] - p["flying_height"]) + foil.r_attach[2]
+    lf = foil.lift_slope_factor * free_surface_lift_factor(depth / foil.geometry.chord)
+    q = 0.5 * h.rho * speed * speed
+    if h.g.layout == "flap":
+        return -q * h._ref * lf * h.ch_delta
+    return -q * h._ref * h._arm * foil._a2d * lf * foil.flap_effectiveness
+
+
 def servo_model(vp, speed: float):
     """Linear model of the surface drives on the three virtual channels [main, elev, roll]:
-    delta_dd = wn2 (cmd - delta) - c delta_d, from the moteus position gains, the total inertia at the
-    output (structure + water + reflected rotor) and the hydrodynamic damping at `speed`. The hinge-moment
-    spring (a few N m/rad against kp = 250) and the current/voltage limits are left out."""
-    wn2, c = [], []
+    delta_dd = g cmd - wn2 delta - c delta_d, from the moteus position gains, the total inertia at the
+    output (structure + water + reflected rotor), the hydrodynamic hinge stiffness and damping at `speed`
+    (wn2 = (kp + k_hinge) / J, g = kp / J: a restoring hinge moment leaves the surface short of its command).
+    The current/voltage limits are left out. Returns (wn2, c, g)."""
+    wn2, c, g = [], [], []
     for name in ("left", "elev", "left"):                   # main and roll both act through the flap drives
         d = vp.drives[name]
-        wn2.append(d.kp / d.j_total)
+        wn2.append((d.kp + hinge_stiffness(vp, name, speed)) / d.j_total)
         c.append((d.kd + d.h.damping(speed)) / d.j_total)
-    return np.array(wn2), np.array(c)
+        g.append(d.kp / d.j_total)
+    return np.array(wn2), np.array(c), np.array(g)
 
 
 def augmented_model(vp, speed: float, dt: float, delay_steps: int):
@@ -92,7 +110,7 @@ def augmented_model(vp, speed: float, dt: float, delay_steps: int):
     Ar, Br, _ = reduced(A, B)
     As, Bs = Ar[np.ix_(STATE_IDX, STATE_IDX)], Br[STATE_IDX, :]
     n = len(STATE_IDX)
-    wn2, c = servo_model(vp, speed)
+    wn2, c, gain = servo_model(vp, speed)
     nc = n + 9                                              # continuous part: plant, integrators, delta, delta_dot
     Ac = np.zeros((nc, nc)); Bc = np.zeros((nc, 3))
     Ac[:n, :n] = As
@@ -102,7 +120,7 @@ def augmented_model(vp, speed: float, dt: float, delay_steps: int):
         Ac[n + 3 + i, n + 6 + i] = 1.0                      # d(delta)/dt = delta_dot
         Ac[n + 6 + i, n + 3 + i] = -wn2[i]
         Ac[n + 6 + i, n + 6 + i] = -c[i]
-        Bc[n + 6 + i, i] = wn2[i]
+        Bc[n + 6 + i, i] = gain[i]
     M = np.zeros((nc + 3, nc + 3)); M[:nc, :nc] = Ac; M[:nc, nc:] = Bc
     E = expm(M * dt)
     Ad0, Bd0 = E[:nc, :nc], E[:nc, nc:]
@@ -147,8 +165,8 @@ class LQRController:
 
     def __init__(self, vp, dt: float, speeds=(3.0, 4.0, 5.0, 6.0, 7.0), weights: dict | None = None,
                  engage_speed: float = 3.2, engage_height_err: float = 0.15, limit_deg: float = 20.0,
-                 int_limit=(0.05, 0.03, 0.03), delay_s: float = 0.01):
-        self.dt, self.limit = dt, limit_deg
+                 int_limit=(0.05, 0.03, 0.03), delay_s: float = 0.01, blend_s: float = 0.5):
+        self.dt, self.limit, self.blend_s = dt, limit_deg, blend_s
         self.speeds = np.asarray(speeds, float)
         self.delay_steps = max(int(round(delay_s / dt)), 1)
         ks, ts = zip(*(design_delay_aware(vp, s, dt, self.delay_steps, weights) for s in self.speeds))
@@ -159,6 +177,7 @@ class LQRController:
 
     def reset(self):
         self.engaged = False
+        self.since_engage = 0.0
         self.integ = np.zeros(3)
         self.last = np.zeros(3)
         self.hist = np.zeros((self.delay_steps, 3))              # commands already sent, newest first [deg]
@@ -204,6 +223,13 @@ class LQRController:
                 return dict(pid_raw)
 
         cmd_nom = T - K[:, :8] @ xs - Ki @ self.integ - Kt @ tail
+        # handover blend: the integrators cannot always absorb the PID/LQR mismatch (they are clamped), so the
+        # command fades from the PID's to the LQR's over blend_s instead of stepping (a 14 deg elevator step with
+        # the autotuned weights, 2026-11-15)
+        self.since_engage += self.dt
+        a = min(1.0, self.since_engage / self.blend_s) if self.blend_s > 0 else 1.0
+        if a < 1.0:
+            cmd_nom = a * cmd_nom + (1.0 - a) * pid_vec
         cmd = np.clip(cmd_nom, -self.limit, self.limit)
         # conditional integration: hold an integrator while its channel is saturated and the error pushes deeper
         for i in range(3):

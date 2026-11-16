@@ -144,6 +144,30 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Changed: doc 19, end ("Is it good enough?", "Sensors required on the real boat", "Other findings to carry forward").
 - Open decision: real all-up weight (boat plus rider); it drives foil, speed and thrust sizing.
 
+### 2026-11-15 — Manned sizing (250–300 kg)
+- Changed: `params.py` (`MANNED_PARAMS`), `vehicle.py` (LQR and Kalman designed on the nominal CG; `lqr_speeds`, `lqr_engage_speed`, `est_engage_speed`, `kf_heave` params), `linearize.py` (thrust step clip), `tests/test_manned.py` (4 new). Doc 19, last section.
+- Why: real all-up weight is about 250 kg, up to 300 kg; the 25 kg sizing cannot take off at that weight.
+- Result: 0.62 m² main foil at 3° incidence, 8 m/s cruise, hull clears at 5.6–6.3 m/s, about 190 N cruise thrust. Flies at 250 and 300 kg, CG ±25 cm fore/aft and 20 cm lateral, in-flight rider shifts absorbed.
+- Findings: the drive torque cap must rise from 10 to 28 N·m (it rolled over with a 10 cm lateral CG at 10 N·m). Following / quartering seas with noisy sensors are 69–118 mm rms; needs GNSS vertical velocity or a better IMU.
+
+### 2026-11-15 — Manned sizing verified; scale issues and failure cases
+- Changed: `control/lqr.py` (`hinge_stiffness`; drive model with the restoring hinge moment). Doc 19, "Verification", "What changes with weight", "Failure cases".
+- Verified: hand trim check, dt 0.005, three sensor seeds, heave-damping and roll-added-inertia sensitivity; 78 tests pass. Corrected takeoff speed to 5.6–6.3 m/s.
+- Findings: hinge stiffness is 40–60 % of the servo kp (was 2 %); delay margin halves to 80 ms; unstable mode is 2.5x faster. A main flap jammed off trim capsizes the boat and a limp elevator drives the nose in within about 1 s. No fault handling exists.
+
+### 2026-11-15 — Operating protocol (flight-mode supervisor)
+- Changed: new `control/supervisor.py` (modes DISPLACEMENT / TAKEOFF / FOILING / LANDING / EMERGENCY_LANDING, speed and height envelope, drive and sensor fault detection, jammed-flap mixer reconfiguration); `vehicle.py` hooks (`params["supervisor"]`, off by default; `_last_target`, `_last_flows`); `tests/test_supervisor.py` (4). Doc 19, "Operating protocol".
+- Why: safe takeoff, cruise and return to displacement at a pilot-chosen speed, for the foiling energy saving (less than half the power above 4.5 m/s).
+- Result: full cycle lands at 0.1 m/s sink; flap jams that capsized the boat now land level (roll ≤ 3°); elevator loss nose-down −13° → −4° (−1° with a fail-safe drive).
+- Follow-ups: fail-safe elevator drive (hardware); takeoff in waves; turns; irregular seas.
+
+### 2026-11-15 — Autotuner, flight observer, boat editor; manned gains retuned
+- Added: `hydrofoil/tuning/` (scoring over 5 scenarios incl. noisy sensors; staged autotuner: relay test + Ziegler-Nichols / Tyreus-Luyben, Bryson + re-weighting, cross-entropy search), `hydrofoil/monitor.py` (flight observer), `hydrofoil/design.py` (boat editor layer), `tests/test_tools.py` (6). Viewer: `--overrides`, observer in the instrument strip, strut/foil geometry fixed. Doc 19, last section.
+- Changed: `MANNED_PARAMS` PID gains and LQR weights from the autotuner; `default_payloads` (75 kg rider).
+- Results: LQR head / following sea 27 / 36 to 18 / 18 mm rms; PID following sea 95 to 64 mm. LQR delay margin at cruise 80 to 60 ms.
+- Fixed: LQR handover now blends PID to LQR over 0.5 s (the tuned weights gave a 14 deg elevator step); supervisor 'stuck' detection needs the error to persist for its window (it fired on that step).
+- Findings: tuning on perfect sensors over-drives the flaps; classical rules from the relay test are too aggressive for a noisy height signal; the PID cannot reach the LQR.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

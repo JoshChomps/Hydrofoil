@@ -8,3 +8,7 @@ __pycache__/
 data/*
 !data/foil_tables/
 !data/foil_tables/**
+
+# Local-only launcher (sim server page and its launch config)
+local/
+.claude/launch.json
