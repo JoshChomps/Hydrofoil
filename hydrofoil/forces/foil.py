@@ -26,6 +26,19 @@ _DAT_DIR = Path(__file__).parent.parent.parent / "data" / "foil_tables"
 # all-moving surface, where the whole panel rotates so commanded deflection
 # literally IS angle of attack — no penalty).
 MAIN_FOIL_FLAP_EFFECTIVENESS = 0.21   # plain flap, 40% chord, inboard half-span
+REF_FLAP_FRAC, REF_FLAP_SPAN_FRAC = 0.4, 0.5   # the geometry the 0.21 above refers to
+
+
+def main_flap_effectiveness(flap_frac: float, span_frac: float) -> float:
+    """Flap effectiveness for another plain-flap geometry, scaled from the 0.21 reference by thin-airfoil
+    theory: tau(c_f/c) (Glauert, hinge.thin_airfoil_coeffs) times the flapped span fraction (first order:
+    a part-span flap changes the lift of its own strip). The 0.21 / (tau * span) ratio, about 0.55, stands
+    for hinge-gap leakage, boundary-layer and 3-D part-span losses and is kept constant across geometries.
+    Returns REF exactly at the reference geometry, so default behaviour is unchanged."""
+    from hydrofoil.actuation.hinge import thin_airfoil_coeffs
+    tau = thin_airfoil_coeffs(float(flap_frac))["tau"] if flap_frac > 0 else 0.0
+    tau0 = thin_airfoil_coeffs(REF_FLAP_FRAC)["tau"]
+    return MAIN_FOIL_FLAP_EFFECTIVENESS * (tau * span_frac) / (tau0 * REF_FLAP_SPAN_FRAC)
 ELEVATOR_FLAP_EFFECTIVENESS = 1.0     # all-moving surface (whole elevator rotates)
 
 # Oswald span-efficiency factor e, used in the induced-drag term CL^2/(pi*AR*e).

@@ -54,10 +54,16 @@ from hydrofoil.constants import RHO_WATER
 
 
 @lru_cache(maxsize=32)
-def thin_airfoil_coeffs(flap_frac: float, n: int = 400) -> dict:
+def thin_airfoil_coeffs(flap_frac: float, n: int = 400, setback: float = 0.0) -> dict:
     """
     2-D thin-airfoil coefficients for a unit-chord plate with a plain flap of chord fraction
     ``flap_frac`` (0 = no flap). Per radian. Hinge moment is referenced to q * c_f^2 (per span).
+
+    ``setback``: hinge axis set back into the flap by this fraction of the flap chord (overhang /
+    "set-back hinge" aerodynamic balance). The flap still deflects from its leading edge at
+    x = 1 - flap_frac, but moments are taken about x_b = x_h + setback * c_f, so the load on the
+    overhang ahead of the axis opposes the rest. Thin-airfoil theory overstates the benefit (the real
+    overhang sits in a cove with a gap); treat it as an upper bound.
 
     Returns dict: cl_alpha, cl_delta, tau (= cl_delta/cl_alpha), x_ac, cm_alpha / cm_delta (about c/4),
                   ch_alpha, ch_delta   (flap only; 0 when flap_frac == 0).
@@ -86,7 +92,7 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400) -> dict:
            "cm_alpha": cm_a, "cm_delta": cm_d, "ch_alpha": 0.0, "ch_delta": 0.0}
     if flap_frac > 0:
         cf = flap_frac
-        arm = np.where(on_flap_v, xv - x_h, 0.0)
+        arm = np.where(on_flap_v, xv - (x_h + setback * cf), 0.0)
         # Upward load aft of the hinge pushes the TE up = negative in the TE-down convention.
         out["ch_alpha"] = -2.0 * (g_alpha * arm).sum() / cf**2
         out["ch_delta"] = -2.0 * (g_delta * arm).sum() / cf**2
@@ -99,6 +105,7 @@ class SurfaceGeometry:
     span: float                # span carried by THIS actuator [m]
     layout: str = "flap"       # "flap" or "all_moving"
     flap_frac: float = 0.4     # flap chord / chord (flap layout)
+    hinge_setback: float = 0.0  # hinge axis aft of the flap LE, fraction of flap chord (overhang balance)
     pivot_frac: float = 0.25   # pivot position / chord from the LE (all-moving layout)
     viscous_factor: float = 0.8   # PLACEHOLDER real/thin-airfoil ratio for steady hinge moments
     j_struct: float = 0.0      # structural inertia of the moving part about its hinge [kg m^2]
@@ -112,7 +119,7 @@ class HingeMoment:
         self.rho = rho
         c, s = geom.chord, geom.span
         if geom.layout == "flap":
-            co = thin_airfoil_coeffs(geom.flap_frac)
+            co = thin_airfoil_coeffs(geom.flap_frac, setback=geom.hinge_setback)
             cf = geom.flap_frac * c
             b = cf / 2.0
             self._ref = s * cf * cf                       # S_f * c_f

@@ -24,6 +24,8 @@ Docs 01–12 were written by reading; doc 13 and the updates it triggered were p
 | [17-actuators-moteus-drive.md](17-actuators-moteus-drive.md) | Control-surface drives: hinge moments, moteus/BLDC/gearbox current-voltage-power budget, gear-ratio sweep, stress, failure modes, next steps |
 | [15-buoyancy-hydrostatics-cross-reference.md](15-buoyancy-hydrostatics-cross-reference.md) | Hull buoyancy checked against metacentric theory; distributed hydrostatics model; before/after stiffness |
 | [16-review-guide.md](16-review-guide.md) | **Start here for review:** conventions, equations→code map, assumptions ledger, evidence/commands, open questions |
+| [19-linearisation-lqr-estimation.md](19-linearisation-lqr-estimation.md) | Trim, linearisation, scheduled / delay-aware LQR, sensors and Kalman, manned sizing, supervisor, autotuner |
+| [20-flap-and-drive-design.md](20-flap-and-drive-design.md) | Main-flap geometry and gear ratio vs hinge torque, current and mechanics; what mechanism has to be designed |
 | [14-error-register-and-fixes.md](14-error-register-and-fixes.md) | **Every error expanded: cause, evidence, fix, test; retuned gains; unit/conversion map; still-open items** |
 
 Conventions used across the code (and these docs): Fossen (2011) notation,

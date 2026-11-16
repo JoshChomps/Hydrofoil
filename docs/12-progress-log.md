@@ -168,6 +168,20 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Fixed: LQR handover now blends PID to LQR over 0.5 s (the tuned weights gave a 14 deg elevator step); supervisor 'stuck' detection needs the error to persist for its window (it fired on that step).
 - Findings: tuning on perfect sensors over-drives the flaps; classical rules from the relay test are too aggressive for a noisy height signal; the PID cannot reach the LQR.
 
+### 2026-11-16 — Flap geometry and drive design study (manned)
+- Changed: `forces/foil.py` (`main_flap_effectiveness`: lift effectiveness scales with flap chord and span, 0.21 at the 40 % / half-span reference), `vehicle.py` (uses it; `main_flap_effectiveness` param override), `actuation/hinge.py` and `loads.py` (set-back hinge, `main_flap_setback`, default 0), new `tools/flap_design.py`, `tests/test_actuation.py` (3 new). New doc 20.
+- Why: the flap's lift effectiveness was a constant while its hinge moment followed the geometry, so a geometry change was inconsistent; and the question was which flap and gear ratio the real drive needs, and what mechanism has to be built.
+- Verified: the defaults are unchanged (effectiveness exactly 0.21 on both presets, test). Static sweep, plus 10 closed-loop manned runs (LQR, servo drives, takeoff / head / following sea): doc 20.
+- Findings:
+  - The current 40 % flap needs 44 N·m at 9.5 m/s against the drive's 28.9, and 17–20 A to hold trim against the 12 A rating.
+  - A 25 % chord, full-span flap with a 20 % set-back hinge needs 4× less moment and 3× less current, with 3 mm less height error in waves.
+  - Gear ratio is set by torque and reflected inertia, never by speed; keep 20:1.
+  - The 8 mm output shaft placeholder is overstressed 4× (needs 12.8 mm or more).
+  - A pushrod or torque tube down the 1.65 m strut buckles or is too soft, so the drives belong in a nacelle at the strut–foil junction.
+  - Takeoff peaks (48 A, 17–21 A rail) come from the takeoff command step to the 20° limit, not the water.
+- Parameter changes: none to defaults (`main_flap_setback` = 0 and `main_flap_effectiveness` = derived are new).
+- Follow-ups: slew-limit the takeoff flap command; adopt the balanced flap geometry in `MANNED_PARAMS` and retune; model plain-flap separation above 15–20°, gearbox backlash and flap torsion; bench or CFD check of the set-back.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

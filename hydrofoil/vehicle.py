@@ -22,7 +22,7 @@ from hydrofoil.dynamics.rigid_body import RigidBody, strip_added_mass_heave_pitc
 from hydrofoil.dynamics.kinematics import J, R_body_to_ned
 from hydrofoil.forces.foil import (
     Foil, FoilGeometry, FoilTables,
-    MAIN_FOIL_FLAP_EFFECTIVENESS, ELEVATOR_FLAP_EFFECTIVENESS, MAIN_FOIL_OSWALD_EFFICIENCY,
+    MAIN_FOIL_FLAP_EFFECTIVENESS, ELEVATOR_FLAP_EFFECTIVENESS, main_flap_effectiveness, MAIN_FOIL_OSWALD_EFFICIENCY,
 )
 from hydrofoil.forces.buoyancy import gravity_force
 from hydrofoil.forces.hull import HullHydrostatics
@@ -110,20 +110,25 @@ class VehiclePhysics:
         # turn that into an actual bank. Closed-loop via self.controller's
         # roll_pid — see control/pid.py.
         # Flap section pitching moment (thin-airfoil Cm_delta x inboard span fraction x viscous factor).
+        # Lift effectiveness follows the flap geometry (forces/foil.py::main_flap_effectiveness; 0.21 at the
+        # 40 % chord / half-span reference); `main_flap_effectiveness` in params overrides it.
+        self.main_flap_eff = (p.get("main_flap_effectiveness")
+                              or (main_flap_effectiveness(p["main_flap_frac"], p["main_flap_span_frac"])
+                                  if p.get("main_actuation", "flap") == "flap" else MAIN_FOIL_FLAP_EFFECTIVENESS))
         flap_cm = (thin_airfoil_coeffs(p["main_flap_frac"])["cm_delta"] * p["main_flap_span_frac"]
                    * p.get("flap_cm_factor", 0.8)) if p.get("flap_moment", True) else 0.0
         self.left_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], -p["main_lateral_offset"], p["main_pos_z"]]),
-            flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
+            flap_effectiveness=self.main_flap_eff,
             oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
         )
         self.right_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], p["main_lateral_offset"], p["main_pos_z"]]),
-            flap_effectiveness=MAIN_FOIL_FLAP_EFFECTIVENESS,
+            flap_effectiveness=self.main_flap_eff,
             oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
         )
         self.elev_foil = Foil(
@@ -321,7 +326,7 @@ class VehiclePhysics:
         d0, vs = p.get("trim_ff_deg", 0.0), p.get("trim_ff_speed", 0.0)
         if d0 == 0.0 or vs <= 0.0:
             return 0.0
-        inc = p.get("main_incidence_deg", 0.0) / MAIN_FOIL_FLAP_EFFECTIVENESS    # incidence in flap degrees
+        inc = p.get("main_incidence_deg", 0.0) / self.main_flap_eff    # incidence in flap degrees
         return float(np.clip((d0 + inc) * (vs / max(float(u), 0.5 * vs)) ** 2 - inc, -20.0, 20.0))
 
     def rest_state(self) -> np.ndarray:

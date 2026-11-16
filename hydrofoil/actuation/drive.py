@@ -71,7 +71,8 @@ class DriveSpec:
     motor: MotorSpec = field(default_factory=MotorSpec)
     ctrl: ControllerSpec = field(default_factory=ControllerSpec)
     gear: GearSpec = field(default_factory=GearSpec)
-    shaft_diameter: float = 0.008   # m, output shaft PLACEHOLDER (for torsional stress)
+    shaft_diameter: float = 0.008   # m, output shaft PLACEHOLDER (for torsional stress); >= 12.8 mm for the full
+                                    # 28.9 N m of the 20:1 drive into a stop or jam (docs/20 section 4)
     shaft_shear_yield: float = 140e6   # Pa, ~316 stainless (0.58 * 240 MPa)
 
 
