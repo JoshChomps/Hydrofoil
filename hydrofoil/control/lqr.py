@@ -167,6 +167,11 @@ class LQRController:
                  engage_speed: float = 3.2, engage_height_err: float = 0.15, limit_deg: float = 20.0,
                  int_limit=(0.05, 0.03, 0.03), delay_s: float = 0.01, blend_s: float = 0.5):
         self.dt, self.limit, self.blend_s = dt, limit_deg, blend_s
+        # per-phase selection (control/supervisor.py, params["phase_controllers"]): None = the automatic handover
+        # (engage on speed and height error, latch); True = engage now whatever the state; False = PID, and if the
+        # LQR was flying, fade back to the PID's command over blend_s
+        self.force: bool | None = None
+        self._release_t, self._release_from = 0.0, None
         self.speeds = np.asarray(speeds, float)
         self.delay_steps = max(int(round(delay_s / dt)), 1)
         ks, ts = zip(*(design_delay_aware(vp, s, dt, self.delay_steps, weights) for s in self.speeds))
@@ -206,8 +211,14 @@ class LQRController:
         tail = np.concatenate([ang - T, rate, (self.hist - T).ravel()])     # drives and the command chain
         Ki, Kt = K[:, 8:11], K[:, 11:]
 
+        if self.force is False and self.engaged:          # hand back to the PID: fade from the last LQR command
+            self.engaged = False
+            self._release_t, self._release_from = 0.0, self.last.copy()
         if not self.engaged:
-            if u >= self.engage_speed and abs(err[0]) < self.engage_err:
+            want = (self.force is True) or (self.force is None and u >= self.engage_speed and abs(err[0]) < self.engage_err)
+            if want:
+                self._release_from = None
+                self.since_engage = 0.0
                 self.engaged = True
                 # bumpless: choose the three integrators so the first LQR command equals the PIDs' on every
                 # channel (K_i integ = base - pid); clipped, so a large mismatch still leaves a small step
@@ -218,9 +229,16 @@ class LQRController:
                     self.integ = np.zeros(3)
                 self.integ = np.clip(self.integ, -self.int_limit, self.int_limit)
             else:
-                self.last = pid_vec
-                self._push(pid_vec)
-                return dict(pid_raw)
+                out = pid_vec
+                if self._release_from is not None:
+                    self._release_t += self.dt
+                    a = min(1.0, self._release_t / self.blend_s) if self.blend_s > 0 else 1.0
+                    out = a * pid_vec + (1.0 - a) * self._release_from
+                    if a >= 1.0:
+                        self._release_from = None
+                self.last = out
+                self._push(out)
+                return {"delta_main": float(out[0]), "delta_elev": float(out[1]), "delta_roll": float(out[2])}
 
         cmd_nom = T - K[:, :8] @ xs - Ki @ self.integ - Kt @ tail
         # handover blend: the integrators cannot always absorb the PID/LQR mismatch (they are clamped), so the

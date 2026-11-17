@@ -154,3 +154,33 @@ def test_rider_shifting_weight_mid_flight_is_absorbed():
     assert max(abs(v) for v in z[2000:]) < 0.03 and max(abs(v) for v in phi[2000:]) < 2.0
     assert abs(z[-1]) < 0.005 and abs(phi[-1]) < 0.2          # integrators re-trim it
     assert abs(c["delta_roll"]) > 0.5                         # ...by holding differential flap against the offset
+
+
+def test_phase_forcing_engages_and_releases_the_lqr_without_a_step():
+    """params['phase_controllers'] (docs/21): force=True engages at once, whatever the speed; force=False hands
+    back to the PID by fading from the last LQR command over blend_s."""
+    import numpy as np
+    from hydrofoil.params import MANNED_PARAMS
+    from hydrofoil.vehicle import VehiclePhysics
+    from hydrofoil.linearize import trim
+    vp = VehiclePhysics(dict(MANNED_PARAMS, controller="lqr"))
+    lqr, p = vp.lqr, vp.params
+    x, _u = trim(vp, 8.0)
+    x[2] += 0.05                                                  # 5 cm low: the LQR asks for something
+    zr = p["hull_offset"] - p["flying_height"]
+    pid = {"delta_main": 3.0, "delta_elev": -1.0, "delta_roll": 0.5}
+    slow = x.copy(); slow[6] = 2.0                                # below any engage speed
+    lqr.force = True
+    lqr.update(slow, zr, 0.0, 0.0, pid)
+    assert lqr.engaged
+    for _ in range(100):
+        out = lqr.update(x, zr, 0.0, 0.0, pid)
+    last = np.array([out["delta_main"], out["delta_elev"], out["delta_roll"]])
+    lqr.force = False
+    seq = [lqr.update(x, zr, 0.0, 0.0, pid) for _ in range(int(lqr.blend_s / lqr.dt) + 5)]
+    assert not lqr.engaged
+    first = np.array([seq[0]["delta_main"], seq[0]["delta_elev"], seq[0]["delta_roll"]])
+    pv = np.array([pid["delta_main"], pid["delta_elev"], pid["delta_roll"]])
+    step = np.abs(first - last).max()
+    assert step <= np.abs(pv - last).max() * lqr.dt / lqr.blend_s + 1e-9   # one blend increment, not a jump
+    assert seq[-1] == pid                                          # fully the PID's after the blend

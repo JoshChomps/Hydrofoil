@@ -210,6 +210,10 @@ class Supervisor:
         # the LQR is designed for the foilborne plant: keep the PID on takeoff until the hull is clear
         if vp.lqr is not None:
             vp.lqr.engage_speed = self._lqr_engage if (airborne and self.mode != "DISPLACEMENT") else np.inf
+            # per-phase controller choice (params["phase_controllers"], docs/21): "pid" / "lqr" force it for the
+            # phase, "auto" (or no entry) keeps the automatic handover; DISPLACEMENT also takes "fixed"
+            choice = self._phase_choice()
+            vp.lqr.force = {"pid": False, "fixed": False, "lqr": True}.get(choice)
 
         mode = self.mode
         pv = self.pilot
@@ -281,8 +285,16 @@ class Supervisor:
         return min(self.pilot["speed"], c["v_disp_max"]), p["max_thrust"]
 
     # ---------------------------------------------------------------- hooks
+    def _phase_choice(self) -> str:
+        pc = self.vp.params.get("phase_controllers") or {}
+        mode = "LANDING" if self.mode == "EMERGENCY_LANDING" else self.mode
+        return pc.get(mode, "auto")
+
     def shape_raw(self, raw: dict, cstate) -> dict:
         """Virtual-channel commands after the controllers: displacement flaps."""
+        if self.mode == "DISPLACEMENT" and self._phase_choice() == "fixed":
+            # no stability system: every surface held at its displacement angle
+            return {"delta_main": self.c["disp_flap_deg"], "delta_elev": 0.0, "delta_roll": 0.0}
         if self.mode == "DISPLACEMENT":
             # no lift wanted from the main flaps; the elevator and differential flap keep damping pitch and roll
             return {"delta_main": self.c["disp_flap_deg"], "delta_elev": raw["delta_elev"], "delta_roll": raw["delta_roll"]}
