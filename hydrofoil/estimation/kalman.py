@@ -135,6 +135,7 @@ class HeaveFilter:
         on = 1.0 if w["sigma"] > 0 else 0.0
         self.H = np.array([1.0, -latency, 0.0, on * latency * w["w0"] ** 2,
                            on * (1.0 + 2.0 * w["zeta"] * w["w0"] * latency)])
+        self.H_vz = np.array([0.0, 1.0, 0.0, 0.0, 0.0])
         self.reset()
 
     def reset(self):
@@ -151,14 +152,48 @@ class HeaveFilter:
         self.P = np.diag([0.05 ** 2, 0.5 ** 2, 0.1 ** 2, (s / w0) ** 2, s ** 2])
         self.ready = True
 
-    def step(self, az: float | None, h: float | None, fresh_h: bool):
-        """One control step: propagate with the accelerometer, correct with a NEW height sample if there is one."""
+    def innov_z2(self, h: float, R_val: float | None = None) -> float:
+        """Normalized squared innovation (Mahalanobis^2) of a candidate range measurement vs prediction."""
+        R_use = self.R if R_val is None else float(R_val)
+        innov = h - float(self.H @ self.x)
+        S = float(self.H @ (self.P @ self.H) + R_use)
+        return (innov * innov) / max(S, 1e-12)
+
+    def update_vz(self, vz_meas: float, sigma_vz: float = 0.06, az: float | None = None, latency: float = 0.08):
+        """GNSS vertical-velocity measurement update (Joseph form); models sensor latency
+        (`vz(t - L) ~= vz + L * b_a - L * az`) and updates [vz, b_a] without step-jumping z."""
+        if not self.ready:
+            return self.x
+        Hv = np.array([0.0, 1.0, float(latency), 0.0, 0.0])
+        Rv = float(sigma_vz) ** 2
+        a_cur = 0.0 if az is None else float(az)
+        innov = (float(vz_meas) + float(latency) * a_cur) - float(Hv @ self.x)
+        PH = self.P @ Hv
+        S = float(Hv @ PH) + Rv
+        if S <= 1e-12:
+            return self.x
+        K = PH / S
+        # Zero gain on position z and wave states so delayed GNSS velocity never jumps height z discontinuously
+        K[0] = 0.0
+        K[3:] = 0.0
+        self.x = self.x + K * innov
+        I_KH = np.eye(5) - np.outer(K, Hv)
+        self.P = I_KH @ self.P @ I_KH.T + np.outer(K, K) * Rv
+        return self.x
+
+    def predict(self, az: float | None):
+        """Propagate kinematic + wave state one control step with the accelerometer."""
         self.x = self.F @ self.x + self.G * (0.0 if az is None else az)
         self.P = self.F @ self.P @ self.F.T + self.Q
+        return self.x
+
+    def update_z(self, h: float | None, fresh_h: bool, R_override: float | None = None):
+        """Measurement update for an already-predicted step using a new height sample."""
         if fresh_h and h is not None:
+            R_use = self.R if R_override is None else float(R_override)
             innov = h - self.H @ self.x
             PH = self.P @ self.H
-            S = self.H @ PH + self.R
+            S = self.H @ PH + R_use
             if innov * innov >= self.gate ** 2 * S and self._rejected < self.max_reject:
                 self._rejected += 1
                 self.last_rejected = True
@@ -167,14 +202,19 @@ class HeaveFilter:
                     self.reject_events += 1
                     self.P[0, 0] += innov * innov
                     PH = self.P @ self.H
-                    S = self.H @ PH + self.R
+                    S = self.H @ PH + R_use
                 self._rejected = 0
                 self.last_rejected = False
                 K = PH / S
                 self.x = self.x + K * innov
                 I_KH = np.eye(5) - np.outer(K, self.H)
-                self.P = I_KH @ self.P @ I_KH.T + np.outer(K, K) * self.R
+                self.P = I_KH @ self.P @ I_KH.T + np.outer(K, K) * R_use
         return self.x
+
+    def step(self, az: float | None, h: float | None, fresh_h: bool, R_override: float | None = None):
+        """One control step: propagate with the accelerometer, correct with a NEW height sample if there is one."""
+        self.predict(az)
+        return self.update_z(h, fresh_h, R_override=R_override)
 
     @property
     def z(self) -> float:

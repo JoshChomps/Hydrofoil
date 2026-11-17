@@ -36,12 +36,13 @@ python -m pytest
 python -m hydrofoil.consistency
 
 # The app (MuJoCo). Click the window, then:
-#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset, C = PID/LQR
-python -m hydrofoil.viewer [--preset model|manned] [--controller lqr|pid] [--sensors ideal|noisy] [--waves] [--speed 1.0]
+#   Up/Down = height, Left/Right = bank, [ ] = speed, F = foil/land (--supervisor), R = reset, C = PID/LQR
+python -m hydrofoil.viewer [--preset model|manned] [--supervisor] [--controller lqr|pid] [--sensors ideal|noisy] [--waves] [--speed 1.0]
 
-# Actuator budget and flap/drive design study
+# Actuator budget, flap/drive design study, and per-phase mission sweep
 python tools/actuator_budget.py
 python tools/flap_design.py static
+python tools/phase_trials.py
 ```
 
 ## Current state & caveats
@@ -50,15 +51,20 @@ python tools/flap_design.py static
   `MANNED_PARAMS` (275 kg craft) default to `controller="lqr"` (PID takeoff with
   bumpless latched handover to speed-scheduled delay-aware LQR) and
   `actuator_model="servo"`. Sensors default to `"ideal"`; set `sensors="noisy"`
-  for sensor noise/latency/dropouts with `HeaveFilter` + `KalmanEstimator`.
-- **Supervisor:** `supervisor=True` enables mode management (`DISPLACEMENT` →
-  `TAKEOFF` → `FOILING` → `LANDING` / `EMERGENCY_LANDING`), speed/height envelope
-  clamps, and drive/sensor/attitude fault handling (`control/supervisor.py`).
+  for realistic MEMS/ranging noise, dual height sensor voting (`height` +
+  `height_aux`), GNSS vertical-velocity fallback, and `HeaveFilter` + `KalmanEstimator`.
+- **Supervisor:** `supervisor=True` (or `--supervisor` in the viewer) enables mode
+  management (`DISPLACEMENT` → `TAKEOFF` → `FOILING` → `LANDING` / `EMERGENCY_LANDING`),
+  speed/height/banked-clearance envelope clamps, and drive/sensor/attitude fault handling
+  ([control/supervisor.py](hydrofoil/control/supervisor.py),
+  [docs/21-per-phase-controller-trials.md](docs/21-per-phase-controller-trials.md)).
 - **Placeholder parameters:** Mass, inertias, hull drag/damping, strut chords, and
   several drive/compliance numbers remain placeholders pending hardware measurements
   (see [docs/04-constants-and-parameters.md](docs/04-constants-and-parameters.md) and
-  [docs/20-flap-and-drive-design.md](docs/20-flap-and-drive-design.md)).
-- **Known physical simplifications:** Monochromatic Airy waves, no cavitation or
-  ventilation-hysteresis physics in `foil.py`, and no planing/slamming hydrodynamics
-  in `hull.py`. See [docs/11-known-issues.md](docs/11-known-issues.md) and
+  [docs/20-flap-and-drive-design.md](docs/20-flap-and-drive-design.md)); `design.py`
+  propagates dimension/mass/torque edits consistently across downstream inertias,
+  damping, shaft sizing, and base gains.
+- **Known physical simplifications:** Monochromatic Airy waves, empirical shallow-breach
+  ventilation hysteresis and displacement Froude hump without unsteady cavitation or
+  slamming in `hull.py`. See [docs/11-known-issues.md](docs/11-known-issues.md) and
   [docs/19-linearisation-lqr-estimation.md](docs/19-linearisation-lqr-estimation.md).

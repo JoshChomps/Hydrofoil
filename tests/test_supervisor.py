@@ -90,8 +90,8 @@ def test_calm_takeoff_does_not_fabricate_wave_amplitude():
     assert abs(rec[-1][3] - 0.20) < 0.03
 
 
-def test_frozen_fresh_height_sensor_triggers_height_lost_and_lands():
-    def freeze(vp):
+def test_single_frozen_height_sensor_continues_foiling_on_aux():
+    def freeze_one(vp):
         ch = vp.sensors.channels["height"]
         val = ch.value.copy()
         orig = ch.step
@@ -101,10 +101,61 @@ def test_frozen_fresh_height_sensor_triggers_height_lost_and_lands():
             return val
         ch.step = stuck
     plan = [(0.0, dict(speed=3.0)), (3.0, dict(foil=True, speed=8.0)), (21.0, dict(height=0.50))]
-    vp, rec, _ = _mission(plan, 35.0, fault=(20.0, freeze), sensors="noisy")
+    vp, rec, _ = _mission(plan, 32.0, fault=(20.0, freeze_one), sensors="noisy")
+    assert "height_single" in vp.supervisor.warnings
+    assert "height_lost" not in vp.supervisor.faults
+    assert vp.supervisor.mode == "FOILING"
+    assert abs(rec[-1][3] - 0.50) < 0.04
+
+
+def test_frozen_fresh_height_sensor_triggers_height_lost_and_lands():
+    def freeze_both(vp):
+        for name in ("height", "height_aux"):
+            ch = vp.sensors.channels[name]
+            val = ch.value.copy()
+            orig = ch.step
+            def stuck(st, t, dt, rng, _orig=orig, _ch=ch, _val=val):
+                _orig(st, t, dt, rng)
+                _ch.value = _val
+                return _val
+            ch.step = stuck
+    plan = [(0.0, dict(speed=3.0)), (3.0, dict(foil=True, speed=8.0)), (21.0, dict(height=0.50))]
+    vp, rec, _ = _mission(plan, 35.0, fault=(20.0, freeze_both), sensors="noisy")
     assert "height_lost" in vp.supervisor.faults
+    assert vp.height_status["using_gnss"]
     assert vp.supervisor.mode == "DISPLACEMENT"
     assert max(abs(r[4]) for r in rec) < 5.0 and max(abs(r[5]) for r in rec) < 5.0
+
+
+def test_wave_takeoff_and_banked_turn_clearance():
+    from hydrofoil.waves.airy import AiryWave
+    # 1. Steep 0.25 m head-sea takeoff completes without pitch/elevator false aborts
+    p = dict(MANNED_PARAMS, supervisor=True, sensors="noisy")
+    vp = VehiclePhysics(p)
+    sup, dt = vp.supervisor, p["dt"]
+    wave = AiryWave(0.25, 10.8, direction=np.pi)
+    s, t = vp.rest_state(), 0.0
+    for i in range(int(30.0 / dt)):
+        if i == 300:
+            sup.pilot.update(dict(foil=True, speed=7.5))
+        s, *_ = vp.step(s, t, wave); t += dt
+    assert sup.mode == "FOILING" and not sup.faults
+
+    # 2. +-8 deg banked turns in 0.15 m oblique waves auto-bump clearance from hull_beam
+    vp2 = VehiclePhysics(dict(MANNED_PARAMS, supervisor=True, sensors="noisy"))
+    sup2 = vp2.supervisor
+    wave2 = AiryWave(0.15, 10.8, direction=np.radians(45.0))
+    s, t = vp2.rest_state(), 0.0
+    for i in range(int(34.0 / dt)):
+        if i == 300:
+            sup2.pilot.update(dict(foil=True, speed=8.0))
+        elif i == 2200:
+            sup2.pilot.update(dict(height=0.15, bank=8.0))
+        elif i == 2800:
+            sup2.pilot.update(dict(height=0.15, bank=-8.0))
+        s, *_ = vp2.step(s, t, wave2); t += dt
+    assert sup2.mode == "FOILING" and not sup2.faults
+    assert sup2.status["h_min"] > sup2.c["h_min"] + 0.07
 
 
 def test_limp_main_flap_is_isolated_and_lands_level():

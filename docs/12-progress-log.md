@@ -240,6 +240,19 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Verified: full `pytest -v` suite (existing 101 + 7 new regression tests = 108 tests) and `python -m hydrofoil.consistency` pass.
 - Open situational model choices echoed for confirmation before pushing: continuous-wing `AR` (`3.93` vs `7.86`), Wadlin free-surface / ventilation model, unmodeled roll added inertia (`~0.8 * ixx`), hull heave added mass / drag hump, plain-flap separation past 15°, and wave-takeoff / oblique-turn clearance envelope.
 
+### 2026-11-16 (late evening) — Added physics, dual height + GNSS fallback, autoscaling, viewer `--supervisor`, and `phase_trials.py` sweep (doc 21)
+- Physics & hardware upgrades:
+  - `dynamics/rigid_body.py`, `vehicle.py`: added analytical 2D strip `strip_added_mass_roll` + `added_inertia_roll` into `M[3,3]` and passive `C_A`, and precomputed `_M_inv`.
+  - `forces/hull.py`, `forces/foil.py`, `vehicle.py`: added dimensionless displacement Froude drag hump peaking around `Fr_L ~ 0.48`, smooth plain-flap separation effectiveness roll-off + profile drag past `15°`, and per-foil shallow-breach ventilation hysteresis state (`_vent`).
+  - `params.py`, `consistency.py`: upgraded `MANNED_PARAMS` to low-backlash precision planetary defaults (`backlash_deg=0.10`, `gear_stiffness=5000.0`), `shaft_diameter=0.015 m` (manned shaft shear `64.9 -> 42.3 MPa` vs `70.0 MPa` allowable), propulsion spool lag `prop_tau_s=0.12 s`, and power-capped thrust (`prop_power_max=6500.0 W`); added `dual_height`, `gnss_fallback`, and `gear_rated_torque` wiring.
+- Estimation, redundancy & supervisor upgrades:
+  - `sensors/models.py`, `estimation/kalman.py`, `vehicle.py`: added dual ranging channels (`height` + staggered `height_aux`) with health voting/outlier quarantine (preventing frozen samples from poisoning accelerometer bias `b_a`) and latency-compensated GNSS vertical-velocity (`gnss_vz`) `[vz, b_a]` fallback when both height channels fail.
+  - `control/supervisor.py`: raised `takeoff_pitch_limit=14.0°` separately from `pitch_limit=10.0°` in `FOILING`, gated `TAKEOFF -> FOILING` inside `FOILING` attitude limits, added rate-compensated `(kd + B_hyd) / kp * delta_dot` FDI residual so healthy `150°/s` slews in `0.25 m` waves don't false-trip `elev_loss`, and added dynamic bank clearance bump `0.5 * hull_beam * sin|phi|`.
+- Design autoscaling & viewer integration:
+  - `design.py`: `apply_design` now auto-scales empty-boat dry inertias, wetted hull drag, critical hull damping ratio, flap structural inertia, composite `GJ`, output shaft diameter, thrust/power envelope, and first-order PID gains from physical dimensions/mass.
+  - `viewer.py`: added `--supervisor`, `F` key / `toggle_foil` API, live supervisor status/alerts on HUD and HTTP telemetry.
+- Sweep & docs: ran all 108 runs of `tools/phase_trials.py` (`92/108` pass; `pid, auto, lqr, lqr` optimal across calm/head/following seas) and documented in `docs/21-per-phase-controller-trials.md` (indexed in `docs/README.md`).
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

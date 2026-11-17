@@ -17,7 +17,7 @@ lifting surfaces' geometry. This is a deliberate exception to the usual
 combined M = M_RB + M_A, so keeping the diagonal M_A terms in the same
 matrix M_RB builds gets callers a correct combined solve for free.
 Off-diagonal terms and surge/sway/yaw added mass are NOT modeled — only
-M[2,2] (heave) and M[4,4] (pitch). The matching added-mass Coriolis term C_A
+M[2,2] (heave), M[3,3] (roll), and M[4,4] (pitch). The matching added-mass Coriolis term C_A
 (Munk moment) IS included in C(). Damping (D) is still added by the caller.
 """
 
@@ -31,6 +31,29 @@ def skew(v: np.ndarray) -> np.ndarray:
     return np.array([[ 0,    -v[2],  v[1]],
                      [ v[2],  0,    -v[0]],
                      [-v[1],  v[0],  0   ]])
+
+
+def strip_added_mass_roll(strips, rho: float = RHO_WATER) -> float:
+    """
+    2D-strip-theory hydrodynamic added inertia in roll about body x, for one
+    or more horizontal lifting surfaces.
+
+    Parameters
+    ----------
+    strips : iterable of (chord, span, y) — one entry per lifting surface,
+             chord/span in [m], y = lateral centre relative to CoG [m].
+
+    Returns
+    -------
+    added_inertia_roll : float [kg*m^2] for M[3,3], computed analytically by
+        integrating rho*pi*c^2/4 * y^2 dy over [y - span/2, y + span/2]:
+        m_a * (y^2 + span^2 / 12).
+    """
+    total = 0.0
+    for chord, span, y in strips:
+        m_a = rho * np.pi * chord**2 / 4.0 * span
+        total += m_a * (y**2 + span**2 / 12.0)
+    return float(total)
 
 
 def strip_added_mass_heave_pitch(strips, rho: float = RHO_WATER):
@@ -85,17 +108,18 @@ class RigidBody:
     """
 
     def __init__(self, mass: float, I_b: np.ndarray, r_g: np.ndarray = None,
-                 added_mass_heave: float = 0.0, added_inertia_pitch: float = 0.0):
+                 added_mass_heave: float = 0.0, added_inertia_pitch: float = 0.0,
+                 added_inertia_roll: float = 0.0):
         self.mass = mass
         self.I_b = np.asarray(I_b, dtype=float)
         self.r_g = np.zeros(3) if r_g is None else np.asarray(r_g, dtype=float)
-        # Diagonal hydrodynamic added mass (heave + pitch only) — see
-        # strip_added_mass_heave_pitch() above. Zero by default so callers
-        # that don't pass these (e.g. sim.py) get unchanged rigid-body-only
-        # behavior.
+        # Diagonal hydrodynamic added mass (heave + roll + pitch only). Zero by default so callers
+        # that don't pass these (e.g. sim.py) get unchanged rigid-body-only behavior.
         self.added_mass_heave = added_mass_heave
         self.added_inertia_pitch = added_inertia_pitch
+        self.added_inertia_roll = added_inertia_roll
         self._M = self._build_M()
+        self._M_inv = np.linalg.inv(self._M)
 
     def _build_M(self) -> np.ndarray:
         m = self.mass
@@ -108,12 +132,8 @@ class RigidBody:
         M[3:, 3:] = I
 
         # --- Hydrodynamic added mass (M_A), diagonal only ---------------------
-        # Folded into the same combined mass matrix Fossen's nu_dot solve
-        # uses (M = M_RB + M_A) — see module docstring. Only heave (index 2,
-        # Z) and pitch (index 4, M) are modeled; surge, sway, and yaw added
-        # mass are NOT modeled (these default to 0, so this is a no-op
-        # unless the caller supplies them).
         M[2, 2] += self.added_mass_heave
+        M[3, 3] += self.added_inertia_roll
         M[4, 4] += self.added_inertia_pitch
 
         return M
@@ -140,9 +160,9 @@ class RigidBody:
 
         # Added-mass Coriolis C_A(nu) (Fossen 6.43): the SAME skew structure as C_RB with
         # M_A in place of M_RB. Includes the Munk moment (Z_wdot - X_udot) u w, which is
-        # destabilising in pitch. M_A is diagonal: only heave and pitch are modelled.
+        # destabilising in pitch. M_A is diagonal: heave, roll, and pitch are modelled.
         a1 = np.array([0.0, 0.0, self.added_mass_heave * v1[2]])
-        a2 = np.array([0.0, self.added_inertia_pitch * v2[1], 0.0])
+        a2 = np.array([self.added_inertia_roll * v2[0], self.added_inertia_pitch * v2[1], 0.0])
         C[:3, 3:] += -skew(a1)
         C[3:, :3] += -skew(a1)
         C[3:, 3:] += -skew(a2)
@@ -162,4 +182,4 @@ class RigidBody:
         nu_dot : (6,) body-frame acceleration
         """
         rhs = tau - self.C(nu) @ nu
-        return np.linalg.solve(self.M, rhs)
+        return self._M_inv @ rhs

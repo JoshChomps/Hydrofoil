@@ -25,10 +25,16 @@ import warnings
 import numpy as np
 
 from hydrofoil.constants import RHO_WATER, G
+from hydrofoil.actuation.hinge import flap_inertia
+from hydrofoil.actuation.drive import DriveSpec
+from hydrofoil.actuation.servo import DEFAULT_SERVO_PARAMS
+from hydrofoil.dynamics.rigid_body import strip_added_mass_heave_pitch, strip_added_mass_roll
+from hydrofoil.forces.foil import main_flap_effectiveness, MAIN_FOIL_FLAP_EFFECTIVENESS
 
 TRIM_EDIT_KEYS = {"payloads", "mass", "strut_length", "main_span", "main_chord", "main_incidence_deg", "main_flap_frac",
                   "main_flap_span_frac", "main_flap_setback", "main_flap_effectiveness",
-                  "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset"}
+                  "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset",
+                  "hull_length", "hull_beam"}
 FLAP_TRIM_LIMIT = 15.0                                    # deg of +-20: margin kept for waves and control
 
 
@@ -57,14 +63,127 @@ def mass_properties(p: dict, payloads: list | None) -> dict:
     return {"mass": float(m), "mass_empty": float(m_empty), "cg": cg.tolist(), "inertia": np.diag(I).tolist()}
 
 
+def _wetted_proxy(p: dict) -> float:
+    L, B = p["hull_length"], p["hull_beam"]
+    d = min(p["mass"] / max(RHO_WATER * L * B, 1e-6), p["max_draft"])
+    return L * B + 2.0 * d * (L + B)
+
+
+def _foil_eff(p: dict) -> float:
+    if p.get("main_flap_effectiveness") is not None:
+        return float(p["main_flap_effectiveness"])
+    if p.get("main_actuation", "flap") == "flap":
+        return float(main_flap_effectiveness(p["main_flap_frac"], p["main_flap_span_frac"]))
+    return MAIN_FOIL_FLAP_EFFECTIVENESS
+
+
+def _scale_inertias_and_hull(old: dict, p: dict, ov: dict):
+    """Scale empty-boat dry inertias, hull drag, and critical rotational damping on boat-size edits."""
+    defaults = p.get("default_payloads", [])
+    m_def = sum(q["mass"] for q in defaults)
+    m_e_old = max(old["mass"] - m_def, 1e-6)
+    m_e_new = max(p["mass"] - m_def, 1e-6)
+    sb = p["hull_beam"] / old["hull_beam"]
+    sl = p["hull_length"] / old["hull_length"]
+    if ("mass" in ov or "hull_length" in ov or "hull_beam" in ov) and not any(k in ov for k in ("ixx", "iyy", "izz")):
+        sm = m_e_new / m_e_old
+        I_nom = np.diag([old["ixx"], old["iyy"], old["izz"]])
+        I_empty = I_nom - sum((_point_inertia(q["mass"], (q["x"], q["y"], q["z"])) for q in defaults), np.zeros((3, 3)))
+        r_e = -sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3)) / m_e_old
+        I_e_cm = I_empty - _point_inertia(m_e_old, r_e)
+        scale_vec = np.array([sm * sb * sb, sm * sl * sl, sm * 0.5 * (sb * sb + sl * sl)])
+        I_e_scaled = np.diag(np.maximum(np.diag(I_e_cm) * scale_vec, 1e-4))
+        cg = (m_e_new * r_e + sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3))) / p["mass"]
+        I = I_e_scaled + _point_inertia(m_e_new, r_e - cg)
+        for q in defaults:
+            I = I + _point_inertia(q["mass"], np.array([q["x"], q["y"], q["z"]]) - cg)
+        if "ixx" not in ov:
+            p["ixx"] = round(float(I[0, 0]), 3)
+        if "iyy" not in ov:
+            p["iyy"] = round(float(I[1, 1]), 3)
+        if "izz" not in ov:
+            p["izz"] = round(float(I[2, 2]), 3)
+    if ({"hull_length", "hull_beam", "max_draft", "mass", "payloads"} & set(ov)) and "hull_drag_coeff" not in ov:
+        p["hull_drag_coeff"] = round(old["hull_drag_coeff"] * (_wetted_proxy(p) / max(_wetted_proxy(old), 1e-6)), 2)
+    if ({"hull_length", "hull_beam", "max_draft", "mass", "payloads", "iyy"} & set(ov)) and "hull_rot_damping" not in ov:
+        k_old = old["hull_beam"] * old["hull_length"] ** 3 * old["iyy"]
+        k_new = p["hull_beam"] * p["hull_length"] ** 3 * p["iyy"]
+        p["hull_rot_damping"] = round(old["hull_rot_damping"] * float(np.sqrt(k_new / max(k_old, 1e-9))), 2)
+
+
+def _scale_structures_drives_and_gains(old: dict, p: dict, ov: dict):
+    """Auto-derive surface inertia, GJ scaling, shaft sizing, propulsion scaling, and first-order PID scaling."""
+    main_keys = {"main_chord", "main_span", "main_flap_frac", "main_flap_span_frac", "main_flap_setback"}
+    if main_keys & set(ov):
+        if "main_surface_inertia" not in ov and p.get("main_actuation", "flap") == "flap":
+            j = flap_inertia(p["main_chord"], p["main_span"] * p.get("main_flap_span_frac", 1.0),
+                             p["main_flap_frac"], p.get("main_flap_setback", 0.0))
+            p["main_surface_inertia"] = float(f"{j:.3g}")
+        if "main_flap_GJ" not in ov and p.get("main_flap_GJ") is not None:
+            cf_o = old["main_chord"] * old["main_flap_frac"]
+            cf_n = p["main_chord"] * p["main_flap_frac"]
+            p["main_flap_GJ"] = round(old["main_flap_GJ"] * (p["main_chord"] / old["main_chord"]) * (cf_n / cf_o) ** 3, 2)
+    if "elev_chord" in ov and "elev_GJ" not in ov and p.get("elev_GJ") is not None:
+        p["elev_GJ"] = round(old["elev_GJ"] * (p["elev_chord"] / old["elev_chord"]) ** 4, 2)
+    if ({"servo_params", "gear_ratio"} & set(ov)) and "shaft_diameter" not in ov:
+        spec = DriveSpec()
+        N = p["gear_ratio"]
+        sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
+        full = min(spec.motor.kt * spec.ctrl.i_peak, spec.motor.peak_torque) * N * spec.gear.efficiency
+        t_shaft = min(sp["torque_cap"], full)
+        d_req = float((16.0 * t_shaft * 1.5 / (np.pi * 70e6)) ** (1.0 / 3.0))
+        p["shaft_diameter"] = max(float(old.get("shaft_diameter", spec.shaft_diameter)), round(d_req, 4))
+    if {"mass", "payloads", "target_speed"} & set(ov):
+        if "max_thrust" not in ov and ({"mass", "payloads"} & set(ov)):
+            p["max_thrust"] = round(old["max_thrust"] * (p["mass"] / old["mass"]), 1)
+        if "prop_power_max" not in ov and p.get("prop_power_max") is not None:
+            p["prop_power_max"] = round(old["prop_power_max"] * (p["mass"] / old["mass"])
+                                         * (p["target_speed"] / max(old["target_speed"], 0.5)), 1)
+    # First-order control-authority gain scaling so resized craft stay flyable before re-autotuning
+    if (main_keys | {"mass", "payloads", "elev_chord", "elev_span", "elev_pos_x", "main_lateral_offset", "ixx", "iyy"}) & set(ov):
+        mh_o, ip_o = strip_added_mass_heave_pitch([(old["main_chord"], old["main_span"], old["main_pos_x"]),
+                                                   (old["main_chord"], old["main_span"], old["main_pos_x"]),
+                                                   (old["elev_chord"], old["elev_span"], old["elev_pos_x"])])
+        mh_n, ip_n = strip_added_mass_heave_pitch([(p["main_chord"], p["main_span"], p["main_pos_x"]),
+                                                   (p["main_chord"], p["main_span"], p["main_pos_x"]),
+                                                   (p["elev_chord"], p["elev_span"], p["elev_pos_x"])])
+        ir_o = strip_added_mass_roll([(old["main_chord"], old["main_span"], -old["main_lateral_offset"]),
+                                      (old["main_chord"], old["main_span"], old["main_lateral_offset"]),
+                                      (old["elev_chord"], old["elev_span"], 0.0)])
+        ir_n = strip_added_mass_roll([(p["main_chord"], p["main_span"], -p["main_lateral_offset"]),
+                                      (p["main_chord"], p["main_span"], p["main_lateral_offset"]),
+                                      (p["elev_chord"], p["elev_span"], 0.0)])
+        auth_h_o = max(old["main_chord"] * old["main_span"] * _foil_eff(old), 1e-6)
+        auth_h_n = max(p["main_chord"] * p["main_span"] * _foil_eff(p), 1e-6)
+        sh = ((p["mass"] + mh_n) / (old["mass"] + mh_o)) * (auth_h_o / auth_h_n)
+        for k in ("kp_heave", "ki_heave", "kd_heave"):
+            if k not in ov and abs(sh - 1.0) > 1e-6:
+                p[k] = round(old[k] * sh, 4)
+        arm_e_o = max(abs(old["elev_pos_x"]) * old["elev_chord"] * old["elev_span"], 1e-6)
+        arm_e_n = max(abs(p["elev_pos_x"]) * p["elev_chord"] * p["elev_span"], 1e-6)
+        sp_ = ((p["iyy"] + ip_n) / (old["iyy"] + ip_o)) * (arm_e_o / arm_e_n)
+        for k in ("kp_pitch", "ki_pitch", "kd_pitch"):
+            if k not in ov and abs(sp_ - 1.0) > 1e-6:
+                p[k] = round(old[k] * sp_, 5)
+        arm_r_o = max(old["main_lateral_offset"] * auth_h_o, 1e-6)
+        arm_r_n = max(p["main_lateral_offset"] * auth_h_n, 1e-6)
+        sr = ((p["ixx"] + ir_n) / (old["ixx"] + ir_o)) * (arm_r_o / arm_r_n)
+        for k in ("kp_roll", "kd_roll"):
+            if k not in ov and abs(sr - 1.0) > 1e-6:
+                p[k] = round(old[k] * sr, 5)
+
+
 def apply_design(p: dict, overrides: dict) -> dict:
     """New params dict with the edits applied (the input is not modified)."""
+    old = dict(p)
     p = dict(p)
     ov = dict(overrides or {})
     payloads = ov.pop("payloads", None)
     strut = ov.pop("strut_length", None)
+    extra_keys = ("lqr_weights", "gear_rated_torque", "shaft_diameter", "prop_power_max",
+                  "prop_tau_s", "dual_height", "gnss_fallback")
     for k, v in ov.items():
-        if k in p or k in ("lqr_weights",):
+        if k in p or k in extra_keys:
             p[k] = v
     if "main_span" in ov:
         p["main_lateral_offset"] = 0.05 + p["main_span"] / 2
@@ -78,6 +197,14 @@ def apply_design(p: dict, overrides: dict) -> dict:
         p["ixx"], p["iyy"], p["izz"] = mp_["inertia"]
         p["cg_offset"] = (mp_["cg"][0], mp_["cg"][1])
         p["default_payloads"] = payloads
+    if ov or payloads is not None or strut is not None:
+        ov_flags = dict(ov)
+        if payloads is not None:
+            ov_flags["payloads"] = True
+        if strut is not None:
+            ov_flags["strut_length"] = True
+        _scale_inertias_and_hull(old, p, ov_flags)
+        _scale_structures_drives_and_gains(old, p, ov_flags)
     if overrides and (TRIM_EDIT_KEYS & set(overrides)):
         _reschedule(p)
     return p

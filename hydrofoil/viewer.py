@@ -9,7 +9,7 @@ mj_forward -- mj_step is never called.
 Run:
     python -m hydrofoil.viewer [--waves] [--wave-dir 90] [--speed 1.0] [--duration 600]
                                [--controller lqr|pid] [--sensors ideal|noisy] [--preset model|manned]
-                               [--windowed] [--api-port 8766]
+                               [--supervisor] [--windowed] [--api-port 8766]
 
 The window opens maximised (Windows) with MuJoCo's own menus hidden: 3-D view, a status panel
 (bottom left; shortened in small windows), the flight mode (top left) and four rolling plots (right).
@@ -29,6 +29,7 @@ Keys (click the viewer window first):
     [  /  ]          speed_ref down / up (holds)
     R                reset to rest
     C                switch PID <-> LQR (restarts from rest; the PID always flies takeoff)
+    F                toggle Foil / Land request (when --supervisor is enabled)
     U                show speeds in m/s or km/h
 
 The PID gain sliders act on the PID loops, which fly takeoff in both modes and everything in PID mode.
@@ -274,6 +275,7 @@ class Pilot:
         self.ctrl = ctrl
         self.reset_flag = False
         self.toggle_ctrl = False
+        self.toggle_foil = False
         self.kmh = False           # U key: show speeds in km/h instead of m/s (display only)
         self.focus = False         # set by the dashboard's "Show 3D view"
         self.bank_spring = False   # True after a key bank input; a slider-set bank holds
@@ -300,6 +302,8 @@ class Pilot:
             self.reset_flag = True
         elif code in (ord("C"), ord("c")):
             self.toggle_ctrl = True
+        elif code in (ord("F"), ord("f")):
+            self.toggle_foil = True
         elif code in (ord("U"), ord("u")):
             self.kmh = not self.kmh
         elif code in (ord("D"), ord("d")):        # open the dashboard (served by the local launcher)
@@ -629,6 +633,8 @@ class ControlAPI:
                         pilot.reset_flag = True
                     elif act == "toggle_ctrl":
                         pilot.toggle_ctrl = True
+                    elif act == "toggle_foil":
+                        pilot.toggle_foil = True
                     elif act == "focus":
                         pilot.focus = True
                     for name, val in body.items():
@@ -676,7 +682,7 @@ def _ctrl_label(vp: VehiclePhysics) -> str:
 
 def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.0,
         controller: str | None = None, sensors: str | None = None, preset: str = "model", api_port: int = 8766, maximize: bool = True,
-        overrides: dict | None = None):
+        overrides: dict | None = None, supervisor: bool = False):
     from hydrofoil.design import apply_design
     from hydrofoil.monitor import FlightMonitor
     params = apply_design(dict(MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS), overrides or {})
@@ -685,6 +691,8 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
         params["controller"] = controller
     if sensors:
         params["sensors"] = sensors
+    if supervisor:
+        params["supervisor"] = True
     if wave_cfg:
         params.update(wave_cfg)
     else:
@@ -697,6 +705,9 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
     ctrl = pose.data.ctrl
     for i, (_n, key, _lo, _hi) in enumerate(SLIDERS):
         ctrl[i] = params[key]
+    if vp.supervisor is not None:
+        vp.supervisor.pilot["foil"] = True
+        ctrl[IDX["height_ref"]] = float(vp.supervisor.pilot["height"])
     pilot = Pilot(ctrl)
     drives = DriveMonitor(params)
     fh = params["flying_height"]
@@ -739,8 +750,20 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                     pilot.bank_spring = False
                 pilot.spring_back(now - last_wall)
                 last_bank_written = ctrl[IDX["bank_ref"]]
+                pilot_keys = {"flying_height", "phi_ref", "target_speed"}
                 for i, (_n, key, _lo, _hi) in enumerate(SLIDERS):
+                    if vp.supervisor is not None and key in pilot_keys:
+                        continue
                     params[key] = float(ctrl[i])
+                if vp.supervisor is not None:
+                    vp.supervisor.pilot["height"] = float(ctrl[IDX["height_ref"]])
+                    vp.supervisor.pilot["bank"] = float(ctrl[IDX["bank_ref"]])
+                    vp.supervisor.pilot["speed"] = float(ctrl[IDX["speed_ref"]])
+                    if pilot.toggle_foil:
+                        pilot.toggle_foil = False
+                        vp.supervisor.pilot["foil"] = not vp.supervisor.pilot["foil"]
+                else:
+                    pilot.toggle_foil = False
             last_wall = now
             _apply_gains(vp, params)
             wk = (params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
@@ -792,7 +815,17 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             if hf:
                 v.update_hfield(pose.hfield_id)
             dm = drives.out
-            mode = "FOILBORNE" if draft <= 1e-6 else ("TAKING OFF" if state[6] > 1.0 else "DISPLACEMENT")
+            mode = vp.supervisor.mode if vp.supervisor is not None else (
+                "FOILBORNE" if draft <= 1e-6 else ("TAKING OFF" if state[6] > 1.0 else "DISPLACEMENT")
+            )
+            sup_stat = vp.supervisor.status if vp.supervisor is not None else None
+            hud_alert = (alerts[0]["level"], alerts[0]["text"]) if alerts else None
+            if sup_stat is not None:
+                if sup_stat["faults"]:
+                    hud_alert = ("danger", "SUP FAULT: " + ", ".join(sup_stat["faults"])
+                                 + (" (GNSS vz)" if sup_stat["using_gnss"] else ""))
+                elif sup_stat["warnings"] and hud_alert is None:
+                    hud_alert = ("caution", "SUP WARN: " + ", ".join(sup_stat["warnings"]))
             height = -state[2] + params["hull_offset"]
             limits = drives.flags()
             ctl = f"{_ctrl_label(vp)}, {'noisy sensors + Kalman' if vp.sensors is not None else 'ideal sensors'}"
@@ -807,18 +840,21 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                 pw = Plots.width(vp_)
                 sw, sh = max(320, vp_.width - pw), int(np.clip(vp_.height * 0.17, 104, 168))
                 hud_n += 1
-                akey = (alerts[0]["level"], alerts[0]["text"]) if alerts else None
+                akey = hud_alert
                 if hud_img is None or hud_n % 6 == 0 or hud_img.shape[:2] != (sh, sw) or akey != getattr(hud, "_akey", None):
                     hud._akey = akey    # ~10 Hz redraw (a draw takes ~14 ms)
                     ok = limits == "within limits"
+                    key_bar = ("Up / Down ride height     Left / Right bank     [ ] speed     "
+                               + ("F foil/land     " if vp.supervisor is not None else "")
+                               + "R rest     C PID / LQR     U units"
+                               + ("     D dashboard" if api.srv else ""))
                     hud_img = hud.render(sw, sh, {
                         "time": f"{t:6.1f} s", "mode": mode.capitalize(),
-                        "ctl": f"{_ctrl_label(vp)}, {'noisy' if vp.sensors is not None else 'ideal'} sensors",
+                        "ctl": f"{_ctrl_label(vp)}, {'noisy' if vp.sensors is not None else 'ideal'} sensors"
+                               + (" [sup]" if vp.supervisor is not None else ""),
                         "roll": float(np.degrees(state[3])), "pitch": float(np.degrees(state[4])), "bank_ref": params["phi_ref"],
-                        "alert": (alerts[0]["level"], alerts[0]["text"]) if alerts else None,
-                        "keys": ("Up / Down ride height     Left / Right bank     [ ] speed     R rest     "
-                                 "C PID / LQR     U units     D dashboard" if api.srv else
-                                 "Up / Down ride height     Left / Right bank     [ ] speed     R rest     C PID / LQR     U units"),
+                        "alert": hud_alert,
+                        "keys": key_bar,
                         "cells": {1: ("Speed", f"{k * state[6]:.2f}", su,
                                       f"{state[6] * 1.944:.1f} kn, target {k * params['target_speed']:.2f} {su}", False),
                                   2: ("Ride height", f"{height:.2f}", "m", f"target {params['flying_height']:.2f} m", False),
@@ -831,6 +867,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             v.sync()
             api.telemetry = {
                 "t": t, "mode": mode, "preset": preset, "mass": params["mass"], "x": float(state[0]),
+                "supervisor": sup_stat,
                 "geom": {k: params[k] for k in ("hull_length", "hull_x", "hull_offset", "main_pos_x", "main_pos_z",
                                                 "main_chord", "elev_pos_x", "elev_pos_z", "elev_chord")},
                 "wave": {"amp": params["wave_amplitude"], "len": params["wave_wavelength"], "dir": params["wave_direction"]},
@@ -863,11 +900,13 @@ def main():
     ap.add_argument("--api-port", type=int, default=8766, help="local live-control API port (launcher page)")
     ap.add_argument("--preset", choices=("model", "manned"), default="model",
                     help="model = 25 kg DEFAULT_PARAMS, manned = 250-300 kg MANNED_PARAMS (docs/19)")
+    ap.add_argument("--supervisor", action="store_true",
+                    help="enable flight-mode supervisor (takeoff/landing envelope & fault protection; press F to foil/land)")
     a = ap.parse_args()
     wave_cfg = (dict(wave_amplitude=0.15, wave_wavelength=10.0, wave_direction=a.wave_dir) if a.preset == "manned"
                 else dict(wave_amplitude=0.05, wave_wavelength=5.0, wave_direction=a.wave_dir)) if a.waves else None
     run(speed=a.speed, wave_cfg=wave_cfg, duration=a.duration, controller=a.controller, sensors=a.sensors,
-        preset=a.preset, api_port=a.api_port, maximize=not a.windowed,
+        preset=a.preset, api_port=a.api_port, maximize=not a.windowed, supervisor=a.supervisor,
         overrides=json.loads(Path(a.overrides).read_text()) if a.overrides and Path(a.overrides).exists() else None)
 
 

@@ -87,6 +87,10 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "servo_params": None,                # overrides of actuation.servo.DEFAULT_SERVO_PARAMS (kp, kd, torque_cap, delay_s, ...)
     "flap_stop_deg": 30.0, "elev_stop_deg": 20.0,   # mechanical stops of the PHYSICAL surfaces, PLACEHOLDER
     "q_schedule_speed": 0.0,             # >0: scale flap commands by (v/u)^2 above this speed (gain scheduling on q); 0 = off
+    "prop_tau_s": 0.08,                  # motor/ESC/prop spool lag [s]
+    "prop_power_max": 300.0,             # shaft thrust power limit [W] (caps thrust at high speed)
+    "dual_height": True,                 # dual redundant ranging sensors + health voting
+    "gnss_fallback": True,               # GNSS vertical-velocity fallback if both height channels fail
 }
 
 
@@ -133,10 +137,11 @@ MANNED_PARAMS.update({
     # quoted with heat sinking; the drives sit in water). PLACEHOLDER: the firmware co-dependency limit (coupled
     # current / torque / rail / temperature limits across the drives) will set the real value.
     "drive_i_cont": 20.0,
-    # backlash / gear stiffness PLACEHOLDERS (economy 20:1 planetary: 10-20 arcmin, a few N m/arcmin). "dual": the
-    # moteus takes position from an absolute encoder at the surface root (the free play is inside the loop) and its
-    # damping from the motor's own velocity. Output-only feedback rang at takeoff with 72 N m through the gear (docs/20).
-    "servo_params": {"torque_cap": 28.0, "backlash_deg": 0.25, "gear_stiffness": 4000.0, "encoder": "dual"},
+    # Precision low-backlash preloaded planetary stage (6 arcmin) + dual encoder feedback; 15 mm 316SS shaft gives >1.6x yield margin.
+    "servo_params": {"torque_cap": 28.0, "backlash_deg": 0.10, "gear_stiffness": 5000.0, "encoder": "dual"},
+    "shaft_diameter": 0.015,
+    "prop_tau_s": 0.12, "prop_power_max": 6500.0,
+    "dual_height": True, "gnss_fallback": True,
     # heave filter for 8 m/s: encounter frequencies are lower (following / quartering 15 m waves about 1-1.5 rad/s);
     # a slower, larger wave band and a slower bias trade 13 mm calm wander (6 mm at the defaults) for 67-117 mm
     # instead of 90-260 mm rms in following seas (docs/19, "Manned sizing")

@@ -58,7 +58,8 @@ DEFAULT_SUPERVISOR = {
     "takeoff_timeout": 25.0,    # s: abort takeoff if liftoff speed not reached
     "disp_flap_deg": 0.0,       # flap angle held in displacement mode
     "roll_limit": 15.0,         # deg: attitude fault while foiling
-    "pitch_limit": 8.0,
+    "pitch_limit": 10.0,        # deg: foiling pitch limit (inside foil stall while tolerating 0.25 m wave slope)
+    "takeoff_pitch_limit": 14.0,  # deg: wider hull pitch allowance during displacement/takeoff wave climbs
     "fault_err_deg": 4.0,       # encoder vs command error that counts as a drive fault
     "fault_time": 0.30,         # s it must persist (flaps)
     "elev_fault_time": 0.15,    # s (elevator: the boat diverges in about 1 s without it)
@@ -84,6 +85,7 @@ class Supervisor:
                       "height": float(self.c["h_default"]), "bank": 0.0}
         self._lqr_engage = vp.lqr.engage_speed if vp.lqr is not None else None
         self._kp0 = {n: vp.drives[n].kp for n in ("left", "right", "elev")}   # configured servo gains
+        self._kd0 = {n: vp.drives[n].kd for n in ("left", "right", "elev")}
         self.reset()
 
     # ------------------------------------------------------------------ state
@@ -91,6 +93,7 @@ class Supervisor:
         self.mode = "DISPLACEMENT"
         self.t_mode = 0.0
         self.faults: dict[str, float] = {}           # name -> time detected (latched)
+        self.warnings: dict[str, float] = {}         # non-aborting cautions (e.g. single height channel lost)
         self.fault_info: dict = {}
         self._err_t = {"left": 0.0, "right": 0.0, "elev": 0.0}
         self._lim_t = {"left": 0.0, "right": 0.0, "elev": 0.0}
@@ -117,18 +120,23 @@ class Supervisor:
     @property
     def status(self) -> dict:
         """What a UI shows: mode, references, envelope and latched faults."""
+        hs = getattr(self.vp, "height_status", None) or {}
         return {"mode": self.mode, "speed_ref": self.speed_ref, "height_ref": self.height_ref,
                 "v_min": self.c["v_min_foil"], "v_max": self.c["v_max"], "h_min": self._h_min(),
-                "h_max": self.c["h_max"], "faults": sorted(self.faults), "jam": self.jam,
-                "wave_amp": self.wave_amp, "log": list(self.log[-5:])}
+                "h_max": self.c["h_max"], "faults": sorted(self.faults),
+                "warnings": sorted(self.warnings), "using_gnss": bool(hs.get("using_gnss", False)),
+                "jam": self.jam, "wave_amp": self.wave_amp, "log": list(self.log[-5:])}
 
     # -------------------------------------------------------------- helpers
     def _hull_clearance(self, cstate) -> float:
         """Hull bottom above the mean surface [m] from the controllers' height estimate."""
         return float(self.vp.params["hull_offset"] - cstate[2])
 
-    def _h_min(self) -> float:
-        return self.c["h_min"] + self.c["wave_margin"] * self.wave_amp
+    def _h_min(self, phi_rad: float = 0.0) -> float:
+        cmd_phi = abs(float(self.pilot["bank"])) if self.mode == "FOILING" else abs(float(self.vp.params.get("phi_ref", 0.0)))
+        bank_deg = max(abs(float(np.degrees(phi_rad))), min(8.0, cmd_phi))
+        bank_boost = 0.5 * float(self.vp.params["hull_beam"]) * float(np.sin(np.radians(bank_deg)))
+        return self.c["h_min"] + self.c["wave_margin"] * self.wave_amp + bank_boost
 
     def _ramp(self, cur, target, rate, dt):
         return cur + float(np.clip(target - cur, -rate * dt, rate * dt))
@@ -138,11 +146,17 @@ class Supervisor:
         Subtracting the IMU-driven heave depth removes takeoff climbs and pilot height changes (which otherwise
         booked calm climbs as large waves)."""
         sens = self.vp.sensors
-        if sens is None or sens.channels["height"].value is None or "z" not in sens.fresh:
+        if sens is None or self.mode != "FOILING":
             return
-        if self.mode != "FOILING":
+        hs = getattr(self.vp, "height_status", None)
+        if hs is not None:
+            if not hs["last_fresh"] or hs["last_h"] is None:
+                return
+            h_raw = float(hs["last_h"])
+        elif sens.channels["height"].value is not None and "z" in sens.fresh:
+            h_raw = float(np.ravel(sens.channels["height"].value)[0])
+        else:
             return
-        h_raw = float(np.ravel(sens.channels["height"].value)[0])
         val = h_raw - self.vp.heave.z if self.vp.heave.ready else h_raw
         self._wave_hist.append(val)
         n = int(10.0 * 20.0)                         # 10 s of 20 Hz samples
@@ -169,13 +183,18 @@ class Supervisor:
                 # Compare against the command that actually reached the drive after its transport delay
                 cmd_del = self._tgt_hist[n][0] if self._tgt_hist[n] else tgt[n]
                 cmd = float(np.clip(cmd_del, -np.degrees(d.stop), np.degrees(d.stop)))
-                # residual: the position error left after the static deflection the hinge load explains
-                # (kp * err = M at rest). M comes from the hinge model at the measured flow and encoder angle,
-                # which the flight computer can evaluate too.
+                # residual: the position error left after the static hinge load AND active PD + hydrodynamic
+                # velocity damping (during fast 150 deg/s slew sweeps a healthy drive lags by (kd + B_hyd)/kp * d_dot).
                 flows = getattr(vp, "_last_flows", None)
-                m_exp = float(flows[n](d.delta)) if flows is not None else 0.0
-                err = abs(np.degrees(d.delta) - cmd - np.degrees(m_exp / self._kp0[n]))
-                bad = err > c["fault_err_deg"]
+                fl = flows[n] if flows is not None else None
+                m_exp = float(fl(d.delta)) if fl is not None else 0.0
+                b_hyd = float(fl.hm.damping(fl.V)) if fl is not None else 0.0
+                rate_lag_deg = ((self._kd0[n] + b_hyd) / self._kp0[n]) * float(np.degrees(d.rate))
+                err_stat = abs(float(np.degrees(d.delta)) - cmd - float(np.degrees(m_exp / self._kp0[n])))
+                err = abs(float(np.degrees(d.delta)) - cmd - float(np.degrees(m_exp / self._kp0[n])) + rate_lag_deg)
+                # If a drive has virtually zero current (< 0.5 A) while statically off-target, treat as limp (not healthy slew)
+                i_drv = abs(float(d.telemetry.get("I", 0.0)))
+                bad = err > c["fault_err_deg"] or (err_stat > c["fault_err_deg"] and i_drv < 0.5)
                 limited = bool(d.telemetry.get("limited", False))
                 # a drive at its torque / voltage limit is still working (big hinge moment, fast command): only a
                 # long-lasting error counts. A drive with no torque (power loss) or that fails to follow while NOT
@@ -203,28 +222,29 @@ class Supervisor:
                             self.jam = (n, float(np.degrees(d.delta)))
         if vp.sensors is not None:
             fresh = vp.sensors.fresh
-            for k, name in (("z", "height_lost"), ("u", "speed_lost")):
-                self._since[k] = 0.0 if k in fresh else self._since[k] + dt
-                if self._since[k] > c["sensor_timeout"] and name not in self.faults:
-                    self.faults[name] = t
-            if "z" in fresh and vp.sensors.channels["height"].value is not None:
-                h_val = float(np.ravel(vp.sensors.channels["height"].value)[0])
-                if self._last_h_val is None or abs(h_val - self._last_h_val) >= 1e-6:
-                    self._h_same_t = 0.0
-                self._last_h_val = h_val
-            if self.mode in ("TAKEOFF", "FOILING", "LANDING"):
-                if self._last_h_val is not None:
-                    self._h_same_t += dt
-                    if self._h_same_t > c["sensor_timeout"] and (
-                        abs(vp.heave.vz) > 0.05 or abs(self._last_h_val - vp.heave.z) > 0.05
-                    ):
+            self._since["u"] = 0.0 if "u" in fresh else self._since["u"] + dt
+            if self._since["u"] > c["sensor_timeout"] and "speed_lost" not in self.faults:
+                self.faults["speed_lost"] = t
+            hs = getattr(vp, "height_status", None)
+            if hs is not None:
+                if hs["failed"] and hs["active"]:
+                    self.warnings.setdefault("height_single", t)
+                if self.mode in ("TAKEOFF", "FOILING", "LANDING"):
+                    if not hs["active"] or vp.heave.reject_events > self._last_reject_events:
                         self.faults.setdefault("height_lost", t)
-                if vp.heave.reject_events > self._last_reject_events:
+            else:
+                self._since["z"] = 0.0 if "z" in fresh else self._since["z"] + dt
+                if self._since["z"] > c["sensor_timeout"]:
                     self.faults.setdefault("height_lost", t)
             self._last_reject_events = vp.heave.reject_events
-        if self.mode in ("FOILING", "TAKEOFF") and (abs(np.degrees(cstate[3])) > c["roll_limit"]
-                                                    or abs(np.degrees(cstate[4])) > c["pitch_limit"]):
-            self.faults.setdefault("attitude", t)
+        roll_deg = abs(float(np.degrees(cstate[3])))
+        pitch_deg = abs(float(np.degrees(cstate[4])))
+        if self.mode == "TAKEOFF":
+            if roll_deg > c["roll_limit"] or pitch_deg > c["takeoff_pitch_limit"]:
+                self.faults.setdefault("attitude", t)
+        elif self.mode == "FOILING":
+            if roll_deg > c["roll_limit"] or pitch_deg > c["pitch_limit"]:
+                self.faults.setdefault("attitude", t)
 
     # ------------------------------------------------------------ main step
     def update(self, t: float, cstate) -> None:
@@ -252,7 +272,7 @@ class Supervisor:
 
         mode = self.mode
         pv = self.pilot
-        h_target = float(np.clip(pv["height"], self._h_min(), c["h_max"]))
+        h_target = float(np.clip(pv["height"], self._h_min(cstate[3]), c["h_max"]))
         thrust_max = p["max_thrust"]
         if mode == "DISPLACEMENT":
             spd = min(pv["speed"], c["v_disp_max"])
@@ -267,7 +287,9 @@ class Supervisor:
                 self.height_ref = min(self.height_ref, clear)
             if not pv["foil"]:
                 self._set_mode(t, "LANDING", "pilot")
-            elif airborne and abs(clear - h_target) < 0.03 and self.height_ref >= h_target - 1e-6:
+            elif (airborne and abs(clear - h_target) < 0.03 and self.height_ref >= h_target - 1e-6
+                  and abs(np.degrees(cstate[4])) < c["pitch_limit"]
+                  and abs(np.degrees(cstate[3])) < c["roll_limit"]):
                 self._set_mode(t, "FOILING", "airborne")
             elif t - self.t_mode > c["takeoff_timeout"] and u < c["v_liftoff"]:
                 self._set_mode(t, "LANDING", "takeoff timeout")

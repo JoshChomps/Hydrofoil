@@ -105,6 +105,8 @@ def test_checker_catches_a_stale_trim_feedforward_and_an_overstressed_shaft():
                                                 main_flap_setback=0.0))}
     assert rows["trim_ff_deg = trim flap at trim_ff_speed"]["status"] == "FAIL"   # geometry changed, FF not
     assert rows["main_surface_inertia matches the flap geometry (+-30 %)"]["status"] == "WARN"
+    rows_sh = {r["check"]: r for r in check(dict(MANNED_PARAMS, shaft_diameter=0.008))}
+    assert rows_sh["output shaft shear at min(cap, full) <= allowable"]["status"] == "FAIL"
 
 
 def test_unilateral_backlash_never_pulls_across_gap_and_captures_peak_spring():

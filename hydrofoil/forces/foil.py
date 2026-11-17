@@ -188,6 +188,7 @@ class Foil:
         oswald_efficiency: float = 0.80,
         normal_axis: np.ndarray | None = None,
         flap_cm_delta: float = 0.0,
+        flap_stall_deg: float | None = None,
     ):
         self.geometry = geometry
         self.tables = tables
@@ -214,6 +215,7 @@ class Foil:
         # deflection, nose-up positive, already scaled by flap span fraction]. A flap-down force
         # increment acts aft of c/4, so it also adds a nose-down couple. 0 = none (all-moving foil).
         self.flap_cm_delta = flap_cm_delta
+        self.flap_stall_deg = flap_stall_deg
         self.last_CL = 0.0   # corrected CL of the latest generalized_force call (read by the tail downwash)
         # Aspect ratio of this panel from its own span/chord (rectangular
         # planform assumed). Each main-foil half is modeled as its own Foil
@@ -248,6 +250,7 @@ class Foil:
         span: float | None = None,
         r_attach: np.ndarray | None = None,
         downwash_rad: float = 0.0,
+        ventilation: float = 0.0,
     ) -> np.ndarray:
         """
         Compute 6-DOF generalized force contribution of this foil.
@@ -298,12 +301,19 @@ class Foil:
         V_hat = V_plane / speed
 
         # AoA = arctan(w / u) in NED body frame.
-        # Positive w (sinking) → water hits underside → positive AoA → upward lift ✓
-        # Only the flap_effectiveness-scaled portion of a commanded deflection
-        # actually becomes angle-of-attack — 1 deg of flap is NOT 1 deg of AoA
-        # (see class docstring / module-level *_FLAP_EFFECTIVENESS constants).
+        # Plain flaps begin trailing-edge separation above flap_stall_deg (~15 deg): roll off
+        # incremental lift effectiveness smoothly and add separation drag while leaving normal
+        # trim deflections completely linear.
+        eff_delta = delta
+        cd_flap_sep = 0.0
+        if self.flap_stall_deg is not None and abs(delta) > self.flap_stall_deg:
+            d0 = self.flap_stall_deg
+            exc = abs(delta) - d0
+            eff_delta = (d0 + exc - 0.55 * (exc * exc) / (exc + 4.0)) * (1.0 if delta >= 0.0 else -1.0)
+            cd_flap_sep = 0.00025 * exc * exc
+
         aoa_rad = np.arctan2(V_n, V_foil[0])
-        aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * delta - np.degrees(downwash_rad)
+        aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * eff_delta - np.degrees(downwash_rad)
         aoa_deg = ((aoa_deg + 180.0) % 360.0) - 180.0
 
         q = 0.5 * self.rho * speed**2
@@ -326,23 +336,25 @@ class Foil:
             cd_post = 2.0 * np.sin(a_rad) ** 2 + 0.02
             CL_2d = (1.0 - blend) * cl_edge + blend * cl_post
             CD_2d = (1.0 - blend) * cd_edge + blend * cd_post
+        CD_2d += cd_flap_sep
 
         # 2. Finite-span correction (see __init__): strip theory here uses ONE
         # strip per foil, so the 2D section CL overestimates real 3D lift.
         CL = CL_2d * self._lift_slope_factor(ar)
 
-        # 3. Free-surface lift loss (no-op — factor 1.0 — if the caller
-        # didn't supply a known submergence).
+        # 3. Free-surface lift loss & breach ventilation hysteresis.
         if submergence_over_chord is not None:
             CL *= free_surface_lift_factor(submergence_over_chord)
+        vent = min(1.0, max(0.0, float(ventilation)))
+        if vent > 0.0:
+            CL *= (1.0 - 0.55 * vent)
 
         self.last_CL = float(CL)
 
         # 4. Induced drag from the corrected (3D, free-surface-adjusted) CL,
-        # added on top of 2D profile drag. Must come last — it depends on
-        # the fully-corrected CL, not the raw 2D section CL.
+        # added on top of 2D profile drag + any ventilated cavity drag.
         CD_induced = CL**2 / (np.pi * ar * self.oswald_efficiency)
-        CD = CD_2d + CD_induced
+        CD = CD_2d + CD_induced + (0.08 * vent if vent > 0.0 else 0.0)
 
         L_mag = q * CL * A
         D_mag = q * CD * A

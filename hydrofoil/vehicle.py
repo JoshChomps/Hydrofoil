@@ -18,7 +18,7 @@ from dataclasses import dataclass, field
 import numpy as np
 
 from hydrofoil.constants import RHO_WATER
-from hydrofoil.dynamics.rigid_body import RigidBody, strip_added_mass_heave_pitch
+from hydrofoil.dynamics.rigid_body import RigidBody, strip_added_mass_heave_pitch, strip_added_mass_roll
 from hydrofoil.dynamics.kinematics import J, R_body_to_ned
 from hydrofoil.forces.foil import (
     Foil, FoilGeometry, FoilTables,
@@ -94,6 +94,11 @@ class VehiclePhysics:
             (p["main_chord"], p["main_span"], p["main_pos_x"]),   # right half
             (p["elev_chord"], p["elev_span"], p["elev_pos_x"]),
         ])
+        added_inertia_roll = (strip_added_mass_roll([
+            (p["main_chord"], p["main_span"], -p["main_lateral_offset"]),
+            (p["main_chord"], p["main_span"], p["main_lateral_offset"]),
+            (p["elev_chord"], p["elev_span"], 0.0),
+        ]) if p.get("roll_added_inertia", True) else 0.0)
         # Distributed hull hydrostatics (cross-referenced against Fossen ch.4 GM_T / GM_L, see docs/15).
         self.hull = HullHydrostatics(p["hull_length"], p["hull_beam"], p["hull_x"],
                                      p["hull_offset"], p["max_draft"])
@@ -101,35 +106,29 @@ class VehiclePhysics:
         self.rigid_body = RigidBody(
             mass=p["mass"], I_b=np.diag([p["ixx"], p["iyy"], p["izz"]]),
             added_mass_heave=added_mass_heave, added_inertia_pitch=added_inertia_pitch,
+            added_inertia_roll=added_inertia_roll,
         )
 
         polar = FoilTables.naca0009()
-        # Main wing modeled as two independently-flapped halves, offset
-        # laterally — this is what lets delta_roll produce a rolling moment
-        # (asymmetric lift x lateral offset); the existing 6-DOF dynamics
-        # turn that into an actual bank. Closed-loop via self.controller's
-        # roll_pid — see control/pid.py.
-        # Flap section pitching moment (thin-airfoil Cm_delta x inboard span fraction x viscous factor).
-        # Lift effectiveness follows the flap geometry (forces/foil.py::main_flap_effectiveness; 0.21 at the
-        # 40 % chord / half-span reference); `main_flap_effectiveness` in params overrides it.
         self.main_flap_eff = (p.get("main_flap_effectiveness")
                               or (main_flap_effectiveness(p["main_flap_frac"], p["main_flap_span_frac"])
                                   if p.get("main_actuation", "flap") == "flap" else MAIN_FOIL_FLAP_EFFECTIVENESS))
         flap_cm = (thin_airfoil_coeffs(p["main_flap_frac"])["cm_delta"] * p["main_flap_span_frac"]
                    * p.get("flap_cm_factor", 0.8)) if p.get("flap_moment", True) else 0.0
+        stall_deg = p.get("flap_stall_deg", 15.0) if p.get("main_actuation", "flap") == "flap" else None
         self.left_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], -p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=self.main_flap_eff,
-            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
+            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm, flap_stall_deg=stall_deg,
         )
         self.right_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
             polar,
             r_attach=np.array([p["main_pos_x"], p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=self.main_flap_eff,
-            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm,
+            oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm, flap_stall_deg=stall_deg,
         )
         self.elev_foil = Foil(
             FoilGeometry(chord=p["elev_chord"], span=p["elev_span"]),
@@ -158,6 +157,8 @@ class VehiclePhysics:
         actuator_params = p.get("actuator_params") or DEFAULT_ACTUATOR_PARAMS
         self.controller = HydrofoilController(pid_gains, dt=p["dt"], actuator_params=actuator_params)
         self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0   # wing->tail downwash history (transport lag)
+        self._vent = {"left": 0.0, "right": 0.0, "elev": 0.0}    # breach/ventilation state [0..1] per foil
+        self._thrust_actual = 0.0                                 # lagged propulsion thrust [N]
         self.surge = SurgeController(Kp=p["kp_speed"], Ki=p["ki_speed"], Kd=p["kd_speed"],
                                       dt=p["dt"], max_thrust=p["max_thrust"])
 
@@ -189,6 +190,10 @@ class VehiclePhysics:
                 spec.ctrl.supply_i_max = p["supply_i_max"]
             if p.get("drive_i_cont") is not None:
                 spec.ctrl.i_cont = p["drive_i_cont"]
+            if p.get("shaft_diameter") is not None:
+                spec.shaft_diameter = p["shaft_diameter"]
+            if p.get("gear_rated_torque") is not None:
+                spec.gear.rated_torque = p["gear_rated_torque"]
             self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp,
                                            twist_k=self.twist_stiffness(name))
         # Flight-mode supervisor (control/supervisor.py): off unless params["supervisor"] is True or a config dict.
@@ -225,12 +230,29 @@ class VehiclePhysics:
         from hydrofoil.sensors.models import SensorSuite
         from hydrofoil.estimation.kalman import KalmanEstimator, HeaveFilter
         p = dict(self.params, controller="pid", sensors="ideal", cg_offset=(0.0, 0.0), supervisor=False)   # nominal CG model
-        self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0))
+        self.sensors = SensorSuite(seed=p.get("sensor_seed", 0), scale=p.get("sensor_noise_scale", 1.0),
+                                   config=p.get("sensor_config"))
         self.estimator = KalmanEstimator(VehiclePhysics(p), p["dt"], process=p.get("kf_process"),
                                          speeds=tuple(p.get("lqr_speeds", (3.0, 4.0, 5.0, 6.0, 7.0))))
         self.heave = HeaveFilter(p["dt"], wave=p.get("kf_wave"), **(p.get("kf_heave") or {}))
         self._est_ready = False
         self._u_meas = 0.0
+        self._init_height_monitor()
+
+    def _init_height_monitor(self):
+        p = self.params
+        self._h_chans = (("height", "z"), ("height_aux", "z_aux")) if p.get("dual_height", True) else (("height", "z"),)
+        self._h_vote = {
+            k: {"stale_t": 0.0, "same_t": 0.0, "last_val": None, "bad": 0, "failed": False}
+            for k, _ in self._h_chans
+        }
+        self.height_status = {
+            "active": [k for k, _ in self._h_chans],
+            "failed": [],
+            "last_h": None,
+            "last_fresh": False,
+            "using_gnss": False,
+        }
 
     def _control_state(self, state, t: float, surface_elev: float = 0.0) -> np.ndarray:
         """The state the controllers see: truth when sensors are 'ideal'; otherwise measurements (below the
@@ -238,15 +260,85 @@ class VehiclePhysics:
         if self.sensors is None:
             return state
         p = self.params
-        meas = self.sensors.measure(state, t, p["dt"], surface_elev)
+        dt = p["dt"]
+        meas = self.sensors.measure(state, t, dt, surface_elev)
         if "u" in meas:
             self._u_meas = float(meas["u"])
-        # Height: the ranging sensor is slow, late and sees the local wave surface; the heave filter turns it
-        # (with the accelerometer) into height above the mean surface and a vertical speed, from t = 0 on.
-        if "z" in meas:
-            if not self.heave.ready:
-                self.heave.init(meas["z"])
-            self.heave.step(meas.get("az"), meas["z"], "z" in self.sensors.fresh)
+        # Dual redundant height channels voted against the accelerometer-propagated HeaveFilter,
+        # with automatic GNSS vertical-velocity fallback if all ranging sensors fail.
+        if not self.heave.ready:
+            for ch_name, mk in self._h_chans:
+                if mk in meas:
+                    self.heave.init(meas[mk])
+                    self._h_vote[ch_name]["last_val"] = float(meas[mk])
+                    break
+        if self.heave.ready:
+            self.heave.predict(meas.get("az"))
+            timeout = self.supervisor.c["sensor_timeout"] if self.supervisor is not None else p.get("sensor_timeout", 0.5)
+            check_freeze = self.supervisor is None or self.supervisor.mode in ("TAKEOFF", "FOILING", "LANDING")
+            fresh_cands = []
+            for ch_name, mk in self._h_chans:
+                st = self._h_vote[ch_name]
+                if st["failed"]:
+                    continue
+                is_fresh = mk in self.sensors.fresh and mk in meas
+                if is_fresh:
+                    hv = float(meas[mk])
+                    st["stale_t"] = 0.0
+                    if st["last_val"] is None or abs(hv - st["last_val"]) >= 1e-6:
+                        st["same_t"] = 0.0
+                    st["last_val"] = hv
+                elif check_freeze:
+                    st["stale_t"] += dt
+                if check_freeze and st["last_val"] is not None:
+                    st["same_t"] += dt
+                    if st["same_t"] > timeout and (abs(self.heave.vz) > 0.05 or abs(st["last_val"] - self.heave.z) > 0.05):
+                        st["failed"] = True
+                        continue
+                if check_freeze and st["stale_t"] > timeout:
+                    st["failed"] = True
+                    continue
+                if is_fresh:
+                    # Quarantine un-moving samples once boat is moving/diverging so they cannot poison HeaveFilter b_a
+                    if st["same_t"] > 0.15 and (abs(self.heave.vz) > 0.05 or abs(hv - self.heave.z) > 0.03):
+                        continue
+                    sig = max(float(self.sensors.channels[ch_name]._sig[0]), 1e-4)
+                    innov2 = self.heave.innov_z2(hv, sig * sig)
+                    fresh_cands.append((ch_name, hv, sig, innov2))
+            gate2 = self.heave.gate ** 2
+            passed = [item for item in fresh_cands if item[3] < gate2]
+            active_now = [k for k, _ in self._h_chans if not self._h_vote[k]["failed"]]
+            for ch_name, hv, sig, innov2 in fresh_cands:
+                st = self._h_vote[ch_name]
+                if innov2 < gate2:
+                    st["bad"] = 0
+                elif passed or len(active_now) > 1:
+                    st["bad"] += 1
+                    if st["bad"] >= self.heave.max_reject:
+                        st["failed"] = True
+            h_use, r_use = None, None
+            if passed:
+                if len(passed) == 1:
+                    h_use, r_use = passed[0][1], passed[0][2] ** 2
+                else:
+                    ws = [1.0 / (it[2] ** 2) for it in passed]
+                    wsum = sum(ws)
+                    h_use = sum(w * it[1] for w, it in zip(ws, passed)) / wsum
+                    r_use = 1.0 / wsum
+                self.heave.update_z(h_use, True, R_override=r_use)
+            elif fresh_cands and len(active_now) <= 1:
+                best = min(fresh_cands, key=lambda it: it[3])
+                self.heave.update_z(best[1], True, R_override=best[2] ** 2)
+                h_use = None
+            active = [k for k, _ in self._h_chans if not self._h_vote[k]["failed"]]
+            failed = [k for k, _ in self._h_chans if self._h_vote[k]["failed"]]
+            using_gnss = bool(not active and p.get("gnss_fallback", True) and "vz_gnss" in meas)
+            if using_gnss and "vz_gnss" in self.sensors.fresh:
+                gch = self.sensors.channels["gnss_vz"]
+                self.heave.update_vz(meas["vz_gnss"], sigma_vz=max(float(gch._sig[0]), 0.02),
+                                     az=meas.get("az"), latency=float(gch.latency_s))
+            self.height_status = {"active": active, "failed": failed, "last_h": h_use, "last_fresh": h_use is not None,
+                                  "using_gnss": using_gnss}
             meas = dict(meas, z=self.heave.z)
         if not all(k in meas for k in ("z", "phi", "theta", "p", "q", "r")) and not self._est_ready:
             return state                                   # sensors not all up yet (first few ms)
@@ -279,9 +371,12 @@ class VehiclePhysics:
         """Reset controllers and drive states (e.g. on a sim restart)."""
         if getattr(self, "sensors", None) is not None:
             self.sensors.reset(); self.estimator.reset(); self.heave.reset(); self._est_ready = False; self._last_cmds = dict.fromkeys(("delta_main", "delta_elev", "delta_roll"), 0.0)
+            self._init_height_monitor()
         if getattr(self, "lqr", None) is not None:
             self.lqr.reset()
         self._dw_t, self._dw_eps, self._eps_used = [], [], 0.0
+        self._vent = {"left": 0.0, "right": 0.0, "elev": 0.0}
+        self._thrust_actual = 0.0
         self.controller.reset()
         self.surge.reset()
         if getattr(self, "supervisor", None) is not None:
@@ -427,7 +522,8 @@ class VehiclePhysics:
             return foil.generalized_force(
                 nu_rel, delta=delta,
                 submergence_over_chord=self._submergence_over_chord(foil, eta, env.foil_surface_z[name]),
-                downwash_rad=downwash)
+                downwash_rad=downwash,
+                ventilation=self._vent.get(name, 0.0))
 
         def strut_force(name):
             strut = self._foils()[name]
@@ -448,7 +544,9 @@ class VehiclePhysics:
         tau += foil_force("elev", cmds["delta_elev"], downwash=self._eps_used)
         tau += self.hull.buoyancy(eta, env.hull_cell_surface_z)
         tau += gravity_force(p["mass"], eta)
-        tau += self.hull.drag(nu, self.hull.mean_draft(eta, env.hull_cell_surface_z), p["hull_drag_coeff"], p["hull_rot_damping"])
+        tau += self.hull.drag(nu, self.hull.mean_draft(eta, env.hull_cell_surface_z),
+                              p["hull_drag_coeff"], p["hull_rot_damping"],
+                              hull_length=p["hull_length"], hump_amp=p.get("hull_hump_amp", 0.8))
         tau[0] += thrust
         tau[2] -= p["heave_damping"] * nu[2]
         return np.concatenate([J(eta) @ nu, self.rigid_body.nu_dot(nu, tau)])
@@ -514,7 +612,17 @@ class VehiclePhysics:
             )
         else:
             cmds = dict(cmds_override)
-        thrust = self.surge.update(p["target_speed"], cnu[0])
+        thrust_cmd = self.surge.update(p["target_speed"], cnu[0])
+        p_prop = p.get("prop_power_max")
+        if p_prop is not None and p_prop > 0.0 and self.surge.pid.output_max > 0.0:
+            thrust_cmd = min(thrust_cmd, float(p_prop) / max(float(nu[0]), 1.0))
+        prop_tau = p.get("prop_tau_s", 0.0)
+        if prop_tau > 0.0 and cmds_override is None:
+            alpha_p = 1.0 - float(np.exp(-dt / prop_tau))
+            self._thrust_actual += alpha_p * (thrust_cmd - self._thrust_actual)
+            thrust = self._thrust_actual
+        else:
+            thrust = self._thrust_actual = thrust_cmd
         self._last_cmds = {k: cmds[k] for k in ("delta_main", "delta_elev", "delta_roll")}
         wave_elev = env.elevation
 
@@ -539,6 +647,20 @@ class VehiclePhysics:
             new_state[4] = np.clip(new_state[4], -MAX_ATTITUDE_RAD, MAX_ATTITUDE_RAD)
             new_state[6:9] = np.clip(new_state[6:9], -MAX_LINEAR_VEL, MAX_LINEAR_VEL)
             new_state[9:12] = np.clip(new_state[9:12], -MAX_ANGULAR_VEL, MAX_ANGULAR_VEL)
+
+        # Update per-foil surface breach ventilation hysteresis
+        if p.get("ventilation_model", True):
+            u_new = float(new_state[6])
+            hc_trig = p.get("vent_breach_hc", 0.25)
+            hc_rec = p.get("vent_recover_hc", 0.85)
+            for name, foil in (("left", self.left_foil), ("right", self.right_foil), ("elev", self.elev_foil)):
+                hc = self._submergence_over_chord(foil, new_state[:6], env.foil_surface_z[name])
+                v = self._vent[name]
+                if hc < hc_trig and u_new > 2.0:
+                    v += (1.0 - v) * min(1.0, dt / 0.08)
+                elif v > 0.0 and (hc > hc_rec or u_new < 1.5):
+                    v -= v * min(1.0, dt / 0.40)
+                self._vent[name] = 0.0 if v < 1e-4 else float(min(1.0, v))
 
         # last_CL is from the final RK stage (~ end of step): record it for the transport delay
         self._dw_t.append(t + dt); self._dw_eps.append(self._downwash_qs())

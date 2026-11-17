@@ -86,7 +86,8 @@ def check(params: dict) -> list[dict]:
     i_cap = cap / (N * eta * kt)
     rows.append(_row("current at torque_cap <= controller peak", round(i_cap, 1), c.i_peak, i_cap <= c.i_peak))
     t_shaft = min(cap, full)
-    stress = 16 * t_shaft / (np.pi * spec.shaft_diameter ** 3)
+    shaft_d = float(p.get("shaft_diameter") or spec.shaft_diameter)
+    stress = 16 * t_shaft / (np.pi * shaft_d ** 3)
     rows.append(_row("output shaft shear at min(cap, full) <= allowable", round(stress / 1e6, 1), TAU_ALLOW / 1e6,
                      stress <= TAU_ALLOW, note=f"needs >= {1e3 * (16 * t_shaft / (np.pi * TAU_ALLOW)) ** (1 / 3):.1f} mm"))
 

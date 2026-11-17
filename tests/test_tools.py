@@ -80,3 +80,22 @@ def test_supervised_takeoff_scenario_rejects_gains_that_stall_on_the_hump():
     assert cost({"supervised": m}, MANNED_PARAMS["flying_height"]) >= 100.0
     ok = run_scenario(dict(MANNED_PARAMS), "supervised")
     assert not ok["failed"] and ok["t_foiling"] < 20.0
+
+
+def test_design_autoscaling_updates_inertia_hull_shaft_and_gains():
+    from hydrofoil.consistency import check
+    p = apply_design(dict(MANNED_PARAMS), {
+        "hull_length": 4.2, "hull_beam": 1.4, "mass": 320.0,
+        "main_chord": 0.30, "main_span": 1.25,
+        "gear_rated_torque": 50.0,
+        "servo_params": {"torque_cap": 45.0, "backlash_deg": 0.10, "gear_stiffness": 5000.0, "encoder": "dual"},
+        "gear_ratio": 30.0,
+    })
+    assert p["ixx"] > MANNED_PARAMS["ixx"] and p["iyy"] > MANNED_PARAMS["iyy"]
+    assert p["hull_drag_coeff"] > MANNED_PARAMS["hull_drag_coeff"]
+    assert p["hull_rot_damping"] > MANNED_PARAMS["hull_rot_damping"]
+    assert p["shaft_diameter"] > MANNED_PARAMS["shaft_diameter"]
+    assert p["main_surface_inertia"] != MANNED_PARAMS["main_surface_inertia"]
+    assert p["prop_power_max"] > MANNED_PARAMS["prop_power_max"]
+    rows = check(p)
+    assert not [r for r in rows if r["status"] == "FAIL"]

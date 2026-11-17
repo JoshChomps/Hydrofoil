@@ -174,16 +174,21 @@ class HullHydrostatics:
         tau[3:] = (mx, my, mz)
         return tau
 
-    def drag(self, nu, mean_draft: float, drag_coeff: float, rot_damping: float = 0.0) -> np.ndarray:
+    def drag(self, nu, mean_draft: float, drag_coeff: float, rot_damping: float = 0.0,
+             hull_length: float | None = None, hump_amp: float = 0.0) -> np.ndarray:
         """
-        Placeholder hull damping, both scaled by the wetted fraction (0 once foilborne):
-        quadratic surge drag, and linear roll/pitch damping standing in for radiation
-        damping. Without the latter the (now correct) hydrostatic stiffness lets a floating
-        hull rock almost undamped at ~2.4 Hz until the foils get flow.
+        Placeholder hull damping, scaled by wetted fraction (0 once foilborne):
+        quadratic surge drag with an optional wave-making Froude hump peaking near
+        Fr_L = |u| / sqrt(g L) ~ 0.48 before liftoff, plus linear roll/pitch
+        damping standing in for radiation damping.
         """
         wetted = mean_draft / self.max_draft if self.max_draft > 0 else 0.0
+        hump = 1.0
+        if hull_length and hull_length > 0.0 and hump_amp > 0.0:
+            fr = abs(float(nu[0])) / np.sqrt(self.g * hull_length)
+            hump = 1.0 + hump_amp * np.exp(-((fr - 0.48) / 0.22) ** 2)
         tau = np.zeros(6)
-        tau[0] = -drag_coeff * wetted * nu[0] * abs(nu[0])
+        tau[0] = -drag_coeff * hump * wetted * nu[0] * abs(nu[0])
         tau[3] = -rot_damping * wetted * nu[3]
         tau[4] = -rot_damping * wetted * nu[4]
         return tau
