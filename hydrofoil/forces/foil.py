@@ -92,11 +92,11 @@ class FoilTables:
         self.aoa_max = self.aoa_deg[-1]
 
     def cl(self, aoa_deg: float) -> float:
-        a = float(np.clip(aoa_deg, self.aoa_min, self.aoa_max))
+        a = self.aoa_min if aoa_deg < self.aoa_min else (self.aoa_max if aoa_deg > self.aoa_max else float(aoa_deg))
         return float(np.interp(a, self.aoa_deg, self.CL))
 
     def cd(self, aoa_deg: float) -> float:
-        a = float(np.clip(aoa_deg, self.aoa_min, self.aoa_max))
+        a = self.aoa_min if aoa_deg < self.aoa_min else (self.aoa_max if aoa_deg > self.aoa_max else float(aoa_deg))
         return float(np.interp(a, self.aoa_deg, self.CD))
 
     @property
@@ -304,13 +304,28 @@ class Foil:
         # (see class docstring / module-level *_FLAP_EFFECTIVENESS constants).
         aoa_rad = np.arctan2(V_n, V_foil[0])
         aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * delta - np.degrees(downwash_rad)
+        aoa_deg = ((aoa_deg + 180.0) % 360.0) - 180.0
 
         q = 0.5 * self.rho * speed**2
         A = self.geometry.chord * span
 
-        # 1. 2D section polar (XFLR5) — section (infinite-span) data.
-        CL_2d = self.tables.cl(aoa_deg)
-        CD_2d = self.tables.cd(aoa_deg)
+        # 1. 2D section polar (XFLR5) within table bounds; smooth flat-plate post-stall beyond
+        # so high-AoA and reverse flow (V_foil[0] < 0) go continuously to CL = 0 at +-180 deg.
+        if self.tables.aoa_min <= aoa_deg <= self.tables.aoa_max:
+            CL_2d = self.tables.cl(aoa_deg)
+            CD_2d = self.tables.cd(aoa_deg)
+        else:
+            edge = self.tables.aoa_max if aoa_deg > 0.0 else self.tables.aoa_min
+            cl_edge = self.tables.cl(edge)
+            cd_edge = self.tables.cd(edge)
+            excess = abs(aoa_deg - edge)
+            blend = min(1.0, excess / 7.0)
+            blend = blend * blend * (3.0 - 2.0 * blend)
+            a_rad = np.radians(aoa_deg)
+            cl_post = 1.15 * abs(np.sin(2.0 * a_rad)) * (1.0 if a_rad >= 0.0 else -1.0)
+            cd_post = 2.0 * np.sin(a_rad) ** 2 + 0.02
+            CL_2d = (1.0 - blend) * cl_edge + blend * cl_post
+            CD_2d = (1.0 - blend) * cd_edge + blend * cd_post
 
         # 2. Finite-span correction (see __init__): strip theory here uses ONE
         # strip per foil, so the 2D section CL overestimates real 3D lift.

@@ -680,7 +680,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
     from hydrofoil.design import apply_design
     from hydrofoil.monitor import FlightMonitor
     params = apply_design(dict(MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS), overrides or {})
-    params["v_bus"] = DriveSpec().ctrl.v_bus
+    params.setdefault("v_bus", DriveSpec().ctrl.v_bus)
     if controller:
         params["controller"] = controller
     if sensors:

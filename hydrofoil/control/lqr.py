@@ -171,6 +171,7 @@ class LQRController:
         # (engage on speed and height error, latch); True = engage now whatever the state; False = PID, and if the
         # LQR was flying, fade back to the PID's command over blend_s
         self.force: bool | None = None
+        self.hold_heave: bool = False                      # True when an outer mode (e.g. DISPLACEMENT) overrides delta_main
         self._release_t, self._release_from = 0.0, None
         self.speeds = np.asarray(speeds, float)
         self.delay_steps = max(int(round(delay_s / dt)), 1)
@@ -186,6 +187,12 @@ class LQRController:
         self.integ = np.zeros(3)
         self.last = np.zeros(3)
         self.hist = np.zeros((self.delay_steps, 3))              # commands already sent, newest first [deg]
+
+    def sync_sent(self, sent_vec):
+        """Overwrite the most recently recorded command with what was actually sent after shaping/slew limits."""
+        v = np.asarray(sent_vec, float)
+        self.last = v
+        self.hist[0] = v
 
     def _sched(self, u: float):
         u = float(np.clip(u, self.speeds[0], self.speeds[-1]))
@@ -228,6 +235,8 @@ class LQRController:
                 except np.linalg.LinAlgError:
                     self.integ = np.zeros(3)
                 self.integ = np.clip(self.integ, -self.int_limit, self.int_limit)
+                if self.hold_heave:
+                    self.integ[0] = 0.0
             else:
                 out = pid_vec
                 if self._release_from is not None:
@@ -251,6 +260,8 @@ class LQRController:
         cmd = np.clip(cmd_nom, -self.limit, self.limit)
         # conditional integration: hold an integrator while its channel is saturated and the error pushes deeper
         for i in range(3):
+            if i == 0 and self.hold_heave:
+                continue
             sat_hi = cmd_nom[i] > self.limit and K[i, 8 + i] * err[i] < 0
             sat_lo = cmd_nom[i] < -self.limit and K[i, 8 + i] * err[i] > 0
             if not (sat_hi or sat_lo):

@@ -5,15 +5,22 @@ hydrofoil, with a native MuJoCo app (3D view, sliders, live plots, actuator load
 
 ## What's here
 
-- `hydrofoil/` — the Python simulation. `vehicle.py` is the canonical physics
-  (6-DOF rigid body, strip-theory foils, hull buoyancy/drag, wave coupling,
-  PID control). `viewer.py` is the interactive MuJoCo app (render + UI only;
-  the physics stays in `vehicle.py`). `actuation/` models the moteus/BLDC/gearbox
-  surface drives (hinge moment, current, voltage, stress; docs/17).
-  `params.py` holds `DEFAULT_PARAMS`.
-- `docs/` — full documentation, math audit and roadmap (start at `docs/README.md`).
-- `tests/` — pytest unit tests (`test_forces.py`, `test_actuator.py`).
-- `notebooks/` — currently empty, reserved for analysis notebooks.
+- `hydrofoil/` — the Python simulation:
+  - `vehicle.py` (`VehiclePhysics`) is the canonical 6-DOF physics, strip-theory foils,
+    distributed hull hydrostatics, wave coupling, and closed-loop stepping.
+  - `control/` holds the takeoff PID (`pid.py`), surge PID (`surge.py`), scheduled
+    delay-aware MIMO LQR (`lqr.py`), and flight-mode supervisor (`supervisor.py`).
+  - `sensors/` and `estimation/` model noisy rate/latency/dropout channels (`models.py`)
+    and the `HeaveFilter` + scheduled `KalmanEstimator` (`kalman.py`).
+  - `actuation/` models the moteus/BLDC/gearbox surface drives (`servo.py` with
+    torque/voltage limits, compliance, backlash, and flap twist; `hinge.py`, `drive.py`, `loads.py`).
+  - `viewer.py` is the interactive MuJoCo 3-D app (render + sliders + live plots +
+    drive telemetry; physics stays in `vehicle.py`).
+  - `design.py`, `consistency.py`, `monitor.py`, and `tuning/` provide the boat editor,
+    parameter co-dependency checker, flight observer, and controller autotuner.
+- `docs/` — engineering documentation, audits, and design studies (start at [docs/README.md](docs/README.md)).
+- `tests/` — pytest suite covering physics, actuation, compliance, linearisation, LQR/estimation, supervisor, and tools.
+- `tools/` — verification and sizing scripts (`audit.py`, `actuator_budget.py`, `flap_design.py`, `phase_trials.py`).
 - `requirements.txt` — Python deps.
 
 ## Running it
@@ -21,30 +28,37 @@ hydrofoil, with a native MuJoCo app (3D view, sliders, live plots, actuator load
 ```bash
 pip install -r requirements.txt
 
-# Tests
+# Tests (both work; tests/conftest.py adds the repo root to sys.path)
 pytest tests/
+python -m pytest
+
+# Parameter co-dependency check
+python -m hydrofoil.consistency
 
 # The app (MuJoCo). Click the window, then:
-#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset; sliders in the right panel -> Control
-python -m hydrofoil.viewer [--waves] [--speed 1.0]
+#   Up/Down = height, Left/Right = bank, [ ] = speed, R = reset, C = PID/LQR
+python -m hydrofoil.viewer [--preset model|manned] [--controller lqr|pid] [--sensors ideal|noisy] [--waves] [--speed 1.0]
 
-# Actuator budget (hinge moment -> motor current/voltage, gear-ratio sweep)
+# Actuator budget and flap/drive design study
 python tools/actuator_budget.py
+python tools/flap_design.py static
 ```
 
-## Known state / heads-up for anyone picking this up
+## Current state & caveats
 
-- Control is three independent PID loops (heave/pitch/roll), not yet a MIMO
-  controller — see `hydrofoil/control/pid.py`. Roll `Ki` must stay `0`
-  (verified to diverge otherwise under wave disturbance). Pilot bank input
-  is clamped to ±8° (`hydrofoil/control_uplink.py`) — commanded bank beyond
-  that has been verified to diverge.
-- The foil force model (`hydrofoil/forces/foil.py`) includes flap
-  effectiveness, finite-span, free-surface, and induced-drag corrections.
-  PID gains have **not** been retuned against these corrections yet — expect
-  the response to feel under-authoritative until that happens.
-- No state estimation or sensor noise modeling exists yet (`estimation/`,
-  `sensors/` are empty packages) — the sim feeds every controller exact
-  ground-truth state.
-- No linearized state-space (A/B) model of the plant exists yet — that's the
-  prerequisite for the planned LQR/MPC work and hasn't been started.
+- **Default control & estimation:** Both `DEFAULT_PARAMS` (25 kg model) and
+  `MANNED_PARAMS` (275 kg craft) default to `controller="lqr"` (PID takeoff with
+  bumpless latched handover to speed-scheduled delay-aware LQR) and
+  `actuator_model="servo"`. Sensors default to `"ideal"`; set `sensors="noisy"`
+  for sensor noise/latency/dropouts with `HeaveFilter` + `KalmanEstimator`.
+- **Supervisor:** `supervisor=True` enables mode management (`DISPLACEMENT` →
+  `TAKEOFF` → `FOILING` → `LANDING` / `EMERGENCY_LANDING`), speed/height envelope
+  clamps, and drive/sensor/attitude fault handling (`control/supervisor.py`).
+- **Placeholder parameters:** Mass, inertias, hull drag/damping, strut chords, and
+  several drive/compliance numbers remain placeholders pending hardware measurements
+  (see [docs/04-constants-and-parameters.md](docs/04-constants-and-parameters.md) and
+  [docs/20-flap-and-drive-design.md](docs/20-flap-and-drive-design.md)).
+- **Known physical simplifications:** Monochromatic Airy waves, no cavitation or
+  ventilation-hysteresis physics in `foil.py`, and no planing/slamming hydrodynamics
+  in `hull.py`. See [docs/11-known-issues.md](docs/11-known-issues.md) and
+  [docs/19-linearisation-lqr-estimation.md](docs/19-linearisation-lqr-estimation.md).

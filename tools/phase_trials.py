@@ -77,7 +77,7 @@ def mission(combo: tuple, sea: str, sensors: str = "noisy", seed: int = 0) -> di
         if abs(np.degrees(s[3])) > 30.0:
             fail = "capsize"; break
         u = float(s[6])
-        vz = float(-s[6] * np.sin(s[4]) + s[8] * np.cos(s[4]) * np.cos(s[3]))     # NED down-velocity... sign: + = sinking
+        vz = float(-s[6] * np.sin(s[4]) + s[7] * np.cos(s[4]) * np.sin(s[3]) + s[8] * np.cos(s[4]) * np.cos(s[3]))     # NED down-velocity: + = sinking
         az = (vz - w_prev) / dt
         w_prev = vz
         dr = c.get("drive", {})

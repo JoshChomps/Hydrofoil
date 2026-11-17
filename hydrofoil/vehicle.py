@@ -257,6 +257,9 @@ class VehiclePhysics:
                 if k in meas:
                     c[i] = meas[k]
             c[6] = self._u_meas
+            c[7] = 0.0
+            c[8] = ((self.heave.vz + self._u_meas * np.sin(c[4])) / (np.cos(c[4]) * np.cos(c[3]))
+                    if self.heave.ready else 0.0)
             return c
         if not self._est_ready:
             self.estimator.init(meas, z_trim)
@@ -267,9 +270,9 @@ class VehiclePhysics:
         c[[2, 3, 4, 7, 8, 9, 10, 11]] = est
         c[6] = self._u_meas
         # heave velocity from the kinematic filter (it sees wave and payload forces through the accelerometer,
-        # which the model-based filter cannot): vz = -u sin(theta) + w cos(theta) cos(phi)
+        # which the model-based filter cannot): vz = -u sin(theta) + v cos(theta) sin(phi) + w cos(theta) cos(phi)
         c[2] = self.heave.z
-        c[8] = (self.heave.vz + self._u_meas * np.sin(c[4])) / (np.cos(c[4]) * np.cos(c[3]))
+        c[8] = (self.heave.vz + self._u_meas * np.sin(c[4]) - c[7] * np.cos(c[4]) * np.sin(c[3])) / (np.cos(c[4]) * np.cos(c[3]))
         return c
 
     def reset(self):
@@ -481,13 +484,17 @@ class VehiclePhysics:
             ff = self._trim_ff(cnu[0])
             self.controller.heave_pid.output_min = -20.0 - ff   # anti-windup judges the TOTAL flap command
             self.controller.heave_pid.output_max = 20.0 - ff
+            pid_active = not (self.lqr is not None and self.lqr.engaged and self.lqr.force is not False
+                              and self.lqr.since_engage >= self.lqr.blend_s)
             raw = self.controller.pid_commands(
                 z_ref,                       ceta[2],
                 np.radians(p["phi_ref"]),    ceta[3],
                 np.radians(p["theta_ref"]),  ceta[4],
+                integrate=pid_active,
             )
             raw["delta_main"] += ff
             if self.lqr is not None:
+                self.lqr.hold_heave = self.supervisor is not None and self.supervisor.mode == "DISPLACEMENT"
                 dl, dr, de = (self.drives[n] for n in ("left", "right", "elev"))   # drive encoders: angle, rate
                 act = ([0.5 * np.degrees(dl.delta + dr.delta), np.degrees(de.delta), 0.5 * np.degrees(dr.delta - dl.delta)],
                        [0.5 * np.degrees(dl.rate + dr.rate), np.degrees(de.rate), 0.5 * np.degrees(dr.rate - dl.rate)])
@@ -495,6 +502,10 @@ class VehiclePhysics:
             if self.supervisor is not None:
                 raw = self.supervisor.shape_raw(raw, cstate)
             cmds = self._servo_commands(raw, state, env)
+            if self.lqr is not None:
+                t_cmd = cmds["target"]
+                self.lqr.sync_sent([0.5 * (t_cmd["left"] + t_cmd["right"]), t_cmd["elev"],
+                                    0.5 * (t_cmd["right"] - t_cmd["left"])])
         elif cmds_override is None:
             cmds = self.controller.update(
                 z_ref,                       eta[2],

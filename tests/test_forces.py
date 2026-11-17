@@ -21,7 +21,7 @@ def test_naca0009_loads():
 
 def test_naca0009_symmetric():
     """Symmetric foil: CL(+α) = -CL(-α), CD(+α) = CD(-α)."""
-    for a in [1.0, 3.0, 5.0, 8.0]:
+    for a in [1.0, 3.0, 5.0, 8.0, 12.0, 16.0]:
         assert abs(POLAR.cl(a) + POLAR.cl(-a)) < 1e-4, f"CL asymmetry at {a} deg"
         assert abs(POLAR.cd(a) - POLAR.cd(-a)) < 1e-4, f"CD asymmetry at {a} deg"
 
@@ -109,6 +109,13 @@ def test_foil_drag_opposes_motion():
     tau = foil.generalized_force(nu)
     # Drag should oppose forward motion = negative X force
     assert tau[0] < 0, f"Expected negative X drag, got X={tau[0]:.3f}"
+
+
+def test_foil_reverse_flow_continuous_across_zero_vertical_velocity():
+    foil = Foil(FoilGeometry(0.28, 1.1, aoa_offset=3.0), POLAR, r_attach=np.array([0, 0.6, 1.75]), flap_effectiveness=0.342)
+    z_pos = foil.generalized_force(np.array([-0.5, 0.0, +0.001, 0, 0, 0]))[2]
+    z_neg = foil.generalized_force(np.array([-0.5, 0.0, -0.001, 0, 0, 0]))[2]
+    assert abs(z_pos - z_neg) < 1.0
 
 
 # --- Buoyancy / gravity ---

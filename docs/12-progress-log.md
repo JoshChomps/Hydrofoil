@@ -229,6 +229,17 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Result: PID 44.9 / 6.5 / 7.9 → 62.4 / 6.0 / 6.8 (heave); every scenario improves (doc 20 section 8).
 - Verified: 100 tests pass, including the supervisor missions.
 
+### 2026-11-16 (evening) — Safety, estimation, actuation, and polar bug-fix pass
+- Changed:
+  - `control/supervisor.py`: `_update_wave_estimate` now subtracts `heave.z` and updates only in `FOILING` (stops calm takeoff climbs from fabricating ~0.27 m wave estimates); `_detect` delays the reference target by `d.delay_steps`, detects frozen-but-fresh height samples and persistent `HeaveFilter` gate rejections, and tags `"limp"` vs `"jam"` drives; `mix()` tracks the live failed-drive angle `drives[side].delta`; `_fault_response` cuts thrust on `height_lost` and allows `EMERGENCY_LANDING -> DISPLACEMENT` exit once slowed below `v_disp_max`.
+  - `estimation/kalman.py`: `KalmanEstimator` keeps its internal `z` state relative to its fixed linearisation depth datum `_z_trim0` so `flying_height` changes never perturb the model or inject fake innovations; `HeaveFilter` uses the symmetric Joseph covariance update and records `reject_events`.
+  - `vehicle.py`, `control/pid.py`, `control/lqr.py`, `monitor.py`, `tools/phase_trials.py`: fixed missing `v cos(theta) sin(phi)` in `w`/`vz` conversions, removed oracle `v`/`w` below `est_engage_speed`, froze standby PID integrators when LQR is active, held LQR heave integration during `DISPLACEMENT` overrides, and synced `LQR.hist` to post-shaping/post-slew targets (`sync_sent`).
+  - `actuation/servo.py`: unilateral gear-backlash flank contact (no tensile pulling across the gap), full substep `_peak_spring` tracking, per-step frozen flow linearization in `_update_compliant`, and scalar clipping speedup (1000 manned steps ~10.1 s → ~6.6 s).
+  - `data/foil_tables/naca0009_xflr5_re2700000.dat` and `forces/foil.py`: mirrored symmetric negative side (−17.8°…−10.2°) and added smooth flat-plate post-stall blending in `generalized_force` beyond polar bounds (eliminates the reverse-flow snap at `V_n = 0, u_rel < 0`).
+  - `viewer.py`, `tests/conftest.py`, `.gitignore`, `README.md`, `docs/11-known-issues.md`: preserved `v_bus` overrides, enabled bare `pytest` collection, ignored `phase_trials.jsonl`, synced `README.md` and `docs/11` C4.
+- Verified: full `pytest -v` suite (existing 101 + 7 new regression tests = 108 tests) and `python -m hydrofoil.consistency` pass.
+- Open situational model choices echoed for confirmation before pushing: continuous-wing `AR` (`3.93` vs `7.86`), Wadlin free-surface / ventilation model, unmodeled roll added inertia (`~0.8 * ixx`), hull heave added mass / drag hump, plain-flap separation past 15°, and wave-takeoff / oblique-turn clearance envelope.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

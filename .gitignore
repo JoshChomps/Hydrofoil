@@ -12,3 +12,4 @@ data/*
 # Local-only launcher (sim server page and its launch config)
 local/
 .claude/launch.json
+phase_trials.jsonl

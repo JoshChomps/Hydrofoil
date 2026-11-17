@@ -105,3 +105,27 @@ def test_checker_catches_a_stale_trim_feedforward_and_an_overstressed_shaft():
                                                 main_flap_setback=0.0))}
     assert rows["trim_ff_deg = trim flap at trim_ff_speed"]["status"] == "FAIL"   # geometry changed, FF not
     assert rows["main_surface_inertia matches the flap geometry (+-30 %)"]["status"] == "WARN"
+
+
+def test_unilateral_backlash_never_pulls_across_gap_and_captures_peak_spring():
+    d = _drive(backlash_deg=0.25, gear_stiffness=4000.0, encoder="dual")
+    # Motor starts just past the + flank while reversing away rapidly; teeth must separate cleanly
+    # rather than pulling with negative damping across the gap, and _peak_spring must record the
+    # intra-step tooth impact peak rather than only the final sub-step.
+    d.th_m = np.radians(5.125 + 0.01)
+    d.th_s = np.radians(5.0)
+    d.w_m = -2.0
+    d.w_s = 0.0
+    d.update(5.0, _Flow())
+    assert d._peak_spring > 1.0
+    # Verify on separation from the + flank (wide gap so it does not hit the - flank during dt)
+    # that surface velocity is never pulled negative across the open gap.
+    d2 = _drive(backlash_deg=10.0, gear_stiffness=4000.0, encoder="dual")
+    d2.th_m = np.radians(5.002)
+    d2.th_s = 0.0
+    d2.w_m = -5.0
+    d2.w_s = 0.0
+    d2.kp = 0.0
+    d2.kd = 0.0
+    d2.update(0.0, _Flow(m0=0.0, k=0.0))
+    assert d2.w_s >= 0.0

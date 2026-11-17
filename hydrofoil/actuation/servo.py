@@ -176,39 +176,60 @@ class ServoDrive:
             n_sub = max(self.n_sub, int(np.ceil(w_n * self.dt / 0.3)))   # keep w_n h < 0.3 (semi-implicit Euler)
         h = self.dt / n_sub
         half = 0.5 * self.backlash
-        i_acc = p_acc = v_pk = tau_acc = m_acc = 0.0
+        # Flow is frozen over dt: precompute steady moment + hinge slope at th_s once instead of
+        # re-evaluating flow 4x per substep (exact for affine plain flaps, <1e-4 deg error on all-moving).
+        th_s0 = self.th_s
+        m0_base = float(flow(th_s0))
+        e_fd = 1e-4
+        kh_base = (float(flow(th_s0 + e_fd)) - float(flow(th_s0 - e_fd))) / (2.0 * e_fd)
+        k_tw = self.k_twist
+        i_acc = p_acc = v_pk = tau_acc = m_acc = step_pk_spring = 0.0
         limited = False
+        inv_kt = 1.0 / kt
+        inv_N = 1.0 / N
+        inv_Jm = 1.0 / J_m
+        inv_Js = 1.0 / J_s
         for _ in range(n_sub):
-            d_eff, M = self.twisted(self.th_s, flow)
+            m_root = m0_base + kh_base * (self.th_s - th_s0)
+            if k_tw is None:
+                M = m_root
+            else:
+                M = m_root * (k_tw / (k_tw - kh_base))
             # position from the encoder the loop is closed on; damping from the motor side unless "output"
             # ("dual": output-encoder position + motor velocity, the collocated damping that keeps a compliant
             # drive train from ringing when the position sensor is on the far side of the spring)
             enc = self.th_m if self.encoder == "motor" else self.th_s
             enc_rate = self.w_s if self.encoder == "output" else self.w_m
             tau_cmd = self.kp * (cmd - enc) - self.kd * enc_rate + (-M if self.ff else 0.0)
-            tau_m = tau_cmd / N
+            tau_m = tau_cmd * inv_N
             omega = N * self.w_m
-            s = 1.0 if tau_m >= 0 else -1.0
-            i_v = max(0.0, (v_avail - s * kt * omega) / R)
-            lim = min(tau_m_lim, kt * i_v)
-            if abs(tau_m) > lim:
-                tau_m, limited = s * lim, True
-            tau_out = N * eta * tau_m if tau_m * omega >= 0 else N * tau_m / eta
-            fric = g.friction_out * np.tanh(self.w_m / 0.05)
+            s = 1.0 if tau_m >= 0.0 else -1.0
+            i_v = (v_avail - s * kt * omega) / R
+            if i_v < 0.0:
+                i_v = 0.0
+            lim = kt * i_v
+            if tau_m_lim < lim:
+                lim = tau_m_lim
+            if tau_m > lim:
+                tau_m, limited = lim, True
+            elif tau_m < -lim:
+                tau_m, limited = -lim, True
+            tau_out = N * eta * tau_m if tau_m * omega >= 0.0 else N * tau_m / eta
+            fric = g.friction_out * float(np.tanh(self.w_m * 20.0))
             gap = self.th_m - self.th_s
             if rigid:
                 # stiff gear with free play: rigid contact on either flank, free inside the gap
                 f_m = tau_out - fric                                  # net drive on the gear side
                 f_s = M - B * self.w_s                                # net load on the surface side
-                a_free_m, a_free_s = f_m / J_m, f_s / J_s
-                sg = float(np.sign(gap))                              # free motion would press the flanks together
-                closing = (self.w_m - self.w_s) * sg > 1e-9 or (a_free_m - a_free_s) * sg >= 0
+                a_free_m, a_free_s = f_m * inv_Jm, f_s * inv_Js
+                sg = 1.0 if gap > 0.0 else (-1.0 if gap < 0.0 else 0.0)
+                closing = (self.w_m - self.w_s) * sg > 1e-9 or (a_free_m - a_free_s) * sg >= 0.0
                 if half == 0.0 or (abs(gap) >= half - 1e-12 and closing):
                     acc = (f_m + f_s) / (J_m + J_s)
-                    w = (J_m * self.w_m + J_s * self.w_s) / (J_m + J_s) if half > 0 else self.w_s
+                    w = (J_m * self.w_m + J_s * self.w_s) / (J_m + J_s) if half > 0.0 else self.w_s
                     self.w_m = self.w_s = w + acc * h
                     self.th_s += self.w_s * h
-                    self.th_m = self.th_s + (float(np.sign(gap)) * half if half > 0 else 0.0)
+                    self.th_m = self.th_s + (sg * half if half > 0.0 else 0.0)
                     tau_t = f_m - J_m * acc
                 else:
                     self.w_m += a_free_m * h
@@ -216,30 +237,48 @@ class ServoDrive:
                     self.th_m += self.w_m * h
                     self.th_s += self.w_s * h
                     g2 = self.th_m - self.th_s                        # crossed a flank: put it on the flank
-                    if abs(g2) > half:
-                        self.th_m = self.th_s + float(np.sign(g2)) * half
+                    if g2 > half:
+                        self.th_m = self.th_s + half
+                    elif g2 < -half:
+                        self.th_m = self.th_s - half
                     tau_t = 0.0
             else:
-                e_sp = gap - float(np.clip(gap, -half, half))
-                tau_t = self.k_gear * e_sp + c_g * (self.w_m - self.w_s) if e_sp != 0.0 else 0.0
-                self.w_m += (tau_out - fric - tau_t) / J_m * h
-                self.w_s += (tau_t + M - B * self.w_s) / J_s * h
+                clamped_gap = half if gap > half else (-half if gap < -half else gap)
+                e_sp = gap - clamped_gap
+                # Unilateral tooth contact: each flank can only push, never pull across the gap
+                if e_sp > 0.0:
+                    tau_t = self.k_gear * e_sp + c_g * (self.w_m - self.w_s)
+                    if tau_t < 0.0:
+                        tau_t = 0.0
+                elif e_sp < 0.0:
+                    tau_t = self.k_gear * e_sp + c_g * (self.w_m - self.w_s)
+                    if tau_t > 0.0:
+                        tau_t = 0.0
+                else:
+                    tau_t = 0.0
+                self.w_m += (tau_out - fric - tau_t) * inv_Jm * h
+                self.w_s += (tau_t + M - B * self.w_s) * inv_Js * h
                 self.th_m += self.w_m * h
                 self.th_s += self.w_s * h
             if abs(self.th_s) > self.stop:                      # hard stop on the surface
-                self.th_s = float(np.sign(self.th_s) * self.stop)
+                self.th_s = self.stop if self.th_s > 0.0 else -self.stop
                 self.w_s = 0.0
                 if rigid and abs(self.th_m - self.th_s) > half:
-                    self.th_m = self.th_s + float(np.sign(self.th_m - self.th_s)) * half
+                    sg_stop = 1.0 if self.th_m > self.th_s else -1.0
+                    self.th_m = self.th_s + sg_stop * half
                     self.w_m = 0.0
-            i_q = tau_m / kt
+            if abs(tau_t) > step_pk_spring:
+                step_pk_spring = abs(tau_t)
+            i_q = tau_m * inv_kt
             i_acc += i_q * h
             p_acc += (tau_m * omega + 0.75 * R * i_q * i_q + c.p_idle) * h
-            v_pk = max(v_pk, kt * abs(omega) + R * abs(i_q))
+            v_now = kt * abs(omega) + R * abs(i_q)
+            if v_now > v_pk:
+                v_pk = v_now
             tau_acc += tau_t * h
             m_acc += M * h
         self.delta, self.rate = (self.th_m, self.w_m) if self.encoder == "motor" else (self.th_s, self.w_s)
-        self._peak_spring = max(getattr(self, "_peak_spring", 0.0), abs(tau_t))
+        self._peak_spring = max(getattr(self, "_peak_spring", 0.0), step_pk_spring)
         self.delta_eff, _ = self.twisted(self.th_s, flow)
         self.telemetry = {"I": i_acc / self.dt, "V": v_pk, "P": p_acc / self.dt,
                           "tau_out": tau_acc / self.dt, "M": m_acc / self.dt, "limited": limited,

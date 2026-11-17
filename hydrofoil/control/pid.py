@@ -49,7 +49,7 @@ class PID:
         self._integral = 0.0
         self._prev_measurement = None
 
-    def update(self, error: float, measurement: float) -> float:
+    def update(self, error: float, measurement: float, integrate: bool = True) -> float:
         """
         Compute control output for one timestep.
 
@@ -59,6 +59,8 @@ class PID:
                       caller's choice — this class doesn't assume one)
         measurement : the raw process value error was derived from, used
                       ONLY for the derivative term (see below)
+        integrate   : if False, hold the integrator state (used when this loop is
+                      on standby behind LQR or a mode override)
 
         Derivative-on-measurement, not derivative-on-error: a sudden
         setpoint change (e.g. a pilot stick input) makes `error` jump
@@ -79,7 +81,7 @@ class PID:
             derivative = 0.0
         else:
             derivative = (measurement - self._prev_measurement) / self.dt
-        candidate = self._integral + error * self.dt
+        candidate = self._integral + error * self.dt if integrate else self._integral
         output = self.Kp * error + self.Ki * candidate + self.Kd * derivative
         clamped = float(np.clip(output, self.output_min, self.output_max))
 
@@ -87,9 +89,11 @@ class PID:
         # output is saturated AND the error is driving it further into saturation.
         # (The old rule froze it whenever the output was clamped, even if the error
         # was pulling the output back out of saturation, which delayed recovery.)
-        pushing_deeper = (output > self.output_max and error > 0.0) or                          (output < self.output_min and error < 0.0)
-        if not pushing_deeper:
-            self._integral = candidate
+        if integrate:
+            pushing_deeper = (output > self.output_max and error > 0.0) or \
+                             (output < self.output_min and error < 0.0)
+            if not pushing_deeper:
+                self._integral = candidate
 
         self._prev_measurement = measurement
         return clamped
@@ -172,16 +176,17 @@ class HydrofoilController:
             'delta_roll': self.roll_actuator.update(raw['delta_roll']),
         }
 
-    def pid_commands(self, z_ref, z_meas, phi_ref, phi_meas, theta_ref, theta_meas) -> dict:
+    def pid_commands(self, z_ref, z_meas, phi_ref, phi_meas, theta_ref, theta_meas,
+                     integrate: bool = True) -> dict:
         """Raw PID outputs [deg] on the three virtual channels, before any actuator model
         (used directly by the servo drive model, which mixes them onto the physical drives)."""
         heave_err = z_meas - z_ref      # +ve: too deep → need more lift to rise
         pitch_err = np.degrees(theta_meas - theta_ref)  # +ve: nose up → need upward rear force → –M_y → nose down
         roll_err  = np.degrees(phi_meas - phi_ref)      # +ve: rolled right → need upward left force
 
-        cmd_main = self.heave_pid.update(heave_err, z_meas)
-        cmd_elev = self.pitch_pid.update(pitch_err, np.degrees(theta_meas))
-        cmd_roll = self.roll_pid.update(roll_err, np.degrees(phi_meas))
+        cmd_main = self.heave_pid.update(heave_err, z_meas, integrate=integrate)
+        cmd_elev = self.pitch_pid.update(pitch_err, np.degrees(theta_meas), integrate=integrate)
+        cmd_roll = self.roll_pid.update(roll_err, np.degrees(phi_meas), integrate=integrate)
 
         return {'delta_main': cmd_main, 'delta_elev': cmd_elev, 'delta_roll': cmd_roll}
 

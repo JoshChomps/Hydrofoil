@@ -18,7 +18,7 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 | C1 | M | `requirements.txt` lacks `plotly` (used by `viz.py`, `sim.py`) and `pytest`. — **FIXED 2026-11-04 (doc 14)** |
 | C2 | M | **Surge PID derivative sign**: derivative-on-measurement assumes error and measurement move together. For surge (`e = ref − u`) they move oppositely, so `Kd > 0` adds positive feedback. Latent: default Kd = 0 (UI allows up to 20). — **FIXED 2026-11-04 (doc 14)** |
 | C3 | L | `sim.py`/`viz.py` write into `data/` without creating it. It exists on a fresh clone only because `data/foil_tables/` is tracked; deleting `data/` would break them. |
-| C4 | M | Polar table covers −10°…+17.8°. Positive and negative sides are not symmetric beyond ±10°, so a large negative AoA is clamped earlier than a positive one. Elevator (effectiveness 1.0, ±20°) can reach beyond the table on the positive side as well. |
+| C4 | ~~M~~ | ~~Polar table covers −10°…+17.8° (asymmetric past ±10°)~~ — **FIXED** (mirrored symmetric NACA 0009 negative side to −17.8° and added smooth post-stall/reverse-flow Viterna blend in `Foil.generalized_force`). |
 | C5 | M | AoA ignores body pitch and mounting incidence (`aoa_offset` always 0). May be intended, but means foil incidence depends only on velocity direction + flap. |
 | C6 | M | `step()` returns `draft` from the pre-step η and the dashboard publishes pre-step `eta`/`nu` — one-step (10 ms) lag in displayed data. Negligible, but the "foilborne" flag lags by one step. — **FIXED 2026-11-04 (doc 14)** |
 | C7 | M | Wave orbital velocity is evaluated once at the body origin depth and held for foils up to 0.5 m deeper/1.2 m aft; wave λ and T are independent (non-dispersive combos possible). — **FIXED 2026-11-04 (doc 14)** |

@@ -80,3 +80,37 @@ def test_elevator_power_loss_cuts_thrust_and_limits_the_nose_down():
     assert "elev_loss" in vp.supervisor.faults
     assert min(r[5] for r in rec if r[0] > 20.0) > -8.0
     assert touch and touch[0][2] < 0.8
+
+
+def test_calm_takeoff_does_not_fabricate_wave_amplitude():
+    plan = [(0.0, dict(speed=3.0)), (3.0, dict(foil=True, speed=7.0, height=0.20))]
+    vp, rec, _ = _mission(plan, 25.0, sensors="noisy")
+    assert vp.supervisor.mode == "FOILING"
+    assert vp.supervisor.wave_amp < 0.04
+    assert abs(rec[-1][3] - 0.20) < 0.03
+
+
+def test_frozen_fresh_height_sensor_triggers_height_lost_and_lands():
+    def freeze(vp):
+        ch = vp.sensors.channels["height"]
+        val = ch.value.copy()
+        orig = ch.step
+        def stuck(st, t, dt, rng):
+            orig(st, t, dt, rng)
+            ch.value = val
+            return val
+        ch.step = stuck
+    plan = [(0.0, dict(speed=3.0)), (3.0, dict(foil=True, speed=8.0)), (21.0, dict(height=0.50))]
+    vp, rec, _ = _mission(plan, 35.0, fault=(20.0, freeze), sensors="noisy")
+    assert "height_lost" in vp.supervisor.faults
+    assert vp.supervisor.mode == "DISPLACEMENT"
+    assert max(abs(r[4]) for r in rec) < 5.0 and max(abs(r[5]) for r in rec) < 5.0
+
+
+def test_limp_main_flap_is_isolated_and_lands_level():
+    plan = [(0.0, dict(speed=3.0)), (3.0, dict(foil=True, speed=8.0)), (18.0, dict(bank=8.0))]
+    vp, rec, _ = _mission(plan, 30.0, fault=(20.0, lambda v: setattr(v.drives["left"], "cap", 1e-6)))
+    assert "flap_left" in vp.supervisor.faults
+    assert vp.supervisor.fault_info["left"]["mode"] == "limp"
+    assert vp.supervisor.mode == "DISPLACEMENT"
+    assert max(abs(r[4]) for r in rec) < 12.0

@@ -70,7 +70,8 @@ class FlightMonitor:
         p = self.p
         eta = state[:6]
         out = []
-        vz = -state[6] * np.sin(state[4]) + state[8] * np.cos(state[4]) * np.cos(state[3])
+        vz = (-state[6] * np.sin(state[4]) + state[7] * np.cos(state[4]) * np.sin(state[3])
+              + state[8] * np.cos(state[4]) * np.cos(state[3]))
         zref = p["hull_offset"] - p["flying_height"]
         lim = any(v.get("limited") for v in (drives or {}).values())
         for k, v in (("t", t), ("dz", state[2] - zref), ("roll", np.degrees(state[3])), ("vz", vz), ("lim", lim)):

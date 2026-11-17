@@ -56,11 +56,11 @@ class KalmanEstimator:
             Ads.append(Ad); Bds.append(Bd); Ls.append(L); trims.append(u0[:3])
         self.Ad, self.Bd, self.L, self.trim = map(np.asarray, (Ads, Bds, Ls, trims))
         self.H = H
+        self._z_trim0 = float(vp.params["hull_offset"] - vp.params["flying_height"])
         self.reset()
 
     def reset(self):
         self.x = np.zeros(8)
-        self.z_ref0 = None
 
     def _interp(self, arr, u):
         u = float(np.clip(u, self.speeds[0], self.speeds[-1]))
@@ -68,25 +68,27 @@ class KalmanEstimator:
         f = (u - self.speeds[j]) / (self.speeds[j + 1] - self.speeds[j])
         return (1 - f) * arr[j] + f * arr[j + 1]
 
-    def init(self, meas: dict, z_trim: float):
-        """Start from the first measurements (unmeasured v, w at 0). State is kept as deviation from level trim."""
-        self.z_trim = z_trim
+    def init(self, meas: dict, z_trim: float | None = None):
+        """Start from the first measurements (unmeasured v, w at 0). State is kept relative to the
+        filter's linearisation depth datum `_z_trim0` so setpoint changes never perturb the model."""
+        z0 = self._z_trim0
         for k in MEAS_NAMES:
             if k in meas:
-                self.x[MEAS_STATE[k]] = meas[k] - (z_trim if k == "z" else 0.0)
+                self.x[MEAS_STATE[k]] = meas[k] - (z0 if k == "z" else 0.0)
 
-    def update(self, meas: dict, u_cmd, u_speed: float, z_trim: float) -> np.ndarray:
+    def update(self, meas: dict, u_cmd, u_speed: float, z_trim: float | None = None) -> np.ndarray:
         """One predict + update. u_cmd = achieved [main, elev, roll] deg. Returns estimate [z phi theta v w p q r]
         in absolute coordinates (z in NED, angles/rates in rad)."""
+        z0 = self._z_trim0
         Ad, Bd, L, T = (self._interp(a, u_speed) for a in (self.Ad, self.Bd, self.L, self.trim))
         self.x = Ad @ self.x + Bd @ (np.asarray(u_cmd, float) - T)
-        y = np.array([meas.get(k, np.nan) - (z_trim if k == "z" else 0.0) for k in MEAS_NAMES])
+        y = np.array([meas.get(k, np.nan) - (z0 if k == "z" else 0.0) for k in MEAS_NAMES])
         ok = ~np.isnan(y)
         if ok.any():
             innov = np.where(ok, y - self.H @ self.x, 0.0)
             self.x = self.x + (L * ok[None, :]) @ innov
         out = self.x.copy()
-        out[0] += z_trim
+        out[0] += z0
         return out
 
 
@@ -140,6 +142,8 @@ class HeaveFilter:
         self.P = np.eye(5)
         self.ready = False
         self._rejected = 0
+        self.reject_events = 0
+        self.last_rejected = False
 
     def init(self, h: float):
         s, w0 = max(self.wave["sigma"], 1e-3), self.wave["w0"]
@@ -157,15 +161,19 @@ class HeaveFilter:
             S = self.H @ PH + self.R
             if innov * innov >= self.gate ** 2 * S and self._rejected < self.max_reject:
                 self._rejected += 1
+                self.last_rejected = True
             else:
                 if self._rejected >= self.max_reject:
+                    self.reject_events += 1
                     self.P[0, 0] += innov * innov
                     PH = self.P @ self.H
                     S = self.H @ PH + self.R
                 self._rejected = 0
+                self.last_rejected = False
                 K = PH / S
                 self.x = self.x + K * innov
-                self.P = self.P - np.outer(K, PH)
+                I_KH = np.eye(5) - np.outer(K, self.H)
+                self.P = I_KH @ self.P @ I_KH.T + np.outer(K, K) * self.R
         return self.x
 
     @property

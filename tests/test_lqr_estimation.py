@@ -184,3 +184,38 @@ def test_phase_forcing_engages_and_releases_the_lqr_without_a_step():
     step = np.abs(first - last).max()
     assert step <= np.abs(pv - last).max() * lqr.dt / lqr.blend_s + 1e-9   # one blend increment, not a jump
     assert seq[-1] == pid                                          # fully the PID's after the blend
+
+
+def test_kalman_estimator_has_no_innovation_kick_on_z_trim_change():
+    p = dict(DEFAULT_PARAMS, sensors="noisy", sensor_noise_scale=0.0)
+    vp = VehiclePhysics(p)
+    est = vp.estimator
+    meas = {"z": -0.05, "phi": 0.0, "theta": 0.0, "p": 0.0, "q": 0.0, "r": 0.0}
+    est.init(meas, z_trim=0.05)
+    for _ in range(200):
+        est.update(meas, [1.63, -0.36, 0.0], 4.0, 0.05)
+    x_before = est.x.copy()
+    est.update(meas, [1.63, -0.36, 0.0], 4.0, 0.35)
+    x_after = est.x.copy()
+    assert np.allclose(x_after, x_before, atol=1e-6)
+
+
+def test_lqr_sync_sent_and_standby_pid_do_not_wind_up():
+    from hydrofoil.params import MANNED_PARAMS
+    p = dict(MANNED_PARAMS, supervisor=True,
+             phase_controllers={"DISPLACEMENT": "lqr", "TAKEOFF": "auto", "FOILING": "lqr", "LANDING": "pid"})
+    vp = VehiclePhysics(p)
+    sup = vp.supervisor
+    sup.pilot.update({"speed": 3.0})
+    s, t = vp.rest_state(), 0.0
+    for i in range(1000):
+        s, *_ = vp.step(s, t, CalmWater()); t += p["dt"]
+    assert abs(vp.lqr.integ[0]) < 1e-9            # heave integrator held while DISPLACEMENT overrides delta_main
+    sup.pilot.update({"foil": True, "speed": 8.0})
+    for _ in range(1500):
+        s, *_ = vp.step(s, t, CalmWater()); t += p["dt"]
+    assert vp.lqr.engaged and vp.lqr.since_engage >= vp.lqr.blend_s
+    i_heave_engaged = vp.controller.heave_pid._integral
+    for _ in range(500):
+        s, *_ = vp.step(s, t, CalmWater()); t += p["dt"]
+    assert vp.controller.heave_pid._integral == pytest.approx(i_heave_engaged, abs=1e-9)

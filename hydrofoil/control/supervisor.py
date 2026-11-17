@@ -95,14 +95,19 @@ class Supervisor:
         self._err_t = {"left": 0.0, "right": 0.0, "elev": 0.0}
         self._lim_t = {"left": 0.0, "right": 0.0, "elev": 0.0}
         self._pos_hist = {"left": [], "right": [], "elev": []}
+        self._tgt_hist = {"left": [], "right": [], "elev": []}
         self._since = {"z": 0.0, "u": 0.0}
+        self._last_h_val = None
+        self._h_same_t = 0.0
+        self._last_reject_events = 0
         self.speed_ref = 0.0
         self.height_ref = None
-        self.jam = None                              # ("left"|"right", angle deg) when a flap is jammed
+        self.jam = None                              # ("left"|"right", angle deg) when a main-flap drive is lost
         self.wave_amp = 0.0
         self._wave_hist = []
         self.log = []                                # (t, from, to, reason)
         self._down_t = 0.0
+        self._down_h_t = 0.0
 
     def _set_mode(self, t, mode, reason=""):
         if mode != self.mode:
@@ -129,14 +134,17 @@ class Supervisor:
         return cur + float(np.clip(target - cur, -rate * dt, rate * dt))
 
     def _update_wave_estimate(self, t, dt):
-        """Wave amplitude under the boat [m] from the RAW ranging-sensor reading (noisy-sensor mode): sqrt(2) x its
-        10 s standard deviation. The reading is surface-relative, so this includes the boat's own heave and errs
-        high (safe side). The heave filter's wave state was tried first and read 0.07 m in a 0.25 m following sea:
-        at low encounter frequency it books the wave as height."""
+        """Wave amplitude under the boat [m] while FOILING: sqrt(2) x 10 s std of (raw range - estimated craft depth).
+        Subtracting the IMU-driven heave depth removes takeoff climbs and pilot height changes (which otherwise
+        booked calm climbs as large waves)."""
         sens = self.vp.sensors
         if sens is None or sens.channels["height"].value is None or "z" not in sens.fresh:
             return
-        self._wave_hist.append(float(np.ravel(sens.channels["height"].value)[0]))
+        if self.mode != "FOILING":
+            return
+        h_raw = float(np.ravel(sens.channels["height"].value)[0])
+        val = h_raw - self.vp.heave.z if self.vp.heave.ready else h_raw
+        self._wave_hist.append(val)
         n = int(10.0 * 20.0)                         # 10 s of 20 Hz samples
         del self._wave_hist[:-n]
         if len(self._wave_hist) > n // 2:
@@ -147,10 +155,20 @@ class Supervisor:
         vp, c = self.vp, self.c
         tgt = getattr(vp, "_last_target", None)
         flying = self.mode in ("TAKEOFF", "FOILING", "LANDING") and float(cstate[6]) > c["v_disp_max"]
+        if tgt is not None:
+            for n in ("left", "right", "elev"):
+                d = vp.drives[n]
+                th = self._tgt_hist[n]
+                if not th and d.delay_steps > 0:
+                    th.extend([0.0] * d.delay_steps)
+                th.append(float(tgt[n]))
+                del th[:-(d.delay_steps + 1)]
         if tgt is not None and flying:
             for n in ("left", "right", "elev"):
                 d = vp.drives[n]
-                cmd = float(np.clip(tgt[n], -np.degrees(d.stop), np.degrees(d.stop)))
+                # Compare against the command that actually reached the drive after its transport delay
+                cmd_del = self._tgt_hist[n][0] if self._tgt_hist[n] else tgt[n]
+                cmd = float(np.clip(cmd_del, -np.degrees(d.stop), np.degrees(d.stop)))
                 # residual: the position error left after the static deflection the hinge load explains
                 # (kp * err = M at rest). M comes from the hinge model at the measured flow and encoder angle,
                 # which the flight computer can evaluate too.
@@ -174,8 +192,10 @@ class Supervisor:
                 self._lim_t[n] = self._lim_t[n] + dt if (bad and not limited) else 0.0
                 fast = c["elev_fault_time"] if n == "elev" else c["fault_time"]
                 if stuck or self._lim_t[n] > fast or self._err_t[n] > c["fault_time_limited"]:
+                    i_drv = abs(float(d.telemetry.get("I", 0.0)))
+                    mode_tag = "limp" if i_drv < 0.5 else ("jam" if stuck else "fault")
                     self.fault_info[n] = {"t": t, "err": err, "stuck": bool(stuck), "limited": limited,
-                                          "err_t": self._err_t[n], "free_t": self._lim_t[n]}
+                                          "mode": mode_tag, "err_t": self._err_t[n], "free_t": self._lim_t[n]}
                     key = "elev_loss" if n == "elev" else f"flap_{n}"
                     if key not in self.faults and (n == "elev" or self.jam is None):
                         self.faults[key] = t
@@ -187,6 +207,21 @@ class Supervisor:
                 self._since[k] = 0.0 if k in fresh else self._since[k] + dt
                 if self._since[k] > c["sensor_timeout"] and name not in self.faults:
                     self.faults[name] = t
+            if "z" in fresh and vp.sensors.channels["height"].value is not None:
+                h_val = float(np.ravel(vp.sensors.channels["height"].value)[0])
+                if self._last_h_val is None or abs(h_val - self._last_h_val) >= 1e-6:
+                    self._h_same_t = 0.0
+                self._last_h_val = h_val
+            if self.mode in ("TAKEOFF", "FOILING", "LANDING"):
+                if self._last_h_val is not None:
+                    self._h_same_t += dt
+                    if self._h_same_t > c["sensor_timeout"] and (
+                        abs(vp.heave.vz) > 0.05 or abs(self._last_h_val - vp.heave.z) > 0.05
+                    ):
+                        self.faults.setdefault("height_lost", t)
+                if vp.heave.reject_events > self._last_reject_events:
+                    self.faults.setdefault("height_lost", t)
+            self._last_reject_events = vp.heave.reject_events
         if self.mode in ("FOILING", "TAKEOFF") and (abs(np.degrees(cstate[3])) > c["roll_limit"]
                                                     or abs(np.degrees(cstate[4])) > c["pitch_limit"]):
             self.faults.setdefault("attitude", t)
@@ -252,7 +287,8 @@ class Supervisor:
         else:                                                            # EMERGENCY_LANDING
             spd, thrust_max = self._fault_response(t, dt, clear, airborne)
             self._down_t = self._down_t + dt if not airborne else 0.0
-            if not airborne and (u < c["v_disp_max"] or ("speed_lost" in self.faults and self._down_t > 2.0)):
+            self._down_h_t = self._down_h_t + dt if ("height_lost" in self.faults and u < c["v_disp_max"]) else 0.0
+            if (not airborne and (u < c["v_disp_max"] or ("speed_lost" in self.faults and self._down_t > 2.0))) or self._down_h_t > 2.0:
                 self._set_mode(t, "DISPLACEMENT", "hull down (fault latched)")
                 self.landed_reset()
 
@@ -273,10 +309,14 @@ class Supervisor:
             self.height_ref = self._ramp(self.height_ref, -0.10, 0.5, dt)
             return 0.0, 0.0
         if self.jam is not None:
-            # healthy flap matches the jammed one for roll (see `mix`); cut thrust so the lift falls with speed
+            # healthy flap matches the failed one for roll (see `mix`); cut thrust so the lift falls with speed
             self.height_ref = self._ramp(self.height_ref, -0.10, c["sink_rate"], dt)
             return 0.0, c["jam_land_thrust"]
-        # sensor or attitude fault: normal landing profile, keep foil authority until the hull is down
+        if "height_lost" in f:
+            # no reliable height feedback: cut thrust so the craft settles onto the hull while IMU stabilizes attitude
+            self.height_ref = self._ramp(self.height_ref, -0.10, max(c["sink_rate"], 0.25), dt)
+            return 0.0, 0.0
+        # speed or attitude fault: normal landing profile, keep foil authority until the hull is down
         if airborne:
             self.height_ref = self._ramp(self.height_ref, -0.10, c["sink_rate"], dt)
             return max(c["v_min_foil"], min(self.speed_ref, c["v_max"])), p["max_thrust"]
@@ -301,10 +341,12 @@ class Supervisor:
         return raw
 
     def mix(self, target: dict) -> dict:
-        """Physical drive targets: with a jammed flap the healthy one carries the whole roll command about it."""
+        """Physical drive targets: with a failed flap the healthy one carries the whole roll command about its
+        live encoder angle (handles both a fixed jam and a free-trailing limp flap)."""
         if self.jam is None:
             return target
-        side, a = self.jam
+        side, a0 = self.jam
+        a = float(np.degrees(self.vp.drives[side].delta)) if side in self.vp.drives else a0
         roll = 0.5 * (target["right"] - target["left"])
         t = dict(target)
         if side == "left":
