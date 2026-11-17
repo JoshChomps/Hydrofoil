@@ -57,9 +57,12 @@ def test_flap_effectiveness_follows_geometry_and_keeps_the_reference():
     effs = [main_flap_effectiveness(cf, 0.5) for cf in (0.2, 0.3, 0.4, 0.5)]
     assert all(b > a for a, b in zip(effs, effs[1:]))                 # bigger flap, more lift per degree
     assert abs(main_flap_effectiveness(0.3, 1.0) - 2 * main_flap_effectiveness(0.3, 0.5)) < 1e-12
-    for p in (DEFAULT_PARAMS, MANNED_PARAMS):                          # defaults unchanged
+    for p in (DEFAULT_PARAMS, MANNED_PARAMS):              # the foil uses the derived value for each preset
         vp = VehiclePhysics(dict(p, controller="pid", sensors="ideal"))
-        assert abs(vp.left_foil.flap_effectiveness - MAIN_FOIL_FLAP_EFFECTIVENESS) < 1e-12
+        want = main_flap_effectiveness(p["main_flap_frac"], p["main_flap_span_frac"])
+        assert abs(vp.left_foil.flap_effectiveness - want) < 1e-12
+    vp = VehiclePhysics(dict(DEFAULT_PARAMS, controller="pid", sensors="ideal"))
+    assert abs(vp.left_foil.flap_effectiveness - MAIN_FOIL_FLAP_EFFECTIVENESS) < 1e-12   # 25 kg model unchanged
 
 
 def test_hinge_setback_balances_the_flap():

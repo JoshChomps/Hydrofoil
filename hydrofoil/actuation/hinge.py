@@ -99,6 +99,17 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400, setback: float = 0.0) ->
     return out
 
 
+# Structural inertia of a flap about its hinge: I = K L_f c_f^3 c (1/12 + (1/2 - setback)^2), a uniform plate whose
+# thickness scales with the foil chord c. K is fitted to the two presets' placeholders (9e-3 kg m^2 for the manned
+# 40 % half-span flap; the 25 kg model's 4e-4 then follows within 1 %), so it is a consistency rule, not a measurement.
+FLAP_INERTIA_K = 9e-3 / (0.55 * 0.112 ** 3 * 0.28 / 3.0)
+
+
+def flap_inertia(chord: float, flap_span: float, flap_frac: float, setback: float = 0.0) -> float:
+    cf = flap_frac * chord
+    return FLAP_INERTIA_K * flap_span * cf ** 3 * chord * (1.0 / 12.0 + (0.5 - setback) ** 2)
+
+
 @dataclass
 class SurfaceGeometry:
     chord: float               # full foil chord [m]

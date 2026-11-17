@@ -27,6 +27,7 @@ import numpy as np
 from hydrofoil.constants import RHO_WATER, G
 
 TRIM_EDIT_KEYS = {"payloads", "mass", "strut_length", "main_span", "main_chord", "main_incidence_deg", "main_flap_frac",
+                  "main_flap_span_frac", "main_flap_setback", "main_flap_effectiveness",
                   "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset"}
 FLAP_TRIM_LIMIT = 15.0                                    # deg of +-20: margin kept for waves and control
 

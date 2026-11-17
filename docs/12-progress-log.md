@@ -182,6 +182,43 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 - Parameter changes: none to defaults (`main_flap_setback` = 0 and `main_flap_effectiveness` = derived are new).
 - Follow-ups: slew-limit the takeoff flap command; adopt the balanced flap geometry in `MANNED_PARAMS` and retune; model plain-flap separation above 15–20°, gearbox backlash and flap torsion; bench or CFD check of the set-back.
 
+### 2026-11-16 (later) — Corrections, backlash and twist, co-dependency checker, balanced flap adopted
+- Corrected doc 20's first version (its section 1 lists each error):
+  - "the 40 % flap does not fit the drive" was a static assumption; in flight it peaks at 17.3 N·m at 9.5 m/s;
+  - the 12 A controller "limit" was the no-heat-sink figure;
+  - the "hinge moment under 14 N·m" claim was false for the old flap (21.1 N·m);
+  - the rail-peak range was wrong, and so was the loss factor.
+- Changed:
+  - `actuation/servo.py`: compliant drive train with backlash, gear stiffness, spanwise twist, and motor / output / dual encoder.
+  - `vehicle.py`: twist stiffness from GJ, and a command slew limit.
+  - `actuation/hinge.py`: `flap_inertia`.
+  - new `hydrofoil/consistency.py`.
+  - `actuation/drive.py`: shaft 8 → 13 mm.
+  - `design.py`: the trim re-derives on the new flap keys.
+  - `tools/flap_design.py`: 9.5 m/s head sea, compliance and slew options.
+  - `MANNED_PARAMS`: balanced flap and the compliant drive.
+  - tests: new `tests/test_drive_compliance.py` (8); `test_actuation` and `test_tools` now derive geometry-dependent expectations.
+- Why: the user asked that every number and co-dependency be checked so these errors cannot recur, that backlash and twist be modelled, and that the balanced flap and takeoff slew limit be adopted. The controller can run more than 12 A, and a firmware co-dependency limit is planned (doc 20 section 10).
+- Verified: 99 tests pass, including the supervisor missions. The checker shows no FAIL on either preset. Closed-loop runs and drive hand checks are in doc 20.
+- Bugs found and fixed:
+  - the slew limiter let the first takeoff step through, and its test skipped that step;
+  - a test hard-coded the old cruise trim;
+  - output-only encoder feedback rang at takeoff, with 72 N·m through the gear (dual feedback fixes it).
+- Parameter changes, `MANNED_PARAMS`:
+  - flap 0.4 / 0.5 / 0 → 0.25 / 1.0 / 0.15;
+  - `main_surface_inertia` 9e-3 → 2.7e-3;
+  - `trim_ff_deg` 6.57 → 4.11;
+  - new: `cmd_slew_deg_s` 150, backlash 0.25°, gear stiffness 4000 N·m/rad, encoder "dual", GJ 250 / 1000, `drive_i_cont` 20 A, `tuned_for`.
+- Parameter changes, `DriveSpec.shaft_diameter`: 0.008 → 0.013.
+- Gains: PID and LQR re-checked with the autotuner and kept. The PID retune stalled the supervised takeoff; the LQR retune was worse on noisy sensors.
+- Results: takeoff peak 48 → 11 A, rail 17.6 → 1.1 A; head-sea hinge moment 7.65 → 2.6 N·m; current 9.8 → 3.4 A rms; height 18.2 → 15.2 mm.
+- Findings: the balanced flap's near-zero hinge load lets the gear knock across its backlash twice per wave (needs a preloaded stage); the static twist and torque bounds are pessimistic.
+- Follow-ups:
+  - model the firmware co-dependency limit once its rules exist;
+  - add a supervised takeoff to the autotuner;
+  - choose gearbox, encoder and flap structure, then replace the placeholders;
+  - model plain-flap separation and gear tooth impact.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

@@ -180,11 +180,17 @@ class VehiclePhysics:
         sp = dict(DEFAULT_SERVO_PARAMS, **(p.get("servo_params") or {}))
         self.drives = {}
         self._last_target = None
+        self._slew_last = None                              # command slew limiter state (cmd_slew_deg_s)
         for name, stop in (("left", p["flap_stop_deg"]), ("right", p["flap_stop_deg"]), ("elev", p["elev_stop_deg"])):
             spec = DriveSpec()
             spec.gear.ratio = p["gear_ratio"]
             spec.ctrl.v_bus = p["v_bus"]
-            self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp)
+            if p.get("supply_i_max") is not None:
+                spec.ctrl.supply_i_max = p["supply_i_max"]
+            if p.get("drive_i_cont") is not None:
+                spec.ctrl.i_cont = p["drive_i_cont"]
+            self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp,
+                                           twist_k=self.twist_stiffness(name))
         # Flight-mode supervisor (control/supervisor.py): off unless params["supervisor"] is True or a config dict.
         self.supervisor = None
         if p.get("supervisor"):
@@ -279,6 +285,19 @@ class VehiclePhysics:
             self.supervisor.reset()
         for d in self.drives.values():
             d.reset()
+        self._slew_last = None
+
+    def twist_stiffness(self, name: str) -> float | None:
+        """Spanwise twist stiffness of a surface at its drive [N m/rad], for the span-mean deflection under a
+        uniform hinge load: 3 GJ / L for a flap driven at one end (L = flapped span); the all-moving elevator is
+        driven at mid-span through its strut, two halves of L/2 in parallel: 12 GJ / L. None = rigid."""
+        p = self.params
+        if name in ("left", "right"):
+            gj = p.get("main_flap_GJ")
+            L = p["main_span"] * (p.get("main_flap_span_frac", 1.0) if p.get("main_actuation", "flap") == "flap" else 1.0)
+            return None if gj is None else 3.0 * gj / L
+        gj = p.get("elev_GJ")
+        return None if gj is None else 12.0 * gj / p["elev_span"]
 
     def _servo_commands(self, raw: dict, state, env) -> dict:
         """Mix the virtual PID channels onto the physical drives and advance the drive dynamics."""
@@ -290,6 +309,14 @@ class VehiclePhysics:
         target = {"left": main - roll, "right": main + roll, "elev": elev}
         if self.supervisor is not None:
             target = self.supervisor.mix(target)          # jammed-flap reconfiguration
+        slew = p.get("cmd_slew_deg_s")
+        if slew:                                           # rate-limit each drive's command (takeoff steps)
+            step = slew * p["dt"]
+            if self._slew_last is None:                    # start from where the surfaces are, not the first command
+                self._slew_last = {n: float(np.degrees(self.drives[n].delta)) for n in target}
+            target = {n: float(np.clip(v, self._slew_last[n] - step, self._slew_last[n] + step))
+                      for n, v in target.items()}
+            self._slew_last = dict(target)
         self._last_target = target
         flows = flow_models(self, state, env, self.hinges)
         self._last_flows = flows                          # hinge model at this flow (supervisor fault residuals)

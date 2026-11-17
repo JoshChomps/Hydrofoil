@@ -87,7 +87,7 @@ Hardware assumptions:
 |---|---|---|
 | moteus r4.11 supply | 10–44 V; **40 V** battery → PDB → motors (user-stated 2026-11-10, replaces the 24 V placeholder) | sourced / user |
 | PDB output limit | 25 A for the whole rail (`supply_i_max`) | user-stated |
-| moteus phase current | 100 A peak; 10–12 A continuous bare, 20–32 A heatsunk | sourced (sources disagree on continuous) |
+| moteus phase current | 100 A peak; 10–12 A continuous bare, 20–32 A heatsunk | sourced (sources disagree on continuous); the controller runs above 12 A, and a firmware co-dependency limit is planned (docs/20 section 10) |
 | moteus peak power | 900 W @ 30 V | sourced |
 | Motor | mj5208-like: Kv 330, 1.7 N m peak, 7500 rpm | listing; R_ll 0.10 Ω and J_rotor 7e-5 kg m² are **PLACEHOLDERS** |
 | Kt = Ke | 60/(2π Kv) = 0.0289 N m/A | convention, **verify on the bench** |

@@ -3,8 +3,8 @@ Main-foil flap and drive design study (docs/20): how flap geometry and gear rati
 the drive's speed and current, and the mechanical loads, on the manned preset by default.
 
     python tools/flap_design.py static                       # geometry table + gear-ratio window + mechanics
-    python tools/flap_design.py fly --cf 0.4 --sf 0.5 --N 20 # closed loop (LQR, servo drives): one JSON line
-    python tools/flap_design.py fly --cf 0.25 --sb 0.2 --N 14 --preset model
+    python tools/flap_design.py fly                          # the preset as configured: one JSON line
+    python tools/flap_design.py fly --cf 0.4 --sf 0.5 --sb 0 --slew 0 --rigid   # the pre-2026-11-16 manned flap
 
 static: for each flap chord fraction c_f/c, flapped span fraction and hinge set-back, at takeoff / cruise / top
 speed: lift effectiveness, trim flap, steady hinge moment at trim, hinge stiffness, the deflection and torque
@@ -44,8 +44,16 @@ def preset(name: str) -> dict:
     return dict(MANNED_PARAMS if name == "manned" else DEFAULT_PARAMS)
 
 
-def geometry_params(base: dict, cf: float, sf: float, sb: float, N: float | None = None) -> dict:
+def geometry_params(base: dict, cf: float | None = None, sf: float | None = None, sb: float | None = None,
+                    N: float | None = None) -> dict:
+    """The preset with another flap geometry (None = keep the preset's); the flap's structural inertia is rescaled
+    with it (hinge.flap_inertia) so the drive sees the right load."""
+    from hydrofoil.actuation.hinge import flap_inertia
+    cf = base["main_flap_frac"] if cf is None else cf
+    sf = base["main_flap_span_frac"] if sf is None else sf
+    sb = base.get("main_flap_setback", 0.0) if sb is None else sb
     p = dict(base, main_flap_frac=cf, main_flap_span_frac=sf, main_flap_setback=sb)
+    p["main_surface_inertia"] = flap_inertia(p["main_chord"], p["main_span"] * sf, cf, sb)
     if N is not None:
         p["gear_ratio"] = N
     return p
@@ -147,7 +155,8 @@ def cmd_static(a):
            f"{'k':>7s}{'M_pk':>7s}{'rate':>7s}{'P_out':>7s}{'N_lo':>6s}{'N_hi':>6s}{'I_hold':>7s}")
     print(hdr)
     geoms = [(0.4, 0.5, 0.0), (0.3, 0.5, 0.0), (0.25, 0.5, 0.0), (0.2, 0.5, 0.0), (0.4, 1.0, 0.0),
-             (0.25, 1.0, 0.0), (0.25, 0.75, 0.0), (0.4, 0.5, 0.2), (0.25, 0.5, 0.2), (0.25, 1.0, 0.2)]
+             (0.25, 1.0, 0.0), (0.25, 0.75, 0.0), (0.4, 0.5, 0.2), (0.25, 0.5, 0.2), (0.25, 1.0, 0.15),
+             (0.25, 1.0, 0.2)]
     worst = {}
     for cf, sf, sb in geoms:
         p = geometry_params(base, cf, sf, sb)
@@ -178,26 +187,30 @@ def cmd_static(a):
               f"{r['push_buckle_N']:6.0f} N | torque tube {r['torque_tube_k']:6.0f} N m/rad")
 
 
-def fly(p: dict, scenarios=("takeoff", "head", "following")) -> dict:
+def fly(p: dict, scenarios=("takeoff", "head", "following", "head_top")) -> dict:
+    """Closed loop on the preset's controller with the servo drives. head_top = head sea at the top LQR speed."""
     from hydrofoil.vehicle import VehiclePhysics
     from hydrofoil.waves.airy import AiryWave, CalmWater
     from hydrofoil.linearize import trim
     warnings.simplefilter("ignore")
     p = dict(p, controller="lqr", actuator_model="servo")
-    vp = VehiclePhysics(p)
-    out = {"eff": vp.main_flap_eff, "trim_ff_deg": p["trim_ff_deg"]}
+    out = {"eff": None, "trim_ff_deg": p["trim_ff_deg"]}
     dt, vbus = p["dt"], p["v_bus"]
     zr = p["hull_offset"] - p["flying_height"]
     amp, lam = 0.3 * p["flying_height"], 3.0 * p["hull_length"]
+    v_top = max(p.get("lqr_speeds", (p["target_speed"],)))
     for name in scenarios:
-        vp.reset()
+        q = dict(p, target_speed=v_top) if name == "head_top" else dict(p)
+        vp = VehiclePhysics(q)
+        out["eff"] = vp.main_flap_eff
         if name == "takeoff":
             s, T, wave, t0 = vp.rest_state(), 40.0, CalmWater(), 0.0
         else:
-            s, _ = trim(vp, p["target_speed"]); T, t0 = 20.0, 3.0
-            wave = AiryWave(amp, lam, direction=np.pi if name == "head" else 0.0)
+            s, _ = trim(vp, q["target_speed"]); T, t0 = 20.0, 3.0
+            wave = AiryWave(amp, lam, direction=0.0 if name == "following" else np.pi)
         t = 0.0
-        rec = {d: {k: [] for k in ("M", "tau", "I", "V", "lim", "ang")} for d in ("left", "right", "elev")}
+        keys = ("M", "tau", "I", "V", "lim", "ang", "twist", "gap")
+        rec = {d: {k: [] for k in keys} for d in ("left", "right", "elev")}
         rail, z, fail = [], [], False
         while t < T:
             s, c, _th, draft, _ = vp.step(s, t, wave); t += dt
@@ -207,12 +220,14 @@ def fly(p: dict, scenarios=("takeoff", "head", "following")) -> dict:
                 continue
             dr = c["drive"]
             for d in rec:
-                rec[d]["M"].append(dr[d]["M"]); rec[d]["tau"].append(dr[d]["tau_out"]); rec[d]["I"].append(dr[d]["I"])
-                rec[d]["V"].append(dr[d]["V"]); rec[d]["lim"].append(dr[d]["limited"])
+                R = rec[d]
+                R["M"].append(dr[d]["M"]); R["tau"].append(dr[d]["tau_out"]); R["I"].append(dr[d]["I"])
+                R["V"].append(dr[d]["V"]); R["lim"].append(dr[d]["limited"])
+                R["twist"].append(dr[d].get("twist_deg", 0.0)); R["gap"].append(dr[d].get("gap_deg", 0.0))
             rec["left"]["ang"].append(c["delta_main"] - c["delta_roll"]); rec["elev"]["ang"].append(c["delta_elev"])
             rail.append(sum(dr[d]["P"] for d in rec) / vbus)
             z.append(s[2] - zr)
-        r = {"failed": fail}
+        r = {"failed": fail, "speed": q["target_speed"]}
         for d in ("left", "elev"):
             R = rec[d]
             if not R["M"]:
@@ -223,20 +238,37 @@ def fly(p: dict, scenarios=("takeoff", "head", "following")) -> dict:
                     "I_rms": float(np.sqrt(np.mean(I**2))), "V_pk": float(np.max(R["V"])),
                     "lim_frac": float(np.mean(R["lim"])),
                     "ang_min": float(np.min(R["ang"])), "ang_max": float(np.max(R["ang"])),
-                    "rate_pk": float(np.max(np.abs(np.diff(R["ang"]))) / dt)}
+                    "rate_pk": float(np.max(np.abs(np.diff(R["ang"]))) / dt),
+                    "twist_pk": float(np.max(np.abs(R["twist"]))), "gap_pk": float(np.max(np.abs(R["gap"]))),
+                    "gear_torque_pk": float(vp.drives[d]._peak_spring)}
         if rail:
             r["rail_pk"], r["rail_mean"] = float(np.max(rail)), float(np.mean(rail))
             zz = np.array(z[int(2.0 / dt):]) if name == "takeoff" else np.array(z)
             r["z_rms_mm"] = float(np.sqrt(np.mean(zz**2)) * 1e3) if len(zz) else float("nan")
+            if name == "takeoff":                          # height after it has settled (last 10 s)
+                r["z_end_rms_mm"] = float(np.sqrt(np.mean(np.array(z[-int(10.0 / dt):]) ** 2)) * 1e3)
         out[name] = r
     return out
 
 
 def cmd_fly(a):
     p = geometry_params(preset(a.preset), a.cf, a.sf, a.sb, a.N)
+    if a.rigid:                                   # the drive train as it was before backlash / twist were modelled
+        p["servo_params"] = dict(p.get("servo_params") or {}, backlash_deg=0.0, gear_stiffness=None, encoder="motor")
+        p["main_flap_GJ"] = p["elev_GJ"] = None
+    if a.encoder:
+        p["servo_params"] = dict(p.get("servo_params") or {}, encoder=a.encoder)
+    if a.backlash is not None:
+        p["servo_params"] = dict(p.get("servo_params") or {}, backlash_deg=a.backlash)
+    if a.slew is not None:
+        p["cmd_slew_deg_s"] = a.slew or None
     p = rederive_trim_ff(p)
     r = fly(p)
-    print(json.dumps({"preset": a.preset, "cf": a.cf, "sf": a.sf, "sb": a.sb, "N": a.N, **r}), flush=True)
+    print(json.dumps({"preset": a.preset, "cf": p["main_flap_frac"], "sf": p["main_flap_span_frac"],
+                      "sb": p.get("main_flap_setback", 0.0), "N": p["gear_ratio"], "rigid": a.rigid,
+                      "encoder": (p.get("servo_params") or {}).get("encoder", "motor"),
+                      "backlash": (p.get("servo_params") or {}).get("backlash_deg", 0.0),
+                      "slew": p.get("cmd_slew_deg_s"), "J_flap": p["main_surface_inertia"], **r}), flush=True)
 
 
 def main():
@@ -245,10 +277,14 @@ def main():
     s = sp.add_parser("static"); s.add_argument("--preset", default="manned", choices=("manned", "model"))
     f = sp.add_parser("fly")
     f.add_argument("--preset", default="manned", choices=("manned", "model"))
-    f.add_argument("--cf", type=float, default=0.4, help="flap chord / foil chord")
-    f.add_argument("--sf", type=float, default=0.5, help="flapped fraction of each half-span")
-    f.add_argument("--sb", type=float, default=0.0, help="hinge set-back, fraction of flap chord")
-    f.add_argument("--N", type=float, default=20.0, help="gear ratio")
+    f.add_argument("--cf", type=float, help="flap chord / foil chord (default: the preset's)")
+    f.add_argument("--sf", type=float, help="flapped fraction of each half-span (default: the preset's)")
+    f.add_argument("--sb", type=float, help="hinge set-back, fraction of flap chord (default: the preset's)")
+    f.add_argument("--N", type=float, help="gear ratio (default: the preset's)")
+    f.add_argument("--rigid", action="store_true", help="no backlash, rigid gear, no twist, motor encoder")
+    f.add_argument("--encoder", choices=("motor", "output"), help="override the encoder position")
+    f.add_argument("--backlash", type=float, help="override backlash [deg]")
+    f.add_argument("--slew", type=float, help="command slew limit [deg/s], 0 = off (default: the preset's)")
     a = ap.parse_args()
     {"static": cmd_static, "fly": cmd_fly}[a.cmd](a)
 

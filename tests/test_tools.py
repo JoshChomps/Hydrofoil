@@ -29,7 +29,11 @@ def test_smaller_foil_raises_wing_loading_and_takeoff_speed():
     small = derived(apply_design(dict(MANNED_PARAMS), {"main_chord": 0.22}))
     assert small["wing_loading"] > base["wing_loading"]
     assert small["v_min_foil"] >= base["v_min_foil"]
-    assert base["cruise_flap"] == pytest.approx(-2.78, abs=0.2)          # matches the trim checked in docs/19
+    # the editor's cruise trim must agree with the trim solver for whatever geometry the preset has (it was a
+    # hard-coded -2.78 deg, which went stale when the flap geometry changed: docs/20 section 8)
+    from hydrofoil.linearize import trim
+    _x, u = trim(VehiclePhysics(dict(MANNED_PARAMS, controller="pid", sensors="ideal")), MANNED_PARAMS["target_speed"])
+    assert base["cruise_flap"] == pytest.approx(u[0], abs=0.2)
 
 
 def test_observer_is_quiet_in_calm_cruise_and_flags_a_dead_elevator():

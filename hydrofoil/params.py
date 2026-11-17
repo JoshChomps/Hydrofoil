@@ -106,6 +106,16 @@ MANNED_PARAMS.update({
     "heave_damping": 600.0,
     "main_chord": 0.28, "main_span": 1.1, "main_lateral_offset": 0.60,
     "main_incidence_deg": 3.0,
+    # Balanced flap (docs/20, adopted 2026-11-16): 25 % chord over the FULL half-span with the hinge set back 15 % of
+    # the flap chord (thin theory overbalances near 33 %; 0.15 keeps more than 2x margin). Against the old 40 % chord,
+    # half-span plain flap: about 4x less hinge moment and 3x less drive current in waves, deflections inside +-13 deg.
+    "main_flap_frac": 0.25, "main_flap_span_frac": 1.0, "main_flap_setback": 0.15,
+    # Drive train compliance and flap twist (docs/20 section 7). PLACEHOLDERS until the gearbox and flap are chosen:
+    # flap GJ of a 70 x 13 mm carbon closed section (1.5 mm wall), elevator GJ of a 170 x 15 mm section (2 mm wall).
+    "main_flap_GJ": 250.0, "elev_GJ": 1000.0,
+    # Takeoff steps the flap to its 20 deg limit; unshaped that is 550-610 deg/s and saturates the drives' torque
+    # (48 A, 17-21 A rail). Cruise in waves needs at most about 40 deg/s.
+    "cmd_slew_deg_s": 150.0,
     "main_pos_x": 0.0, "main_pos_z": 1.75,
     "elev_chord": 0.17, "elev_span": 0.5, "elev_pos_x": -2.0, "elev_pos_z": 1.65,
     "main_strut_chord": 0.16, "elev_strut_chord": 0.12,
@@ -114,19 +124,39 @@ MANNED_PARAMS.update({
     "hull_drag_coeff": 120.0, "hull_rot_damping": 6000.0,
     "target_speed": 8.0, "max_thrust": 1000.0,
     "kp_speed": 360.0, "ki_speed": 60.0,
-    "main_surface_inertia": 9e-3, "elev_surface_inertia": 6e-3,
+    # flap structural inertia about its hinge scales as span x c_f^3; the 9e-3 was for the 40 % half-span flap. Balanced
+    # flap: x 0.488 for the geometry, x 0.617 for the axis 15 % into the flap -> 2.7e-3 (PLACEHOLDER until CAD)
+    "main_surface_inertia": 2.7e-3, "elev_surface_inertia": 6e-3,
     # hinge moments reach 12-13 N m (takeoff, waves): the 10 N m firmware cap left the flap short and the boat
     # rolled over with a 10 cm lateral CG; 28 N m is just under the mj5208 x 20:1 peak (1.7 x 20 x 0.85)
-    "servo_params": {"torque_cap": 28.0},
+    # Continuous drive current used by the sizing checks. The moteus runs above its 12 A no-heat-sink figure (20-32 A
+    # quoted with heat sinking; the drives sit in water). PLACEHOLDER: the firmware co-dependency limit (coupled
+    # current / torque / rail / temperature limits across the drives) will set the real value.
+    "drive_i_cont": 20.0,
+    # backlash / gear stiffness PLACEHOLDERS (economy 20:1 planetary: 10-20 arcmin, a few N m/arcmin). "dual": the
+    # moteus takes position from an absolute encoder at the surface root (the free play is inside the loop) and its
+    # damping from the motor's own velocity. Output-only feedback rang at takeoff with 72 N m through the gear (docs/20).
+    "servo_params": {"torque_cap": 28.0, "backlash_deg": 0.25, "gear_stiffness": 4000.0, "encoder": "dual"},
     # heave filter for 8 m/s: encounter frequencies are lower (following / quartering 15 m waves about 1-1.5 rad/s);
     # a slower, larger wave band and a slower bias trade 13 mm calm wander (6 mm at the defaults) for 67-117 mm
     # instead of 90-260 mm rms in following seas (docs/19, "Manned sizing")
     "kf_wave": {"w0": 2.0, "zeta": 1.0, "sigma": 0.15}, "kf_heave": {"bias_walk": 0.005},
-    "trim_ff_deg": 6.57, "trim_ff_speed": 6.0,
+    "trim_ff_deg": 4.11, "trim_ff_speed": 6.0,   # = trim flap at 6 m/s for the balanced flap (was 6.57 on the 40 % flap)
+    # The geometry the PID gains and LQR weights below were autotuned on; hydrofoil/consistency.py warns when the
+    # boat no longer matches (re-run hydrofoil.tuning.autotune and update this).
+    # 2026-11-16, balanced flap + compliant drives + slew limit: both sets RE-CHECKED on this geometry and kept. The
+    # LQR search (9.55 -> 9.16) only won on ideal sensors and was WORSE with noisy ones (25 -> 28 mm, flap rate 31 ->
+    # 47 deg/s); the PID search broke the supervised takeoff (see the PID gains). docs/20 section 8.
+    "tuned_for": {"main_flap_frac": 0.25, "main_flap_span_frac": 1.0, "main_flap_setback": 0.15, "gear_ratio": 20.0},
     # PID gains from the autotuner (2026-11-15): these fly takeoff (and everything in PID mode). The relay-test rule
     # sets (Ziegler-Nichols etc.) scored best with perfect sensors but held the drives at their torque limit on noisy
     # ones; with drive effort charged properly the search kept gains near the model's. Following sea 95 -> 64 mm rms,
     # rider shift peak 183 -> 113 mm, takeoff settle 15.1 -> 13.8 s.
+    # 2026-11-16, balanced flap: re-checked, KEPT. The autotuner's set (kp/ki/kd_heave 340 / 264 / 19) scored far
+    # better on its five scenarios but stalls the SUPERVISED takeoff: below liftoff speed the supervisor holds the
+    # height at the hull, the stiff heave loop drives the flap to -13.5 deg to do it, the hull digs in and the boat
+    # stays on the drag hump at 5.3 m/s (tests/test_supervisor.py). The tuner's takeoff runs without the supervisor
+    # (docs/20 section 8). Scaling these gains by the effectiveness ratio (0.21/0.342) scored worse (25.7 vs 22.1).
     "kp_heave": 44.94, "ki_heave": 6.488, "kd_heave": 7.906,
     "kp_pitch": 1.818, "ki_pitch": 1.038, "kd_pitch": 0.0987,
     "kp_roll": 2.0, "kd_roll": 0.191,
