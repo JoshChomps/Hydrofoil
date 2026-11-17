@@ -219,6 +219,16 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
   - choose gearbox, encoder and flap structure, then replace the placeholders;
   - model plain-flap separation and gear tooth impact.
 
+### 2026-11-16 (later) — Supervised takeoff in the autotuner; manned PID re-tuned
+- Changed:
+  - `tuning/scoring.py`: new `supervised` scenario (a full supervised takeoff; an aborted takeoff is a failure) and `scenarios_for`.
+  - `tuning/autotune.py`: uses the preset's scenario list.
+  - `MANNED_PARAMS`: `supervisor_tuning` and the new PID gains.
+  - `tests/test_tools.py`: the stalling gain set must fail the scenario.
+- Why: the earlier PID search found gains that stall the supervised takeoff on the drag hump, because its takeoff ran without the supervisor.
+- Result: PID 44.9 / 6.5 / 7.9 → 62.4 / 6.0 / 6.8 (heave); every scenario improves (doc 20 section 8).
+- Verified: 100 tests pass, including the supervisor missions.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

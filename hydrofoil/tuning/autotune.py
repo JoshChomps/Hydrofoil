@@ -26,7 +26,7 @@ from pathlib import Path
 
 import numpy as np
 
-from hydrofoil.tuning.scoring import SCENARIOS, run_scenario, cost
+from hydrofoil.tuning.scoring import scenarios_for, run_scenario, cost
 
 PID_KEYS = ["kp_heave", "ki_heave", "kd_heave", "kp_pitch", "ki_pitch", "kd_pitch", "kp_roll", "kd_roll"]
 LQR_KEYS = ["z", "theta", "phi", "w", "q", "iz", "du"]          # multipliers on control.lqr.DEFAULT_WEIGHTS
@@ -77,6 +77,7 @@ def tune(preset: str, target: str, overrides: dict | None = None, generations: i
     Every candidate is scored on the same scenarios; progress goes to `progress` after each step."""
     from hydrofoil.tuning.classical import pid_candidates, bryson_update
     base = base_params(preset, overrides)
+    scen = scenarios_for(base)                        # + the supervised takeoff where the supervisor applies
     rng = np.random.default_rng(seed)
     workers = workers or max(1, (mp.cpu_count() or 2) - 1)
     stages, hist = [], []
@@ -96,11 +97,11 @@ def tune(preset: str, target: str, overrides: dict | None = None, generations: i
     with mp.get_context("spawn").Pool(workers) as pool:
         def evaluate(xs):
             params = [candidate_params(base, target, x) for x in xs]
-            jobs = [(pp, n) for pp in params for n in SCENARIOS]
+            jobs = [(pp, n) for pp in params for n in scen]
             res = pool.starmap(run_scenario, jobs)
             out = []
             for i, pp in enumerate(params):
-                mets = dict(zip(SCENARIOS, res[i * len(SCENARIOS):(i + 1) * len(SCENARIOS)]))
+                mets = dict(zip(scen, res[i * len(scen):(i + 1) * len(scen)]))
                 out.append((cost(mets, pp["flying_height"]), mets, pp))
             return out
 
@@ -179,7 +180,7 @@ def main():
     for st in res["stages"]:
         print(f"  {st['name']:34s} cost {st['cost']:7.2f}")
     print(json.dumps(b1["values"], indent=1))
-    for n in SCENARIOS:
+    for n in b0["metrics"]:
         print(n, "before", {k: round(v, 3) if isinstance(v, float) else v for k, v in b0["metrics"][n].items()})
         print(n, "after ", {k: round(v, 3) if isinstance(v, float) else v for k, v in b1["metrics"][n].items()})
     if a.out:

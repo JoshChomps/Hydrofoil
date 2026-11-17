@@ -65,3 +65,18 @@ def test_tuning_rules_and_bryson_step():
     over = {"head": {"failed": False, "z_rms": 0.05, "pitch_peak": 0.5, "roll_peak": 0.2, "flap_rate_rms": 20.0, "limited_frac": 0.0}}
     new = bryson_update(mult, over, 0.5)                                   # height overshot its 15 mm target: tighten
     assert new["z"] < 1.0 and new["theta"] > 1.0 and new["du"] > 1.0
+
+
+def test_supervised_takeoff_scenario_rejects_gains_that_stall_on_the_hump():
+    """The 2026-11-16 PID search (without this scenario) found gains that abort the supervised takeoff: the
+    supervisor holds the height at the hull below liftoff speed and the stiff heave loop digs it in (docs/20 s8)."""
+    from hydrofoil.params import DEFAULT_PARAMS
+    from hydrofoil.tuning.scoring import scenarios_for
+    assert "supervised" in scenarios_for(MANNED_PARAMS) and "supervised" not in scenarios_for(DEFAULT_PARAMS)
+    stalls = {"kp_heave": 339.86, "ki_heave": 264.38, "kd_heave": 19.29, "kp_pitch": 3.145, "ki_pitch": 1.130,
+              "kd_pitch": 0.1672, "kp_roll": 2.921, "kd_roll": 0.3102}
+    m = run_scenario(dict(MANNED_PARAMS, **stalls), "supervised")
+    assert m["failed"] and "aborted" in m["why"]
+    assert cost({"supervised": m}, MANNED_PARAMS["flying_height"]) >= 100.0
+    ok = run_scenario(dict(MANNED_PARAMS), "supervised")
+    assert not ok["failed"] and ok["t_foiling"] < 20.0

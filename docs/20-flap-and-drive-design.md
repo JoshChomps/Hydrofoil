@@ -241,8 +241,23 @@ Result, old configuration (40 % flap, rigid, no slew limit) against adopted, LQR
   - the stiff heave loop held it with −13.5° of flap, digging the hull in;
   - the boat sat on the drag hump at 5.3 m/s at full thrust until the takeoff timeout.
 
-  The tuner's takeoff scenario does not run the supervisor, so it could not see this. Scaling the old gains by
-  the effectiveness ratio (0.21/0.342) scored worse (25.7). Kept the old gains, which pass the supervisor tests.
+  The tuner's takeoff scenario did not run the supervisor, so it could not see this. Scaling the old gains by
+  the effectiveness ratio (0.21/0.342) scored worse (25.7).
+- **PID, second pass (adopted):** the tuner now includes a `supervised` scenario
+  (`tuning/scoring.py::scenarios_for`; manned preset only, `supervisor_tuning`). An aborted takeoff counts as a
+  failure, even if the retry succeeds. With it, all four classical rule sets fail. The search found
+  kp/ki/kd_heave 62.4 / 6.0 / 6.8, pitch 3.02 / 1.45 / 0.092, roll 1.91 / 0.21. Cost went from 23.4 to 18.2, and
+  every scenario improved:
+
+  | scenario | before | after |
+  |---|---|---|
+  | takeoff settle | 8.6 s | 7.4 s |
+  | following sea, height rms | 61 mm | 48 mm |
+  | noisy head sea, height rms | 48 mm | 40 mm |
+  | rider shift, height rms | 36 mm | 17 mm |
+  | supervised takeoff, request to FOILING | 12.6 s | 12.3 s |
+
+  Flap rate on noisy sensors rose 8 %. The four supervisor missions and all 100 tests pass.
 
 ## 9. Co-dependency checker (`python -m hydrofoil.consistency`; `tests/test_drive_compliance.py` requires no FAIL)
 
@@ -261,7 +276,7 @@ Result, old configuration (40 % flap, rigid, no slew limit) against adopted, LQR
 | flap command limit ≤ stop; slew ≤ drive no-load rate | commands against hardware |
 
 Not covered by the checker, because it needs a full simulation: interactions with the supervisor (the PID case
-above). The supervisor tests are the guard there. The autotuner should include a supervised takeoff (follow-up).
+above). The supervisor tests and the tuner's `supervised` scenario are the guards there.
 
 ## 10. Controller current and the firmware co-dependency limit
 

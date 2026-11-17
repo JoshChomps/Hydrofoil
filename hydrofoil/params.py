@@ -144,22 +144,25 @@ MANNED_PARAMS.update({
     "trim_ff_deg": 4.11, "trim_ff_speed": 6.0,   # = trim flap at 6 m/s for the balanced flap (was 6.57 on the 40 % flap)
     # The geometry the PID gains and LQR weights below were autotuned on; hydrofoil/consistency.py warns when the
     # boat no longer matches (re-run hydrofoil.tuning.autotune and update this).
-    # 2026-11-16, balanced flap + compliant drives + slew limit: both sets RE-CHECKED on this geometry and kept. The
+    # 2026-11-16, balanced flap + compliant drives + slew limit: both sets re-tuned / re-checked on this geometry. The
     # LQR search (9.55 -> 9.16) only won on ideal sensors and was WORSE with noisy ones (25 -> 28 mm, flap rate 31 ->
-    # 47 deg/s); the PID search broke the supervised takeoff (see the PID gains). docs/20 section 8.
+    # 47 deg/s), so the LQR weights were kept; the PID gains were re-tuned with the supervised takeoff. docs/20 s8.
+    # the autotuner also flies the supervised takeoff (tuning/scoring.py): the 2026-11-16 PID search, which lacked
+    # it, found gains that stall the supervised takeoff on the drag hump
+    "supervisor_tuning": True,
     "tuned_for": {"main_flap_frac": 0.25, "main_flap_span_frac": 1.0, "main_flap_setback": 0.15, "gear_ratio": 20.0},
     # PID gains from the autotuner (2026-11-15): these fly takeoff (and everything in PID mode). The relay-test rule
     # sets (Ziegler-Nichols etc.) scored best with perfect sensors but held the drives at their torque limit on noisy
     # ones; with drive effort charged properly the search kept gains near the model's. Following sea 95 -> 64 mm rms,
     # rider shift peak 183 -> 113 mm, takeoff settle 15.1 -> 13.8 s.
-    # 2026-11-16, balanced flap: re-checked, KEPT. The autotuner's set (kp/ki/kd_heave 340 / 264 / 19) scored far
-    # better on its five scenarios but stalls the SUPERVISED takeoff: below liftoff speed the supervisor holds the
-    # height at the hull, the stiff heave loop drives the flap to -13.5 deg to do it, the hull digs in and the boat
-    # stays on the drag hump at 5.3 m/s (tests/test_supervisor.py). The tuner's takeoff runs without the supervisor
-    # (docs/20 section 8). Scaling these gains by the effectiveness ratio (0.21/0.342) scored worse (25.7 vs 22.1).
-    "kp_heave": 44.94, "ki_heave": 6.488, "kd_heave": 7.906,
-    "kp_pitch": 1.818, "ki_pitch": 1.038, "kd_pitch": 0.0987,
-    "kp_roll": 2.0, "kd_roll": 0.191,
+    # 2026-11-16, balanced flap: autotuned WITH the supervised takeoff scenario (tuning/scoring.py), cost 23.4 -> 18.2;
+    # every scenario improves (takeoff settle 8.6 -> 7.4 s, following 61 -> 48 mm, noisy head 48 -> 40 mm rms, rider
+    # shift 36 -> 17 mm) at +8 % flap rate on noisy sensors. Was kp/ki/kd_heave 44.94 / 6.488 / 7.906, pitch 1.818 /
+    # 1.038 / 0.0987, roll 2.0 / 0.191. The search WITHOUT that scenario had found 340 / 264 / 19, which aborts the
+    # supervised takeoff on the drag hump (docs/20 section 8). The classical rule sets all abort it too.
+    "kp_heave": 62.38, "ki_heave": 6.015, "kd_heave": 6.793,
+    "kp_pitch": 3.019, "ki_pitch": 1.447, "kd_pitch": 0.0920,
+    "kp_roll": 1.915, "kd_roll": 0.2135,
     # LQR weights from the autotuner (hydrofoil/tuning, docs/19 "Autotuner"), 2026-11-15: Bryson's rule, 4 rounds of
     # re-weighting, then 6 rounds of search over 5 scenarios incl. noisy sensors. Acceptable excursions, overriding
     # control.lqr.DEFAULT_WEIGHTS: tighter on height, heave rate and the height integral, looser on roll and pitch

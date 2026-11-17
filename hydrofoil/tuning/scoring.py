@@ -11,6 +11,12 @@ the hull length), so the same suite works for the 25 kg model and the manned pre
     shift      flying start, CG jumps forward and to the side (a rider moving): height and roll peaks
     noisy      head sea with the noisy sensors and estimators (what the boat would really measure), so a tune
                cannot win by amplifying sensor noise into the flaps
+    supervised the takeoff as the boat really flies it: through the flight-mode supervisor (control/supervisor.py),
+               displacement at 3 m/s, foil request at 3 s, until FOILING and 10 s beyond. Fails if the first
+               takeoff does not reach FOILING (an abort and retry is a failure: e.g. the takeoff timeout when a stiff
+               heave loop holding the hull at its reference digs it in on the drag hump) or the hull touches down
+               after liftoff. Only for presets with `supervisor_tuning` (the
+               supervisor's speed envelope is sized for the manned boat); see `scenarios_for`.
 
 Hard failures (hull touches down after liftoff, |roll| > 30 deg, non-finite state) set `failed`.
 """
@@ -22,6 +28,67 @@ import warnings
 import numpy as np
 
 SCENARIOS = ("takeoff", "head", "following", "shift", "noisy")
+SUPERVISED_PLAN = ((0.0, {"speed": 3.0}), (3.0, {"foil": True, "speed": 7.0}))
+SUPERVISED_T = 45.0                                  # s: 25 s takeoff timeout after the request, plus margin
+
+
+def scenarios_for(params: dict) -> tuple:
+    """The scenario list for a preset: SCENARIOS, plus the supervised takeoff where the supervisor applies."""
+    return SCENARIOS + (("supervised",) if params.get("supervisor_tuning") else ())
+
+
+def _run_supervised(params: dict) -> dict:
+    from hydrofoil.vehicle import VehiclePhysics
+    from hydrofoil.waves.airy import CalmWater
+    p = dict(params, supervisor=True)
+    dt = p["dt"]
+    try:
+        vp = VehiclePhysics(p)
+    except Exception as e:
+        return {"failed": True, "why": f"build: {e}"}
+    sup = vp.supervisor
+    s, t = vp.rest_state(), 0.0
+    t_req, t_foil, lifted, touch = SUPERVISED_PLAN[1][0], None, False, 0
+    rec = []
+    for i in range(int(SUPERVISED_T / dt)):
+        for tt, cmd in SUPERVISED_PLAN:
+            if i == int(round(tt / dt)):
+                sup.pilot.update(cmd)
+        s, c, th, draft, _ = vp.step(s, t, CalmWater())
+        t += dt
+        if not np.all(np.isfinite(s)):
+            return {"failed": True, "why": "non-finite state"}
+        if abs(np.degrees(s[3])) > 30.0:
+            return {"failed": True, "why": "capsize (|roll| > 30 deg)"}
+        if draft <= 1e-6:
+            lifted = True
+        elif lifted:
+            touch += 1
+        if t_foil is None and any(frm == "TAKEOFF" and to != "FOILING" for _t, frm, to, _w in sup.log):
+            why = next(w for _t, frm, to, w in sup.log if frm == "TAKEOFF" and to != "FOILING")
+            return {"failed": True, "why": f"supervised takeoff aborted: {why}"}       # a retry is not a pass
+        if sup.mode == "FOILING" and t_foil is None:
+            t_foil = t
+        if t_foil is not None:
+            zref = p["hull_offset"] - p["flying_height"]          # the supervisor moves the reference
+            lim = any(v.get("limited") for v in c.get("drive", {}).values())
+            rec.append((t, s[2] - zref, np.degrees(s[3]), np.degrees(s[4]), c["delta_main"], lim))
+        if t_foil is not None and t > t_foil + 10.0:
+            break
+    if t_foil is None:
+        why = next((w for _t, _f, to, w in sup.log if to == "LANDING"), "FOILING not reached")
+        return {"failed": True, "why": f"supervised takeoff: {why}"}
+    r = np.array(rec, dtype=float)
+    tt, dz, roll, pitch, fm = r[:, 0], r[:, 1], r[:, 2], r[:, 3], r[:, 4]
+    m = tt > t_foil + 3.0
+    out = {"failed": touch > 0, "t_foiling": float(t_foil - t_req),
+           "z_rms": float(dz[m].std()), "z_peak": float(np.abs(dz[m]).max()),
+           "roll_peak": float(np.abs(roll[m]).max()), "pitch_peak": float(np.abs(pitch[m] - pitch[m].mean()).max()),
+           "flap_rate_rms": float(np.gradient(fm[m], dt).std()), "sat_frac": float(np.mean(np.abs(fm[m]) > 19.0)),
+           "limited_frac": float(r[m, 5].mean())}
+    if touch:
+        out["why"] = "touched down after liftoff (supervised)"
+    return out
 
 
 def _flying_state(vp):
@@ -37,6 +104,8 @@ def _flying_state(vp):
 def run_scenario(params: dict, name: str) -> dict:
     """Fly one scenario and return its metrics."""
     warnings.simplefilter("ignore")
+    if name == "supervised":
+        return _run_supervised(params)
     from hydrofoil.vehicle import VehiclePhysics
     from hydrofoil.waves.airy import AiryWave, CalmWater
     p = dict(params)
@@ -121,11 +190,14 @@ def cost(metrics: dict, scale: float) -> float:
             c += 0.08 * m["t_settle"] + 1.0 * m["overshoot"] / (0.1 * scale) + 4.0 * m["steady_err"] / (0.05 * scale)
         if name == "shift":
             c += 0.5 * m["roll_peak"]
+        if name == "supervised":
+            c += 0.08 * m["t_foiling"]
     return float(c)
 
 
-def score(params: dict, scenarios=SCENARIOS, pool=None) -> tuple[float, dict]:
+def score(params: dict, scenarios=None, pool=None) -> tuple[float, dict]:
     """(cost, {scenario: metrics}). Scenarios run in parallel when a multiprocessing pool is given."""
+    scenarios = scenarios_for(params) if scenarios is None else scenarios
     jobs = [(params, n) for n in scenarios]
     res = pool.starmap(run_scenario, jobs) if pool is not None else [run_scenario(*j) for j in jobs]
     metrics = dict(zip(scenarios, res))
