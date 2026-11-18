@@ -107,3 +107,20 @@ def test_sim_server_page_and_design_info():
     assert "Hydrofoil Sim" in body and 'name="supervisor"' in body
     info = sim_server.design_info("manned")
     assert info["preset"] == "manned" and "main_chord" in info["base"]
+
+
+def test_viewer_ensure_dashboard_launches_sim_server():
+    import socket
+    import urllib.request
+    from hydrofoil.viewer import _ensure_dashboard
+    with socket.socket() as s:
+        s.bind(("127.0.0.1", 0))
+        port = s.getsockname()[1]
+    proc = _ensure_dashboard(api_port=8766, port=port, open_browser=False)
+    assert proc is not None
+    try:
+        html = urllib.request.urlopen(f"http://127.0.0.1:{port}/", timeout=3.0).read().decode()
+        assert "Hydrofoil Sim" in html
+    finally:
+        proc.terminate()
+        proc.wait(timeout=5)

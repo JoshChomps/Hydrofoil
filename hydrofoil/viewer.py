@@ -276,6 +276,7 @@ class Pilot:
         self.reset_flag = False
         self.toggle_ctrl = False
         self.toggle_foil = False
+        self.open_dashboard = False
         self.kmh = False           # U key: show speeds in km/h instead of m/s (display only)
         self.focus = False         # set by the dashboard's "Show 3D view"
         self.bank_spring = False   # True after a key bank input; a slider-set bank holds
@@ -306,9 +307,8 @@ class Pilot:
             self.toggle_foil = True
         elif code in (ord("U"), ord("u")):
             self.kmh = not self.kmh
-        elif code in (ord("D"), ord("d")):        # open the dashboard (served by the local launcher)
-            import webbrowser
-            webbrowser.open(DASHBOARD_URL)
+        elif code in (ord("D"), ord("d")):        # open the dashboard (auto-starting hydrofoil.sim_server if needed)
+            self.open_dashboard = True
 
     def spring_back(self, dt: float):
         if not self.bank_spring:
@@ -680,6 +680,41 @@ def _ctrl_label(vp: VehiclePhysics) -> str:
     return "LQR" if vp.lqr.engaged else "LQR (PID takeoff)"
 
 
+def _ensure_dashboard(api_port: int = 8766, port: int = 8765, open_browser: bool = True):
+    """Start `python -m hydrofoil.sim_server` on `127.0.0.1:port` if not already listening, and open it."""
+    import socket
+    import subprocess
+    import sys
+    import webbrowser
+    url = f"http://127.0.0.1:{port}"
+    proc = None
+    try:
+        with socket.create_connection(("127.0.0.1", port), 0.15):
+            pass
+    except OSError:
+        cmd = [sys.executable, "-m", "hydrofoil.sim_server", "--no-browser",
+               "--port", str(port), "--api-port", str(api_port)]
+        proc = subprocess.Popen(
+            cmd,
+            cwd=str(Path(__file__).resolve().parent.parent),
+            stdout=subprocess.DEVNULL,
+            stderr=subprocess.DEVNULL,
+            creationflags=getattr(subprocess, "CREATE_NO_WINDOW", 0),
+        )
+        deadline = time.perf_counter() + 4.0
+        while time.perf_counter() < deadline:
+            if proc.poll() is not None:
+                break
+            try:
+                with socket.create_connection(("127.0.0.1", port), 0.1):
+                    break
+            except OSError:
+                time.sleep(0.05)
+    if open_browser:
+        webbrowser.open(url)
+    return proc
+
+
 def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.0,
         controller: str | None = None, sensors: str | None = None, preset: str = "model", api_port: int = 8766, maximize: bool = True,
         overrides: dict | None = None, supervisor: bool = False):
@@ -732,7 +767,10 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
         v.cam.trackbodyid = pose.vehicle_id
         v.cam.distance, v.cam.azimuth, v.cam.elevation = 1.6 * size, 145.0, -12.0
         v.opt.flags[mujoco.mjtVisFlag.mjVIS_LIGHT] = 0
+        import threading
         api = ControlAPI(api_port, ctrl, pilot, v.lock)
+        dash_procs: list = []
+        dash_lock = threading.Lock()
         pose.water(state, wave, t)
         v.update_hfield(pose.hfield_id)
         api_line = "http://127.0.0.1:8765" if api.srv else "off (API port busy)"
@@ -834,6 +872,14 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             if pilot.focus:
                 pilot.focus = False
                 _focus_window("MuJoCo : hydrofoil")
+            if pilot.open_dashboard:
+                pilot.open_dashboard = False
+                def _open_dash(ap=api.srv.server_address[1] if api.srv else api_port):
+                    with dash_lock:
+                        pr = _ensure_dashboard(api_port=ap, open_browser=True)
+                        if pr is not None:
+                            dash_procs.append(pr)
+                threading.Thread(target=_open_dash, daemon=True).start()
             vp_ = v.viewport
             if vp_ is not None and vp_.width > 0:
                 k, su = (3.6, "km/h") if pilot.kmh else (1.0, "m/s")
@@ -884,6 +930,9 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                                                   "elev_pos_x", "flying_height", "target_speed")} | {"cg_offset": list(params.get("cg_offset", (0, 0)))},
             }
             time.sleep(max(0.0, 1 / 60 - (time.perf_counter() - now)))
+        for pr in dash_procs:
+            if pr.poll() is None:
+                pr.terminate()
         api.close()
 
 

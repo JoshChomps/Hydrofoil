@@ -301,8 +301,10 @@ class Handler(BaseHTTPRequestHandler):
 if __name__ == "__main__":
     ap = argparse.ArgumentParser()
     ap.add_argument("--port", type=int, default=8765)
+    ap.add_argument("--api-port", type=int, default=8766)
     ap.add_argument("--no-browser", action="store_true", help="do not open the dashboard in the default browser")
     a = ap.parse_args()
+    API_PORT = a.api_port
     srv = ThreadingHTTPServer(("127.0.0.1", a.port), Handler)
     print(f"Hydrofoil sim launcher on http://127.0.0.1:{a.port}", flush=True)
     try:
