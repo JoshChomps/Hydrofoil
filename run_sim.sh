@@ -3,27 +3,36 @@ set -euo pipefail
 
 cd "$(dirname "$0")"
 VENV_PY=".venv/bin/python"
+PY=""
 
-if [ ! -x "$VENV_PY" ]; then
-    if command -v python3 >/dev/null 2>&1; then
-        SYS_PY=python3
-    elif command -v python >/dev/null 2>&1; then
-        SYS_PY=python
-    else
-        echo "Python 3 not found. Install Python 3.10+ and re-run." >&2
-        exit 1
+if [ -x "$VENV_PY" ] && "$VENV_PY" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
+    PY="$VENV_PY"
+else
+    for cand in python3 python; do
+        if command -v "$cand" >/dev/null 2>&1 && "$cand" -c "import sys; sys.exit(0 if sys.version_info >= (3, 10) else 1)" >/dev/null 2>&1; then
+            PY="$cand"
+            break
+        fi
+    done
+fi
+
+if [ -z "$PY" ]; then
+    echo "Python 3.10+ not found. Install Python 3.10+ and re-run." >&2
+    exit 1
+fi
+
+if ! "$PY" -c "import mujoco, numpy, scipy, matplotlib, plotly" >/dev/null 2>&1; then
+    if [ "$PY" != "$VENV_PY" ]; then
+        echo "Creating virtual environment in .venv..."
+        "$PY" -m venv .venv
+        PY="$VENV_PY"
     fi
-    echo "Creating virtual environment in .venv..."
-    "$SYS_PY" -m venv .venv
     echo "Installing requirements..."
-    "$VENV_PY" -m pip install -r requirements.txt
-elif ! "$VENV_PY" -c "import mujoco, numpy, scipy, matplotlib, plotly" >/dev/null 2>&1; then
-    echo "Installing missing requirements..."
-    "$VENV_PY" -m pip install -r requirements.txt
+    "$PY" -m pip install -r requirements.txt
 fi
 
 echo ""
-echo "Hydrofoil Sim Launcher"
+echo "Hydrofoil Sim Launcher (Python: $PY)"
 echo "  [1] Web Dashboard + Boat Editor + 3D Viewer Launcher (default)"
 echo "  [2] Manned 275 kg 3D Viewer - Supervisor + Waves + Noisy Sensors"
 echo "  [3] Manned 275 kg 3D Viewer - Supervisor + Calm"
@@ -35,11 +44,11 @@ read -r -p "Select option [1-6] (Enter for 1): " CHOICE
 CHOICE="${CHOICE:-1}"
 
 case "$CHOICE" in
-    1) exec "$VENV_PY" -m hydrofoil.sim_server ;;
-    2) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves ;;
-    3) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor ;;
-    4) exec "$VENV_PY" -m hydrofoil.viewer ;;
-    5) exec "$VENV_PY" -m hydrofoil.consistency ;;
-    6) exec "$VENV_PY" -m pytest -v ;;
+    1) exec "$PY" -m hydrofoil.sim_server ;;
+    2) exec "$PY" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves ;;
+    3) exec "$PY" -m hydrofoil.viewer --preset manned --supervisor ;;
+    4) exec "$PY" -m hydrofoil.viewer ;;
+    5) exec "$PY" -m hydrofoil.consistency ;;
+    6) exec "$PY" -m pytest -v ;;
     *) echo "Invalid choice: $CHOICE" >&2; exit 1 ;;
 esac
