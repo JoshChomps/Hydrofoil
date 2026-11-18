@@ -25,6 +25,8 @@ hydrofoil, with a native MuJoCo app (3D view, sliders, live plots, actuator load
 
 ## Running it
 
+Double-click `run_sim.bat` on Windows (or run `./run_sim.sh` on macOS/Linux) for guided `.venv` setup and launch, or run from a terminal:
+
 ```bash
 pip install -r requirements.txt
 

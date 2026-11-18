@@ -13,3 +13,4 @@ data/*
 local/
 .claude/launch.json
 phase_trials.jsonl
+.venv/
