@@ -16,7 +16,7 @@ The window opens maximised (Windows) with MuJoCo's own menus hidden: 3-D view, a
 The water is a heightfield following the boat, refilled from the wave field every frame.
 
 Live controls: a local HTTP API on 127.0.0.1:<api-port> (GET /state, GET /sliders, POST /set) that a
-dashboard page can use (the gitignored local/ launcher serves one on :8765). Slider values are kept in
+dashboard page can use (`python -m hydrofoil.sim_server` serves one on :8765). Slider values are kept in
 zero-gain MuJoCo actuators (ctrl), shared by the keys and the API, and read every frame:
     height_ref, bank_ref, speed_ref                 pilot references (bank holds when set here)
     wave_amp, wave_len, wave_dir                    Airy wave (amp 0 = calm); applied live
@@ -369,7 +369,7 @@ class Plots:
         ("Surface angle [deg]", ("left", "right", "elev")),
         ("Drive current [A]", ("I_left", "I_right", "I_elev")),
     ]
-    COLORS = [(0.95, 0.76, 0.19), (0.36, 0.81, 0.76), (0.89, 0.93, 0.94)]   # signal yellow, aqua, spray (local/page.html)
+    COLORS = [(0.95, 0.76, 0.19), (0.36, 0.81, 0.76), (0.89, 0.93, 0.94)]   # signal yellow, aqua, spray (launcher/page.html)
 
     def __init__(self, window_s: float = 15.0, rate_hz: float = 30.0, ranges=None):
         self.n = int(window_s * rate_hz)

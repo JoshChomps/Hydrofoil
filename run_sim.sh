@@ -24,20 +24,22 @@ fi
 
 echo ""
 echo "Hydrofoil Sim Launcher"
-echo "  [1] Manned 275 kg - Supervisor + Waves + Noisy Sensors (default)"
-echo "  [2] Manned 275 kg - Supervisor + Calm"
-echo "  [3] Model 25 kg   - Raw LQR/PID + Calm"
-echo "  [4] Model Consistency Check"
-echo "  [5] Run Pytest Suite"
+echo "  [1] Web Dashboard + Boat Editor + 3D Viewer Launcher (default)"
+echo "  [2] Manned 275 kg 3D Viewer - Supervisor + Waves + Noisy Sensors"
+echo "  [3] Manned 275 kg 3D Viewer - Supervisor + Calm"
+echo "  [4] Model 25 kg 3D Viewer   - Raw LQR/PID + Calm"
+echo "  [5] Model Consistency Check"
+echo "  [6] Run Pytest Suite"
 echo ""
-read -r -p "Select option [1-5] (Enter for 1): " CHOICE
+read -r -p "Select option [1-6] (Enter for 1): " CHOICE
 CHOICE="${CHOICE:-1}"
 
 case "$CHOICE" in
-    1) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves ;;
-    2) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor ;;
-    3) exec "$VENV_PY" -m hydrofoil.viewer ;;
-    4) exec "$VENV_PY" -m hydrofoil.consistency ;;
-    5) exec "$VENV_PY" -m pytest -v ;;
+    1) exec "$VENV_PY" -m hydrofoil.sim_server ;;
+    2) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves ;;
+    3) exec "$VENV_PY" -m hydrofoil.viewer --preset manned --supervisor ;;
+    4) exec "$VENV_PY" -m hydrofoil.viewer ;;
+    5) exec "$VENV_PY" -m hydrofoil.consistency ;;
+    6) exec "$VENV_PY" -m pytest -v ;;
     *) echo "Invalid choice: $CHOICE" >&2; exit 1 ;;
 esac

@@ -253,6 +253,8 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
   - `viewer.py`: added `--supervisor`, `F` key / `toggle_foil` API, live supervisor status/alerts on HUD and HTTP telemetry.
 - Sweep & docs: ran all 108 runs of `tools/phase_trials.py` (`92/108` pass; `pid, auto, lqr, lqr` optimal across calm/head/following seas) and documented in `docs/21-per-phase-controller-trials.md` (indexed in `docs/README.md`).
 
+- Launchers & packaging: added `run_sim.bat` / `run_sim.sh`, promoted `local/sim_server.py` -> `hydrofoil/sim_server.py` (and `page.html` + web fonts to `hydrofoil/assets/launcher/`) with supervisor toggle while keeping `local/` gitignored for runtime logs/overrides.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

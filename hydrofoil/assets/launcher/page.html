@@ -1,0 +1,616 @@
+<!doctype html>
+<html lang="en"><head><meta charset="utf-8"><meta name="viewport" content="width=device-width, initial-scale=1">
+<title>Hydrofoil Sim</title>
+<link rel="stylesheet" href="/fonts/fonts.css">
+<style>
+/* Night (default): petrol sea water, spray ink, signal-yellow live values. Day: sea glass. */
+:root {
+  --sea:#0F3A48; --deep:#0A2C37; --trench:#072029; --spray:#E3EEF0; --mist:#8EB2BB; --rule:#1E5161;
+  --signal:#F2C230; --aqua:#5CCFC2; --flag:#D7263D; --foam:#FFFFFF; --hull:#F4F7F8; --strut:#9FB8BF;
+  --water:#1B5E73; --water-top:#2E7F94;
+}
+@media (prefers-color-scheme: light) { :root:not([data-theme="dark"]) {
+  --sea:#D9E9EA; --deep:#C8DEE0; --trench:#B9D3D6; --spray:#0E3340; --mist:#4D7480; --rule:#A7C6CA;
+  --signal:#B58A00; --aqua:#127C70; --flag:#B51F33; --foam:#0E3340; --hull:#FFFFFF; --strut:#5E7D86;
+  --water:#7FB4C0; --water-top:#5B9BAA; } }
+:root[data-theme="light"] {
+  --sea:#D9E9EA; --deep:#C8DEE0; --trench:#B9D3D6; --spray:#0E3340; --mist:#4D7480; --rule:#A7C6CA;
+  --signal:#B58A00; --aqua:#127C70; --flag:#B51F33; --foam:#0E3340; --hull:#FFFFFF; --strut:#5E7D86;
+  --water:#7FB4C0; --water-top:#5B9BAA; }
+* { box-sizing: border-box; }
+html { background:var(--sea); }
+body { margin:0; color:var(--spray); background:var(--sea);
+  font:400 15px/1.5 "Saira Semi Condensed", "Arial Narrow", system-ui, sans-serif; font-variant-numeric: tabular-nums; }
+.num { font-family:"Saira Extra Condensed", "Arial Narrow", sans-serif; font-weight:600; letter-spacing:.01em; }
+a { color:var(--signal); }
+:focus-visible { outline:2px solid var(--signal); outline-offset:2px; }
+
+/* header */
+.top { display:flex; align-items:baseline; gap:18px; flex-wrap:wrap; padding:14px 24px 10px; }
+.top h1 { margin:0; font:600 22px/1 "Saira Semi Condensed", sans-serif; letter-spacing:.01em; }
+.top .state { color:var(--mist); }
+.top .state b { color:var(--signal); font-weight:600; }
+.top .clock { margin-left:auto; color:var(--mist); }
+
+/* session strip */
+.session { background:var(--deep); padding:10px 24px; display:flex; gap:14px; align-items:end; flex-wrap:wrap; }
+.session label { display:grid; gap:2px; font-size:13px; color:var(--mist); }
+.session select, .session input { font:inherit; font-size:14px; color:var(--spray); background:var(--trench); border:1px solid var(--rule);
+  border-radius:3px; padding:5px 8px; min-width:92px; }
+.session input { width:84px; min-width:0; }
+.session .go { display:flex; gap:8px; margin-left:auto; }
+button { font:600 14px/1 "Saira Semi Condensed", sans-serif; padding:9px 16px; border-radius:3px; cursor:pointer;
+  background:var(--signal); color:#0A2C37; border:1px solid var(--signal); }
+button.quiet { background:transparent; color:var(--spray); border-color:var(--rule); }
+button:disabled { opacity:.4; cursor:default; }
+
+/* hero: side elevation */
+.elev { position:relative; background:linear-gradient(var(--sea), var(--sea)); }
+.elev svg { display:block; width:100%; height:clamp(220px, 34vw, 380px); }
+.elev .caption { position:absolute; left:24px; bottom:12px; color:var(--mist); font-size:13px; }
+.elev .empty { position:absolute; inset:0; display:grid; place-items:center; color:var(--mist); }
+.elev .empty[hidden] { display:none; }
+
+/* instruments */
+.gauges { display:grid; grid-template-columns: repeat(4, 1fr); background:var(--deep); }
+.g { padding:14px 24px 16px; border-left:1px solid var(--rule); min-width:0; }
+.g:first-child { border-left:0; }
+.g .k { color:var(--mist); font-size:14px; }
+.g .k .unit { position:relative; z-index:2; font-size:12px; padding:3px 8px; margin-left:6px; background:transparent; color:var(--spray); border:1px solid var(--rule); vertical-align:1px; }
+.g .v { font-size:clamp(40px, 5vw, 64px); line-height:1; color:var(--signal); margin-top:4px; }
+.g .v small { font-size:.42em; color:var(--spray); margin-left:4px; font-weight:400; }
+.g .s { color:var(--mist); font-size:14px; margin-top:4px; }
+.g.dial { display:flex; gap:16px; align-items:center; }
+.g.dial svg { width:92px; height:92px; flex:none; }
+@media (max-width: 860px) { .gauges { grid-template-columns: 1fr 1fr; } .g:nth-child(3) { border-left:0; } .g { border-top:1px solid var(--rule); } }
+
+/* lower deck */
+.deck { display:grid; grid-template-columns: minmax(260px, 340px) 1fr; gap:0; }
+@media (max-width: 860px) { .deck { grid-template-columns: 1fr; } }
+.levers { padding:18px 24px; border-right:1px solid var(--rule); }
+.levers h2, .traces h2 { font:500 16px/1.2 "Saira Semi Condensed", sans-serif; margin:0 0 10px; color:var(--spray); }
+.lever { display:grid; grid-template-columns: 1fr auto; gap:2px 10px; margin:0 0 14px; }
+.lever span { color:var(--mist); font-size:14px; }
+.lever output { font-size:20px; color:var(--spray); }
+.lever input { grid-column: 1 / -1; }
+input[type=range] { -webkit-appearance:none; appearance:none; width:100%; height:22px; background:transparent; margin:0; }
+input[type=range]::-webkit-slider-runnable-track { height:4px; background:var(--rule); border-radius:2px; }
+input[type=range]::-moz-range-track { height:4px; background:var(--rule); border-radius:2px; }
+input[type=range]::-webkit-slider-thumb { -webkit-appearance:none; width:12px; height:22px; margin-top:-9px; border-radius:2px; background:var(--signal); border:0; }
+input[type=range]::-moz-range-thumb { width:12px; height:22px; border-radius:2px; background:var(--signal); border:0; }
+details { margin-top:6px; }
+details summary { cursor:pointer; color:var(--mist); padding:6px 0; }
+.levers .row { display:flex; gap:8px; margin-top:10px; flex-wrap:wrap; }
+.traces { padding:18px 24px; }
+.trace { margin-bottom:14px; }
+.trace .t { display:flex; gap:14px; align-items:baseline; color:var(--mist); font-size:14px; }
+.trace .t b { color:var(--spray); font-weight:500; }
+.trace .t i { display:inline-block; width:14px; height:3px; vertical-align:middle; margin-right:4px; }
+.trace canvas { display:block; width:100%; height:120px; }
+.foot { padding:10px 24px 24px; color:var(--mist); font-size:13px; }
+.foot pre { white-space:pre-wrap; background:var(--trench); padding:10px; border-radius:3px; max-height:200px; overflow:auto; font-size:12px; }
+.warn { color:var(--flag); }
+
+/* tabs */
+.tabs { display:flex; gap:0; padding:0 24px; background:var(--deep); border-top:1px solid var(--rule); }
+.tabs button { background:transparent; color:var(--mist); border:0; border-bottom:3px solid transparent; border-radius:0; padding:11px 16px 9px; font-weight:500; }
+.tabs button[aria-selected="true"] { color:var(--spray); border-bottom-color:var(--signal); }
+.tabs .lvl { margin-left:auto; align-self:center; font-size:14px; color:var(--mist); }
+[hidden] { display:none !important; }
+
+/* observer */
+.observer { display:grid; grid-template-columns: 1fr minmax(260px, 420px); gap:0; border-top:1px solid var(--rule); }
+@media (max-width: 860px) { .observer { grid-template-columns: 1fr; } }
+.observer > div { padding:14px 24px; }
+.observer h2 { font:500 16px/1.2 "Saira Semi Condensed", sans-serif; margin:0 0 8px; }
+.alerts { list-style:none; margin:0; padding:0; display:grid; gap:6px; }
+.alerts li { display:flex; gap:10px; align-items:baseline; }
+.alerts li::before { content:""; flex:none; width:10px; height:10px; border-radius:50%; transform:translateY(1px); background:var(--aqua); }
+.alerts li.caution::before { background:var(--signal); }
+.alerts li.danger::before { background:var(--flag); }
+.alerts li.danger { color:var(--spray); font-weight:600; }
+.alerts .quiet { color:var(--mist); }
+.logbook { max-height:150px; overflow:auto; font-size:13px; color:var(--mist); margin:0; padding:0; list-style:none; }
+.logbook b { color:var(--spray); font-weight:500; display:inline-block; min-width:52px; }
+
+/* editor + tuner */
+.page { padding:18px 24px 28px; }
+.page h2 { font:500 18px/1.2 "Saira Semi Condensed", sans-serif; margin:0 0 4px; }
+.page p.lede { color:var(--mist); margin:0 0 14px; max-width:72ch; }
+.edit { display:grid; grid-template-columns: minmax(280px, 380px) 1fr; gap:24px; }
+@media (max-width: 960px) { .edit { grid-template-columns: 1fr; } }
+.fields fieldset { border:0; padding:0; margin:0 0 16px; }
+.fields legend { font-weight:600; margin-bottom:6px; }
+.fld { display:grid; grid-template-columns: 1fr 92px; gap:8px; align-items:center; margin:4px 0; color:var(--mist); font-size:14px; }
+.fld input, .pay input { font:inherit; font-size:14px; color:var(--spray); background:var(--trench); border:1px solid var(--rule); border-radius:3px; padding:4px 6px; width:100%; }
+.fld.changed span { color:var(--signal); }
+.pay { width:100%; border-collapse:collapse; font-size:14px; }
+.pay th { text-align:left; color:var(--mist); font-weight:400; padding:2px 4px; }
+.pay td { padding:2px 3px; }
+.pay td:first-child input { min-width:90px; }
+.pay td input[type=number] { min-width:58px; }
+.pay button { padding:4px 8px; }
+.plan svg { width:100%; height:auto; display:block; background:var(--deep); border-radius:3px; }
+.cmp { width:100%; border-collapse:collapse; font-size:14px; margin-top:12px; }
+.cmp th, .cmp td { text-align:right; padding:5px 8px; border-bottom:1px solid var(--rule); }
+.cmp th:first-child, .cmp td:first-child { text-align:left; color:var(--mist); font-weight:400; }
+.cmp td.up { color:var(--aqua); } .cmp td.down { color:var(--flag); }
+.trimchart svg { width:100%; height:220px; display:block; margin-top:10px; }
+.note { color:var(--mist); font-size:13px; max-width:72ch; }
+.bar { display:grid; grid-template-columns: 220px 1fr 70px; gap:10px; align-items:center; font-size:14px; margin:3px 0; }
+.bar .b { height:10px; background:var(--rule); border-radius:2px; overflow:hidden; }
+.bar .b i { display:block; height:100%; background:var(--aqua); }
+.bar.best .b i { background:var(--signal); }
+.bar.best { color:var(--spray); font-weight:600; }
+.mrow { display:grid; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap:12px; margin-top:12px; }
+.mcard { background:var(--deep); padding:10px 12px; border-radius:3px; font-size:13px; color:var(--mist); }
+.mcard b { color:var(--spray); display:block; font-weight:500; margin-bottom:4px; }
+@media (prefers-reduced-motion: reduce) { * { transition:none !important; } }
+</style></head>
+<body>
+<div class="top">
+  <h1>Hydrofoil Sim</h1>
+  <span class="state" id="state">Viewer __STATUS__</span>
+  <span class="clock num" id="clock"></span>
+</div>
+
+<form class="session" method="post" action="/start" id="session">
+  __FIELDS__
+  <div class="go"><button>Launch viewer</button><button type="button" class="quiet" id="focus" disabled>Show 3D view</button><button class="quiet" formaction="/stop">Close viewer</button></div>
+</form>
+
+<nav class="tabs" role="tablist">
+  <button role="tab" data-tab="fly" aria-selected="true">Fly</button>
+  <button role="tab" data-tab="boat" aria-selected="false">Boat editor</button>
+  <button role="tab" data-tab="tune" aria-selected="false">Autotuner</button>
+  <span class="lvl" id="lvl"></span>
+</nav>
+
+<div id="tab-fly">
+<div class="elev">
+  <svg id="side" viewBox="0 0 1000 300" preserveAspectRatio="none" role="img" aria-label="Side view of the boat and the water"></svg>
+  <div class="caption" id="caption"></div>
+  <div class="empty" id="empty">Launch the viewer to see the boat here.</div>
+</div>
+
+<div class="gauges">
+  <div class="g"><div class="k">Speed <button type="button" class="unit" id="units" title="Switch speed units">m/s</button></div><div class="v num" id="gs">–</div><div class="s" id="gs2"></div></div>
+  <div class="g"><div class="k">Ride height (hull above water)</div><div class="v num" id="gh">–</div><div class="s" id="gh2"></div></div>
+  <div class="g dial">
+    <svg viewBox="-50 -50 100 100" id="heel" aria-label="Heel indicator"></svg>
+    <div><div class="k">Heel / trim</div><div class="v num" id="gr" style="font-size:clamp(32px,3.6vw,48px)">–</div><div class="s" id="gr2"></div></div>
+  </div>
+  <div class="g"><div class="k">Thrust</div><div class="v num" id="gt">–</div><div class="s" id="gt2"></div></div>
+</div>
+
+<div class="observer">
+  <div><h2>Flight observer</h2><ul class="alerts" id="alerts"><li class="quiet">Watching for trouble once the boat is flying.</li></ul></div>
+  <div><h2>Log</h2><ul class="logbook" id="logbook"></ul></div>
+</div>
+
+<div class="deck">
+  <div class="levers">
+    <h2>Helm</h2>
+    <div id="helm"><p class="s" style="color:var(--mist)">Levers appear once the viewer is running.</p></div>
+    <details><summary>Sea state</summary><div id="sea"></div></details>
+    <details><summary>Drives and PID gains</summary><div id="tune"></div></details>
+    <div class="row"><button class="quiet" id="reset" disabled>Back to rest</button><button class="quiet" id="toggle" disabled>Switch PID / LQR</button></div>
+  </div>
+  <div class="traces">
+    <h2>Last 20 seconds</h2>
+    <div id="traces"></div>
+  </div>
+</div>
+
+</div>
+
+<div id="tab-boat" hidden><div class="page">
+  <h2>Boat editor</h2>
+  <p class="lede">Change the weight, where it sits, and the foils. The numbers on the right are worked out from the boat's trim at each speed, before anything flies. Save to relaunch the 3D view with the new boat; the controller gains and schedule are re-derived for it.</p>
+  <div class="edit">
+    <div class="fields" id="fields"></div>
+    <div>
+      <div class="plan"><svg id="plan" viewBox="0 0 800 420" role="img" aria-label="Top view of the boat and foils"></svg></div>
+      <div class="trimchart"><svg id="trimchart" viewBox="0 0 800 220" role="img" aria-label="Flap needed to trim against speed"></svg></div>
+      <table class="cmp" id="cmp"></table>
+      <p class="note">Foil shape in this model: rectangular planform and one section (NACA 0009), so span, chord, aspect ratio, flap size and incidence are what changes. Taper, sweep, twist and other sections are not modelled. Moving weight up or down is reported but not flown (the sim has no vertical CG shift).</p>
+      <div class="row" style="display:flex;gap:8px;flex-wrap:wrap"><button id="saveBoat">Save and relaunch</button><button class="quiet" id="resetBoat">Back to the preset</button><span class="note" id="boatMsg"></span></div>
+    </div>
+  </div>
+</div></div>
+
+<div id="tab-tune" hidden><div class="page">
+  <h2>Autotuner</h2>
+  <p class="lede">Flies every candidate through the same five tests (takeoff from rest, head sea, following sea, rider moving, and a head sea on the noisy sensors the real boat would have) and scores it: height error, peaks, overshoot, settling time, flap rate and drive limits, with failures heavily penalised. It works in stages: the current gains, then textbook methods, then a search that refines the best of them.</p>
+  <div style="display:flex;gap:10px;align-items:end;flex-wrap:wrap">
+    <label style="display:grid;gap:2px;color:var(--mist);font-size:13px">What to tune
+      <select id="tuneTarget" style="font:inherit;color:var(--spray);background:var(--trench);border:1px solid var(--rule);border-radius:3px;padding:5px 8px">
+        <option value="pid">PID gains (takeoff, and PID mode)</option><option value="lqr">LQR weights</option></select></label>
+    <button id="tuneStart">Start tuning</button><button class="quiet" id="tuneApply" disabled>Use the best result</button><button class="quiet" id="tuneClear">Clear tuned gains</button>
+    <span class="note" id="tuneMsg"></span>
+  </div>
+  <div id="tuneOut"></div>
+  <details style="margin-top:16px"><summary>Methods and sources</summary>
+    <p class="note">PID: a relay feedback test in the sim on each loop (Åström and Hägglund, Automatica 20(5), 1984) gives the ultimate gain and period, then the Ziegler–Nichols rules (Trans. ASME 64, 1942) and Tyreus–Luyben (Ind. Eng. Chem. Res. 31(11), 1992). Skogestad's SIMC rules (J. Process Control 13, 2003) need a step-response model, which the open-loop unstable heave loop cannot give, so they are not used.</p>
+    <p class="note">LQR: Bryson's rule (Bryson and Ho, Applied Optimal Control, 1975), then an iterative re-weighting that tightens whatever overshot its target. That loop is this project's own heuristic, not a published method.</p>
+    <p class="note">Refinement: a cross-entropy search (Rubinstein, Methodology and Computing in Applied Probability 1, 1999) started from the best of the above.</p>
+  </details>
+</div></div>
+
+<div class="foot">
+  <details><summary>Viewer output</summary><pre>__LOG__</pre><div><code>__CMD__</code></div></details>
+  <p>In the 3D view: up and down set ride height, left and right bank, [ and ] speed, R back to rest, C switches PID / LQR, U switches speed units, and D brings you back to this page. "Show 3D view" above brings that window to the front.</p>
+</div>
+
+<script>
+const API = "http://127.0.0.1:__APIPORT__";
+const LEVERS = {
+  helm: [["height_ref", "Ride height target", "m"], ["speed_ref", "Speed target", "m/s"], ["bank_ref", "Bank", "°"]],
+  sea:  [["wave_amp", "Wave amplitude", "m"], ["wave_len", "Wavelength", "m"], ["wave_dir", "Wave travel direction", "°"]],
+  tune: [["gear_ratio", "Gear ratio", ":1"], ["v_bus", "Bus voltage", "V"], ["kp_heave", "Heave kp", ""], ["ki_heave", "Heave ki", ""],
+         ["kd_heave", "Heave kd", ""], ["kp_pitch", "Pitch kp", ""], ["kd_pitch", "Pitch kd", ""], ["kp_roll", "Roll kp", ""], ["kd_roll", "Roll kd", ""]],
+};
+const TRACES = [
+  {title:"Ride height", unit:"m", series:[["height", "--signal", "boat"], ["height_ref", "--aqua", "target"]]},
+  {title:"Heel and trim", unit:"°", series:[["roll", "--signal", "heel"], ["pitch", "--aqua", "trim"]]},
+  {title:"Flaps and elevator", unit:"°", series:[["sl", "--signal", "left flap"], ["sr", "--foam", "right flap"], ["se", "--aqua", "elevator"]]},
+];
+// speed units: the sim works in m/s; km/h is display only (remembered per browser)
+const UNITS = {"m/s": 1, "km/h": 3.6};
+let unit = "m/s"; try { if (UNITS[localStorage.getItem("speedUnit")]) unit = localStorage.getItem("speedUnit"); } catch (e) {}
+const spd = v => v * UNITS[unit];
+const css = n => getComputedStyle(document.documentElement).getPropertyValue(n).trim();
+const $ = id => document.getElementById(id);
+const hist = []; let built = false, dragging = null, lastT = -1, last = null;
+
+// ---------- side elevation
+const NS = "http://www.w3.org/2000/svg";
+function node(tag, a, parent) { const e = document.createElementNS(NS, tag); for (const k in a) e.setAttribute(k, a[k]); if (parent) parent.append(e); return e; }
+function drawSide(s) {
+  const svg = $("side"); svg.innerHTML = "";
+  const H = 300, W = Math.max(600, Math.round(H * svg.clientWidth / Math.max(svg.clientHeight, 1))), wl = 150, G = s.geom;
+  svg.setAttribute("viewBox", `0 0 ${W} ${H}`);                      // still-water line at y = 150
+  const L = G.hull_length, strut = G.hull_offset + G.main_pos_z;
+  const sc = Math.min(560 / (L + 1.0), 190 / (strut + 0.9));          // px per metre: fit hull length and strut depth
+  const bx = W * 0.5;                                                 // boat CG drawn at the centre
+  // water: cut the wave field along the boat's track, scrolling with the boat
+  const A = s.wave.amp, lam = Math.max(s.wave.len, 0.5), k = 2 * Math.PI / lam, w = Math.sqrt(9.81 * k), cd = Math.cos(s.wave.dir * Math.PI / 180);
+  const eta = xw => A > 1e-4 ? A * Math.cos(k * xw * cd - w * s.t) : 0;
+  let d = `M0 ${H}`;
+  for (let px = 0; px <= W; px += 8) { const xw = s.x + (px - bx) / sc; d += ` L${px} ${wl - eta(xw) * sc}`; }
+  d += ` L${W} ${H} Z`;
+  node("path", {d, fill:css("--water")}, svg);
+  let top = "";
+  for (let px = 0; px <= W; px += 8) { const xw = s.x + (px - bx) / sc; top += `${px ? "L" : "M"}${px} ${wl - eta(xw) * sc}`; }
+  node("path", {d:top, fill:"none", stroke:css("--water-top"), "stroke-width":2}, svg);
+  // ride-height target: where the hull bottom should be
+  const ty = wl - s.height_ref * sc;
+  node("line", {x1:40, x2:W - 40, y1:ty, y2:ty, stroke:css("--aqua"), "stroke-width":1.5, "stroke-dasharray":"6 6"}, svg);
+  const lab = node("text", {x:W - 44, y:ty - 6, fill:css("--aqua"), "text-anchor":"end", "font-size":14}, svg); lab.textContent = `target ${s.height_ref.toFixed(2)} m`;
+  // boat, in its own frame (x forward = right, y up), CG at the origin
+  const cgy = wl - (s.height - G.hull_offset) * sc;                   // hull bottom is hull_offset above the CG
+  const g = node("g", {transform:`translate(${bx} ${cgy}) rotate(${-s.pitch})`}, svg);
+  const hb = -G.hull_offset * sc;                                     // hull bottom y in the boat frame (SVG down)
+  const hx0 = (G.hull_x - L / 2) * sc, hx1 = (G.hull_x + L / 2) * sc, ht = 0.22 * sc;
+  node("path", {d:`M${hx0} ${hb} L${hx1 - 0.18 * L * sc} ${hb} Q${hx1} ${hb} ${hx1} ${hb - ht} L${hx0} ${hb - ht} Z`,
+                fill:css("--hull"), stroke:css("--strut"), "stroke-width":1}, g);
+  for (const [px, pz, c] of [[G.main_pos_x, G.main_pos_z, G.main_chord], [G.elev_pos_x, G.elev_pos_z, G.elev_chord]]) {
+    node("line", {x1:px * sc, x2:px * sc, y1:hb, y2:pz * sc, stroke:css("--strut"), "stroke-width":Math.max(3, 0.05 * sc)}, g);
+    node("rect", {x:(px - c * 0.25) * sc, y:pz * sc - 3, width:c * sc, height:6, rx:3, fill:css("--signal")}, g);
+  }
+  $("caption").textContent = `${s.preset} boat, ${s.mass.toFixed(0)} kg, ${A > 1e-4 ? `${(A * 100).toFixed(0)} cm waves, ${lam.toFixed(0)} m long` : "flat water"}`;
+}
+
+// ---------- heel dial
+function drawHeel(roll, ref) {
+  const svg = $("heel"); svg.innerHTML = "";
+  node("circle", {r:46, fill:css("--trench"), stroke:css("--rule")}, svg);
+  for (const a of [-30, -20, -10, 0, 10, 20, 30]) { const r = a * Math.PI / 180;
+    node("line", {x1:Math.sin(r) * 38, y1:-Math.cos(r) * 38, x2:Math.sin(r) * 46, y2:-Math.cos(r) * 46, stroke:css("--mist"), "stroke-width":a ? 1 : 2}, svg); }
+  const rr = ref * Math.PI / 180;
+  node("circle", {cx:Math.sin(rr) * 42, cy:-Math.cos(rr) * 42, r:3, fill:css("--aqua")}, svg);
+  const g = node("g", {transform:`rotate(${roll})`}, svg);
+  node("line", {x1:-30, x2:30, y1:0, y2:0, stroke:css("--signal"), "stroke-width":3, "stroke-linecap":"round"}, g);
+  node("line", {x1:0, x2:0, y1:0, y2:-30, stroke:css("--signal"), "stroke-width":2}, g);
+}
+
+// ---------- traces
+const canv = TRACES.map(tr => {
+  const box = document.createElement("div"); box.className = "trace";
+  box.innerHTML = `<div class="t"><b>${tr.title} [${tr.unit}]</b>` + tr.series.map(s => `<span><i style="background:var(${s[1]})"></i>${s[2]}</span>`).join("") + "</div>";
+  const c = document.createElement("canvas"); box.append(c); $("traces").append(box); return c;
+});
+function drawTraces() {
+  const mist = css("--mist"), rule = css("--rule");
+  TRACES.forEach((tr, j) => {
+    const cv = canv[j], dpr = devicePixelRatio || 1, w = cv.clientWidth, h = cv.clientHeight;
+    if (cv.width !== Math.round(w * dpr)) { cv.width = Math.round(w * dpr); cv.height = Math.round(h * dpr); }
+    const g = cv.getContext("2d"); g.setTransform(dpr, 0, 0, dpr, 0, 0); g.clearRect(0, 0, w, h);
+    if (hist.length < 2) return;
+    const t1 = hist[hist.length - 1].t, t0 = t1 - 20;
+    let lo = Infinity, hi = -Infinity;
+    for (const r of hist) for (const s of tr.series) { lo = Math.min(lo, r[s[0]]); hi = Math.max(hi, r[s[0]]); }
+    const span = Math.max(hi - lo, tr.unit === "m" ? 0.1 : 2); const mid = (hi + lo) / 2; lo = mid - span * 0.6; hi = mid + span * 0.6;
+    const X = t => 44 + (t - t0) / 20 * (w - 50), Y = v => 4 + (hi - v) / (hi - lo) * (h - 22);
+    for (let i = 1; i < hist.length; i++) { const r = hist[i]; if (!r.lvl || r.t < t0) continue;
+      g.fillStyle = css(r.lvl === 2 ? "--flag" : "--signal"); g.globalAlpha = 0.18;
+      g.fillRect(X(hist[i - 1].t), 0, Math.max(1, X(r.t) - X(hist[i - 1].t)), h - 18); g.globalAlpha = 1; }
+    g.font = "12px 'Saira Semi Condensed', sans-serif"; g.fillStyle = mist; g.strokeStyle = rule; g.lineWidth = 1;
+    for (const v of [lo + span * 0.1, mid, hi - span * 0.1]) { const y = Y(v); g.beginPath(); g.moveTo(44, y); g.lineTo(w - 6, y); g.stroke();
+      g.fillText(v.toFixed(span < 1 ? 2 : 1), 0, y + 4); }
+    for (let s = Math.ceil(t0 / 5) * 5; s <= t1; s += 5) g.fillText(`${s}s`, X(s) - 8, h - 2);
+    tr.series.forEach(([key, col, name]) => {
+      g.strokeStyle = css(col); g.lineWidth = name === "target" ? 1.5 : 2; g.setLineDash(name === "target" ? [6, 5] : []);
+      g.beginPath(); hist.forEach((r, i) => { if (r.t < t0) return; const x = X(r.t), y = Y(r[key]); i ? g.lineTo(x, y) : g.moveTo(x, y); }); g.stroke();
+    });
+    g.setLineDash([]);
+  });
+}
+
+// ---------- levers
+function post(body) { return fetch(API + "/set", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify(body)}).catch(() => {}); }
+function buildLevers(list) {
+  const by = Object.fromEntries(list.map(s => [s.name, s]));
+  for (const [box, items] of Object.entries(LEVERS)) {
+    const root = $(box); root.innerHTML = "";
+    for (const [n, label, unit] of items) { const s = by[n]; if (!s) continue;
+      const wrap = document.createElement("div"); wrap.className = "lever";
+      wrap.innerHTML = `<span>${label}</span><output class="num" id="o_${n}"></output>`;
+      const inp = Object.assign(document.createElement("input"), {type:"range", min:s.lo, max:s.hi, step:(s.hi - s.lo) / 400, value:s.value, id:"l_" + n});
+      inp.setAttribute("aria-label", label);
+      inp.addEventListener("pointerdown", () => dragging = n); inp.addEventListener("pointerup", () => dragging = null);
+      inp.addEventListener("input", () => { show(n, +inp.value, unit); post({[n]: +inp.value}); });
+      wrap.append(inp); root.append(wrap); show(n, s.value, unit); }
+  }
+  built = true;
+}
+function show(n, v, u) {
+  if (n === "speed_ref") { v = spd(v); u = unit; }
+  const o = $("o_" + n); if (o) o.textContent = `${Math.abs(v) < 10 ? v.toFixed(2) : v.toFixed(1)} ${u}`.trim(); }
+function setUnits(u) {
+  unit = u; try { localStorage.setItem("speedUnit", u); } catch (e) {}
+  $("units").textContent = u;
+  const i = $("l_speed_ref"); if (i) show("speed_ref", +i.value, "m/s");
+  if (last) render(last);
+}
+$("units").onclick = () => setUnits(unit === "m/s" ? "km/h" : "m/s");
+function syncLevers(vals) {
+  const units = Object.fromEntries(Object.values(LEVERS).flat().map(([n, , u]) => [n, u]));
+  for (const [n, v] of Object.entries(vals || {})) { if (n === dragging) continue; const i = $("l_" + n); if (i && Math.abs(+i.value - v) > 1e-6) { i.value = v; show(n, v, units[n]); } }
+}
+$("reset").onclick = () => { post({action:"reset"}); hist.length = 0; };
+$("toggle").onclick = () => { post({action:"toggle_ctrl"}); hist.length = 0; };
+$("focus").onclick = () => post({action:"focus"});
+
+// ---------- live loop
+function live(on) {
+  $("empty").hidden = on; ["reset", "toggle", "focus"].forEach(id => $(id).disabled = !on);
+  if (!on) { $("side").innerHTML = ""; $("caption").textContent = ""; built = false; ["gs", "gh", "gr", "gt"].forEach(id => $(id).textContent = "–");
+             ["gs2", "gh2", "gr2", "gt2"].forEach(id => $(id).textContent = ""); $("clock").textContent = ""; }
+}
+function render(s) {
+  const d = unit === "m/s" ? 2 : 1;
+  $("gs").innerHTML = `${spd(s.speed).toFixed(d)}<small>${unit}</small>`;
+  $("gs2").textContent = `${(s.speed * 1.944).toFixed(1)} kn, target ${spd(s.speed_ref).toFixed(d)} ${unit}`;
+}
+async function poll() {
+  try {
+    const s = await (await fetch(API + "/state", {cache:"no-store"})).json();
+    if (s.t === undefined || !s.geom) throw 0;
+    if (!built) buildLevers(await (await fetch(API + "/sliders")).json());
+    if (s.t < lastT) hist.length = 0; lastT = s.t; last = s;
+    const lvl = renderObserver(s);
+    hist.push({t:s.t, height:s.height, height_ref:s.height_ref, roll:s.roll, pitch:s.pitch, sl:s.surfaces.left, sr:s.surfaces.right, se:s.surfaces.elev, lvl:LV[lvl]});
+    while (hist.length && hist[0].t < s.t - 21) hist.shift();
+    live(true); if (!$("tab-fly").hidden) { drawSide(s); drawHeel(s.roll, s.bank_ref); drawTraces(); } syncLevers(s.sliders);
+    render(s);
+    $("gh").innerHTML = `${s.height.toFixed(2)}<small>m</small>`; $("gh2").textContent = `target ${s.height_ref.toFixed(2)} m`;
+    $("gr").innerHTML = `${s.roll.toFixed(1)}° <small>/ ${s.pitch.toFixed(1)}°</small>`; $("gr2").textContent = `bank target ${s.bank_ref.toFixed(0)}°`;
+    $("gt").innerHTML = `${s.thrust.toFixed(0)}<small>N</small>`;
+    const ok = s.limits === "within limits";
+    $("gt2").innerHTML = `${(s.thrust * s.speed / 1000).toFixed(2)} kW at the prop, ${ok ? "drives within limits" : `<span class="warn">${s.limits}</span>`}`;
+    $("state").innerHTML = `Viewer running, <b>${s.mode.toLowerCase()}</b> on ${s.controller} with ${s.sensors} sensors`;
+    $("clock").textContent = `${s.t.toFixed(1)} s`;
+    setTimeout(poll, 100); return;
+  } catch (e) { live(false); $("state").textContent = "Viewer __STATUS__"; }
+  setTimeout(poll, 2000);            // viewer not running: check now and then
+}
+
+// ---------- tabs
+document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.onclick = () => {
+  document.querySelectorAll(".tabs button[data-tab]").forEach(x => x.setAttribute("aria-selected", x === b));
+  for (const t of ["fly", "boat", "tune"]) $("tab-" + t).hidden = t !== b.dataset.tab;
+  if (b.dataset.tab === "boat") loadBoat();
+  if (b.dataset.tab === "tune") pollTune();
+  if (b.dataset.tab === "fly" && last) { drawSide(last); drawTraces(); }
+});
+
+// ---------- observer
+const LV = {ok:0, caution:1, danger:2};
+function renderObserver(s) {
+  const al = s.alerts || [];
+  $("alerts").innerHTML = al.length ? al.map(a => `<li class="${a.level}">${a.text}</li>`).join("")
+    : `<li class="quiet">${s.mode === "FOILBORNE" ? "Nothing to report." : "Watching for trouble once the boat is flying."}</li>`;
+  const lg = (s.alert_log || []).slice().reverse();
+  $("logbook").innerHTML = lg.map(e => `<li><b>${e.t.toFixed(1)} s</b> ${e.level === "ok" ? "" : e.level + ": "}${e.text}</li>`).join("");
+  const worst = al.length ? al[0].level : "ok";
+  $("lvl").innerHTML = worst === "ok" ? "" : `<span style="color:var(${worst === "danger" ? "--flag" : "--signal"})">${worst === "danger" ? "Danger" : "Caution"}: ${al[0].text}</span>`;
+  return worst;
+}
+
+// ---------- boat editor
+let boat = null, edits = {}, payloads = [], previewTimer = null;
+const EDIT = [
+  ["Main foil", [["main_chord", "Chord", "m", 0.01], ["main_span", "Half-span (each side)", "m", 0.05], ["main_incidence_deg", "Incidence", "°", 0.25], ["main_flap_frac", "Flap, fraction of chord", "", 0.05]]],
+  ["Elevator", [["elev_chord", "Chord", "m", 0.01], ["elev_span", "Span", "m", 0.05], ["elev_pos_x", "Position (negative = aft of CG)", "m", 0.05]]],
+  ["Struts and ride", [["strut_length", "Strut length, hull to main foil", "m", 0.05], ["flying_height", "Ride height target", "m", 0.05], ["target_speed", "Cruise speed", "m/s", 0.25], ["max_thrust", "Thrust limit", "N", 10]]],
+];
+async function loadBoat() {
+  const preset = (document.querySelector("select[name=preset]") || {}).value || "manned";
+  boat = await (await fetch(`/api/design?preset=${preset}`)).json();
+  edits = Object.fromEntries(Object.entries(boat.saved).filter(([k]) => k in boat.base));
+  payloads = JSON.parse(JSON.stringify(boat.saved.payloads || boat.payloads));
+  buildFields(); preview();
+}
+function buildFields() {
+  const root = $("fields"); root.innerHTML = "";
+  for (const [title, items] of EDIT) {
+    const fs = document.createElement("fieldset"); fs.innerHTML = `<legend>${title}</legend>`;
+    for (const [k, label, u, step] of items) {
+      const v = k in edits ? edits[k] : boat.base[k];
+      const d = document.createElement("label"); d.className = "fld" + (k in edits ? " changed" : "");
+      d.innerHTML = `<span>${label}${u ? ` (${u})` : ""}</span>`;
+      const inp = Object.assign(document.createElement("input"), {type:"number", step, value:+(+v).toFixed(3)});
+      inp.oninput = () => { const x = parseFloat(inp.value); if (isFinite(x)) { if (Math.abs(x - boat.base[k]) < 1e-9) delete edits[k]; else edits[k] = x; }
+                            d.classList.toggle("changed", k in edits); schedulePreview(); };
+      d.append(inp); fs.append(d);
+    }
+    root.append(fs);
+  }
+  const fs = document.createElement("fieldset");
+  fs.innerHTML = `<legend>Weight and where it sits</legend><p class="note" style="margin:0 0 6px">Point masses on top of the empty boat. x forward and y to starboard of the design centre of gravity, z up (m).</p>`;
+  const tb = document.createElement("table"); tb.className = "pay";
+  const draw = () => {
+    tb.innerHTML = `<tr><th>Item</th><th>kg</th><th>x</th><th>y</th><th>z</th><th></th></tr>` + payloads.map((q, i) =>
+      `<tr>${["name", "mass", "x", "y", "z"].map(k => `<td><input data-i="${i}" data-k="${k}" ${k === "name" ? "" : 'type="number" step="0.05"'} value="${q[k]}"></td>`).join("")}<td><button class="quiet" data-del="${i}" aria-label="Remove ${q.name}">Remove</button></td></tr>`).join("");
+    tb.querySelectorAll("input").forEach(inp => inp.oninput = () => { const q = payloads[+inp.dataset.i];
+      q[inp.dataset.k] = inp.dataset.k === "name" ? inp.value : (parseFloat(inp.value) || 0); schedulePreview(); });
+    tb.querySelectorAll("button[data-del]").forEach(b => b.onclick = () => { payloads.splice(+b.dataset.del, 1); draw(); schedulePreview(); });
+  };
+  draw();
+  const add = Object.assign(document.createElement("button"), {className:"quiet", textContent:"Add a weight", type:"button"});
+  add.onclick = () => { payloads.push({name:"Gear", mass:10, x:0, y:0, z:0}); draw(); schedulePreview(); };
+  fs.append(tb, add); root.append(fs);
+}
+function currentOverrides() {
+  const ov = {...edits};
+  if (JSON.stringify(payloads) !== JSON.stringify(boat.payloads)) ov.payloads = payloads;
+  return ov;
+}
+function schedulePreview() { clearTimeout(previewTimer); previewTimer = setTimeout(preview, 350); }
+async function preview() {
+  $("boatMsg").textContent = "Working out trim…";
+  const r = await (await fetch("/api/design/preview", {method:"POST", headers:{"Content-Type":"application/json"},
+                   body:JSON.stringify({preset:boat.preset, overrides:currentOverrides()})})).json();
+  if (r.error) { $("boatMsg").textContent = r.error; return; }
+  $("boatMsg").textContent = "";
+  drawPlan(r); drawTrim(r); drawCmp(r);
+}
+function drawPlan(r) {
+  const svg = $("plan"); svg.innerHTML = "";
+  const g0 = boat.geom, g1 = r.edited_geom, W = 800, H = 420;
+  const L = Math.max(g0.hull_length, 2.6 - g1.elev_pos_x, g1.hull_length) + 0.6, span = Math.max(2 * (g1.main_lateral_offset + g1.main_span / 2), g0.hull_beam) + 0.4;
+  const sc = Math.min((W - 60) / L, (H - 40) / span), cx = W / 2 + 0.15 * sc * L / 2, cy = H / 2;
+  const X = x => cx + x * sc, Y = y => cy + y * sc;
+  const hull = (g, st) => { const x0 = g.hull_x - g.hull_length / 2, x1 = g.hull_x + g.hull_length / 2, b = g.hull_beam / 2;
+    node("path", {d:`M${X(x0)} ${Y(-b)} L${X(x1 - 0.25 * g.hull_length)} ${Y(-b)} L${X(x1)} ${Y(0)} L${X(x1 - 0.25 * g.hull_length)} ${Y(b)} L${X(x0)} ${Y(b)} Z`, ...st}, svg); };
+  const foils = (g, st) => {
+    for (const sgn of [-1, 1]) { const yc = sgn * g.main_lateral_offset;
+      node("rect", {x:X(-g.main_chord * 0.5), y:Y(yc - g.main_span / 2), width:g.main_chord * sc, height:g.main_span * sc, ...st}, svg); }
+    node("rect", {x:X(g.elev_pos_x - g.elev_chord * 0.5), y:Y(-g.elev_span / 2), width:g.elev_chord * sc, height:g.elev_span * sc, ...st}, svg);
+  };
+  hull(g0, {fill:"none", stroke:css("--rule"), "stroke-dasharray":"5 5"});
+  hull(g1, {fill:css("--trench"), stroke:css("--strut")});
+  foils({...g1, ...{}}, {fill:css("--signal"), opacity:0.9});
+  const base = {...g1, main_chord:boat.base.main_chord, main_span:boat.base.main_span, main_lateral_offset:0.05 + boat.base.main_span / 2,
+                elev_chord:boat.base.elev_chord, elev_span:boat.base.elev_span, elev_pos_x:boat.base.elev_pos_x};
+  foils(base, {fill:"none", stroke:css("--aqua"), "stroke-dasharray":"4 4"});
+  for (const q of payloads) { const t = node("circle", {cx:X(q.x), cy:Y(q.y), r:4 + Math.sqrt(q.mass) * 0.9, fill:css("--aqua"), opacity:0.85}, svg);
+    const lab = node("text", {x:X(q.x) + 10, y:Y(q.y) - 8, fill:css("--spray"), "font-size":13}, svg); lab.textContent = `${q.name} ${q.mass} kg`; }
+  const e = r.edited, cgx = X(e.cg_x), cgy = Y(e.cg_y);
+  node("circle", {cx:cgx, cy:cgy, r:9, fill:"none", stroke:css("--flag"), "stroke-width":2}, svg);
+  node("line", {x1:cgx - 13, x2:cgx + 13, y1:cgy, y2:cgy, stroke:css("--flag"), "stroke-width":2}, svg);
+  node("line", {x1:cgx, x2:cgx, y1:cgy - 13, y2:cgy + 13, stroke:css("--flag"), "stroke-width":2}, svg);
+  const cap = node("text", {x:16, y:H - 14, fill:css("--mist"), "font-size":13}, svg);
+  cap.textContent = "Top view, bow to the right. Yellow: your foils. Dashed: the preset. Red cross: centre of gravity.";
+}
+function drawTrim(r) {
+  const svg = $("trimchart"); svg.innerHTML = "";
+  const W = 800, H = 220, L = 46, R = 12, T = 12, B = 30, v0 = 3, v1 = 12;
+  const X = v => L + (v - v0) / (v1 - v0) * (W - L - R), Y = f => T + (25 - f) / 50 * (H - T - B);
+  node("rect", {x:L, y:Y(15), width:W - L - R, height:Y(-15) - Y(15), fill:css("--deep")}, svg);
+  for (const f of [-20, -10, 0, 10, 20]) { node("line", {x1:L, x2:W - R, y1:Y(f), y2:Y(f), stroke:css("--rule")}, svg);
+    const t = node("text", {x:4, y:Y(f) + 4, fill:css("--mist"), "font-size":12}, svg); t.textContent = `${f}°`; }
+  for (let v = 4; v <= 12; v += 2) { const t = node("text", {x:X(v) - 8, y:H - 8, fill:css("--mist"), "font-size":12}, svg); t.textContent = `${v} m/s`; }
+  const line = (curve, col, dash) => { let d = "", pen = false;
+    for (const c of curve) { if (c.flap == null || Math.abs(c.flap) > 25) { pen = false; continue; } d += `${pen ? "L" : "M"}${X(c.speed)} ${Y(c.flap)}`; pen = true; }
+    node("path", {d, fill:"none", stroke:col, "stroke-width":2.5, "stroke-dasharray":dash || ""}, svg); };
+  line(r.base.curve, css("--aqua"), "6 5"); line(r.edited.curve, css("--signal"));
+  node("line", {x1:X(r.edited.cruise_speed), x2:X(r.edited.cruise_speed), y1:T, y2:H - B, stroke:css("--mist"), "stroke-dasharray":"2 4"}, svg);
+  const t = node("text", {x:L + 8, y:T + 14, fill:css("--mist"), "font-size":13}, svg);
+  t.textContent = "Flap needed to fly level at each speed. Shaded: the ±15° band that keeps control margin.";
+}
+function drawCmp(r) {
+  const b = r.base, e = r.edited;
+  const rows = [
+    ["All-up weight", "mass", "kg", 0, 0], ["Centre of gravity, forward", "cg_x", "m", 2, 0], ["Centre of gravity, to starboard", "cg_y", "m", 2, 0],
+    ["Main foil area", "wing_area", "m²", 3, 1], ["Aspect ratio (per half)", "aspect_ratio", "", 2, 0], ["Wing loading", "wing_loading", "N/m²", 0, -1],
+    ["Slowest speed it can trim at", "v_min_foil", "m/s", 1, -1], ["Flap at cruise", "cruise_flap", "°", 1, 0], ["Flap margin at cruise", "flap_margin", "°", 1, 1],
+    ["Thrust at cruise", "cruise_thrust", "N", 0, -1], ["Power at cruise (at the prop)", "cruise_power_kw", "kW", 2, -1],
+    ["Foil depth when flying", "foil_depth", "m", 2, 1], ["Cavitation number at cruise", "cavitation_number", "", 2, 1]];
+  const f = (v, d) => v == null ? "none" : (+v).toFixed(d);
+  $("cmp").innerHTML = `<tr><th></th><th>Preset</th><th>Yours</th><th>Change</th></tr>` + rows.map(([lab, k, u, d, good]) => {
+    const dv = (e[k] != null && b[k] != null) ? e[k] - b[k] : null;
+    const cls = dv == null || Math.abs(dv) < Math.pow(10, -d) || !good ? "" : (dv * good > 0 ? "up" : "down");
+    return `<tr><td>${lab}${u ? ` (${u})` : ""}</td><td>${f(b[k], d)}</td><td>${f(e[k], d)}</td><td class="${cls}">${dv == null ? "" : (dv > 0 ? "+" : "") + dv.toFixed(d)}</td></tr>`; }).join("");
+}
+$("saveBoat").onclick = async () => {
+  await fetch("/api/design/save", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({preset:boat.preset, overrides:currentOverrides()})});
+  await fetch("/api/relaunch", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({preset:boat.preset})});
+  $("boatMsg").textContent = "Saved. The 3D view is relaunching with this boat (the LQR gains take a few seconds).";
+};
+$("resetBoat").onclick = async () => {
+  await fetch("/api/design/save", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({preset:boat.preset, reset:true})});
+  loadBoat();
+};
+
+// ---------- autotuner
+let tuneTimer = null;
+async function pollTune() {
+  clearTimeout(tuneTimer);
+  const d = await (await fetch("/api/tune/status")).json();
+  const out = $("tuneOut");
+  $("tuneApply").disabled = !(d.best && d.status === "done");
+  if (d.status === "idle") { out.innerHTML = `<p class="note">No tuning run yet.</p>`; return; }
+  const st = d.stages || [], maxc = Math.max(...st.map(x => Math.min(x.cost, 120)), 1);
+  const best = d.best ? d.best.cost : null;
+  let h = `<p class="note">${d.status === "done" ? "Finished" : d.status === "failed" ? "Failed" : "Running"}: ${d.target === "lqr" ? "LQR weights" : "PID gains"} for the ${d.preset} boat, ${d.elapsed_s || 0} s so far. Lower cost is better.</p>`;
+  h += st.map(x => `<div class="bar${best != null && x.cost === best ? " best" : ""}"><span>${x.name}</span><span class="b"><i style="width:${100 * Math.min(x.cost, 120) / maxc}%"></i></span><span class="num">${x.cost.toFixed(1)}</span></div>`).join("");
+  if ((d.history || []).length) h += `<div class="bar best"><span>Search, ${d.history.length} of ${d.generations} rounds</span><span class="b"><i style="width:${100 * Math.min(d.history[d.history.length - 1].best_cost, 120) / maxc}%"></i></span><span class="num">${d.history[d.history.length - 1].best_cost.toFixed(1)}</span></div>`;
+  if (d.relay) h += `<p class="note">Relay test: ` + Object.entries(d.relay).map(([k, r]) => r.ok ? `${k} Ku ${r.Ku.toPrecision(3)}, Pu ${r.Pu.toFixed(2)} s` : `${k}: ${r.why}`).join("; ") + `.</p>`;
+  if (d.best) {
+    const m0 = st.length ? st[0].metrics : null, m1 = d.best.metrics;
+    const fm = (m, k, sc, u, dd) => m && m[k] != null ? `${(m[k] * sc).toFixed(dd)} ${u}` : "–";
+    h += `<p class="note">Best so far: <b style="color:var(--spray)">${d.best.source}</b>, cost ${d.best.cost.toFixed(1)}.</p><div class="mrow">` +
+      ["takeoff", "head", "following", "shift", "noisy"].filter(n => m1[n]).map(n => { const a = m0 && m0[n], b = m1[n];
+        const fail = b.failed ? `<span class="warn">failed: ${b.why}</span>` : "";
+        return `<div class="mcard"><b>${{takeoff:"Takeoff from rest", head:"Head sea", following:"Following sea", shift:"Rider moves", noisy:"Head sea, real sensors"}[n]}</b>${fail}` +
+          (n === "takeoff" ? `Settles in ${fm(a, "t_settle", 1, "s", 1)} → ${fm(b, "t_settle", 1, "s", 1)}<br>Overshoot ${fm(a, "overshoot", 1000, "mm", 0)} → ${fm(b, "overshoot", 1000, "mm", 0)}`
+            : `Height rms ${fm(a, "z_rms", 1000, "mm", 0)} → ${fm(b, "z_rms", 1000, "mm", 0)}<br>Peak ${fm(a, "z_peak", 1000, "mm", 0)} → ${fm(b, "z_peak", 1000, "mm", 0)}`) +
+          `<br>Flap rate ${fm(a, "flap_rate_rms", 1, "°/s", 0)} → ${fm(b, "flap_rate_rms", 1, "°/s", 0)}</div>`; }).join("") + `</div>`;
+    h += `<details style="margin-top:8px"><summary>Values</summary><pre style="font-size:12px">${JSON.stringify(d.best.values, null, 1)}</pre></details>`;
+  }
+  if (d.log) h += `<pre style="font-size:12px">${d.log.replace(/</g, "&lt;")}</pre>`;
+  out.innerHTML = h;
+  if (d.status !== "done" && d.status !== "failed") tuneTimer = setTimeout(pollTune, 2000);
+}
+$("tuneStart").onclick = async () => {
+  const preset = (document.querySelector("select[name=preset]") || {}).value || "manned";
+  const r = await (await fetch("/api/tune/start", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({preset, target:$("tuneTarget").value})})).json();
+  $("tuneMsg").textContent = r.ok ? "Started. A run takes a few minutes." : "A tuning run is already going.";
+  setTimeout(pollTune, 800);
+};
+$("tuneApply").onclick = async () => {
+  const r = await (await fetch("/api/tune/apply", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"})).json();
+  if (r.ok) { await fetch("/api/relaunch", {method:"POST", headers:{"Content-Type":"application/json"}, body:"{}"}); $("tuneMsg").textContent = "Saved for this boat; the 3D view is relaunching with them."; }
+};
+$("tuneClear").onclick = async () => {
+  const preset = (document.querySelector("select[name=preset]") || {}).value || "manned";
+  await fetch("/api/tune/clear", {method:"POST", headers:{"Content-Type":"application/json"}, body:JSON.stringify({preset})});
+  $("tuneMsg").textContent = "Tuned gains cleared; the preset's own values apply at the next launch.";
+};
+addEventListener("resize", () => { if (last) { drawSide(last); drawTraces(); } });
+poll();
+$("units").textContent = unit;
+</script>
+</body></html>

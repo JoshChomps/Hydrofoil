@@ -99,3 +99,11 @@ def test_design_autoscaling_updates_inertia_hull_shaft_and_gains():
     assert p["prop_power_max"] > MANNED_PARAMS["prop_power_max"]
     rows = check(p)
     assert not [r for r in rows if r["status"] == "FAIL"]
+
+
+def test_sim_server_page_and_design_info():
+    from hydrofoil import sim_server
+    body = sim_server.page()
+    assert "Hydrofoil Sim" in body and 'name="supervisor"' in body
+    info = sim_server.design_info("manned")
+    assert info["preset"] == "manned" and "main_chord" in info["base"]

@@ -14,8 +14,9 @@ hydrofoil, with a native MuJoCo app (3D view, sliders, live plots, actuator load
     and the `HeaveFilter` + scheduled `KalmanEstimator` (`kalman.py`).
   - `actuation/` models the moteus/BLDC/gearbox surface drives (`servo.py` with
     torque/voltage limits, compliance, backlash, and flap twist; `hinge.py`, `drive.py`, `loads.py`).
-  - `viewer.py` is the interactive MuJoCo 3-D app (render + sliders + live plots +
-    drive telemetry; physics stays in `vehicle.py`).
+  - `viewer.py` and `sim_server.py` are the interactive MuJoCo 3-D app and browser
+    launcher / boat-editor dashboard (`http://127.0.0.1:8765`, static assets in
+    `hydrofoil/assets/launcher/`). Physics stays in `vehicle.py`.
   - `design.py`, `consistency.py`, `monitor.py`, and `tuning/` provide the boat editor,
     parameter co-dependency checker, flight observer, and controller autotuner.
 - `docs/` — engineering documentation, audits, and design studies (start at [docs/README.md](docs/README.md)).
@@ -37,7 +38,10 @@ python -m pytest
 # Parameter co-dependency check
 python -m hydrofoil.consistency
 
-# The app (MuJoCo). Click the window, then:
+# Web launcher, boat editor, and autotuner dashboard (http://127.0.0.1:8765)
+python -m hydrofoil.sim_server
+
+# Or launch the 3-D MuJoCo viewer directly. Click the window, then:
 #   Up/Down = height, Left/Right = bank, [ ] = speed, F = foil/land (--supervisor), R = reset, C = PID/LQR
 python -m hydrofoil.viewer [--preset model|manned] [--supervisor] [--controller lqr|pid] [--sensors ideal|noisy] [--waves] [--speed 1.0]
 

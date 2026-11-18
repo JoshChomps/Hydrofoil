@@ -51,25 +51,28 @@ if not exist "%VENV_PY%" (
 
 echo.
 echo Hydrofoil Sim Launcher
-echo   [1] Manned 275 kg - Supervisor + Waves + Noisy Sensors (default)
-echo   [2] Manned 275 kg - Supervisor + Calm
-echo   [3] Model 25 kg   - Raw LQR/PID + Calm
-echo   [4] Model Consistency Check
-echo   [5] Run Pytest Suite
+echo   [1] Web Dashboard + Boat Editor + 3D Viewer Launcher (default)
+echo   [2] Manned 275 kg 3D Viewer - Supervisor + Waves + Noisy Sensors
+echo   [3] Manned 275 kg 3D Viewer - Supervisor + Calm
+echo   [4] Model 25 kg 3D Viewer   - Raw LQR/PID + Calm
+echo   [5] Model Consistency Check
+echo   [6] Run Pytest Suite
 echo.
 set "CHOICE=1"
-set /p "CHOICE=Select option [1-5] (Enter for 1): "
+set /p "CHOICE=Select option [1-6] (Enter for 1): "
 
 if "%CHOICE%"=="1" (
-    "%VENV_PY%" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves
+    "%VENV_PY%" -m hydrofoil.sim_server
 ) else if "%CHOICE%"=="2" (
-    "%VENV_PY%" -m hydrofoil.viewer --preset manned --supervisor
+    "%VENV_PY%" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves
 ) else if "%CHOICE%"=="3" (
-    "%VENV_PY%" -m hydrofoil.viewer
+    "%VENV_PY%" -m hydrofoil.viewer --preset manned --supervisor
 ) else if "%CHOICE%"=="4" (
+    "%VENV_PY%" -m hydrofoil.viewer
+) else if "%CHOICE%"=="5" (
     "%VENV_PY%" -m hydrofoil.consistency
     pause
-) else if "%CHOICE%"=="5" (
+) else if "%CHOICE%"=="6" (
     "%VENV_PY%" -m pytest -v
     pause
 ) else (
