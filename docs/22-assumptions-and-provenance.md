@@ -1,0 +1,198 @@
+# 22 — Master Ledger of Assumed Values, Derivations, and Provenance
+
+Every parameter, empirical fit, structural estimate, sensor specification, and control tuning constant currently active in the repository — where each number lives in code, what physical quantity or modeling choice it represents, where it derives from, its provenance class, sensitivity, and what hardware measurement or CAD export will replace it.
+
+This ledger covers the **entire active codebase** (`hydrofoil/` and `tools/`) as of the 3D turning and full-codebase audit pass, superseding the older 25 kg-only snapshot in [04-constants-and-parameters.md](04-constants-and-parameters.md) for current manned + model work.
+
+---
+
+## 1. Provenance Taxonomy
+
+Every value in the tables below carries one explicit status tag so nothing is accidental or undocumented:
+
+| Tag | Meaning | Action before on-water trials |
+|---|---|---|
+| **PHYSICAL** | Fundamental constant or standard environmental property | Adjust `RHO_WATER` only if testing in fresh water (`~998 kg/m³`) |
+| **SOURCED** | Taken from a published component datasheet, vendor listing, or XFLR5 run | Verify unit-to-unit tolerance on the bench |
+| **USER-SPEC** | Explicitly specified by the UBC Okanagan Marine Robotics team | Update only if system architecture changes |
+| **DERIVED** | Computed analytically or numerically from other parameters (e.g. `linearize.trim`, thin-airfoil panel method, 2D strip theory) | Re-derived automatically at startup or via `consistency.py` / `design.py` |
+| **TUNED** | Found via closed-loop sweeps, relay tests, Bryson re-weighting, or cross-entropy search (`hydrofoil/tuning/`) | Re-run autotuner once CAD/measured plant parameters replace placeholders |
+| **PLACEHOLDER** | Engineering estimate or scaled guess pending CAD, CFD, or bench measurement | **Must be replaced** with real CAD, CFD, or hardware data |
+| **MODEL-APPROX** | Simplifying modeling assumption embedded in equations (e.g., empirical curve fit, single-strip quadrature) | Validate against tow-tank, CFD, or flight-test telemetry |
+
+---
+
+## 2. Environment & Wave Field
+
+| Parameter / Constant | Value | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|
+| Water density `RHO_WATER` | `1025.0 kg/m³` | `hydrofoil/constants.py:RHO_WATER` | PHYSICAL | Standard ITTC seawater at ~15 °C | `~998 kg/m³` if running in Okanagan Lake fresh water |
+| Gravity `G` | `9.81 m/s²` | `hydrofoil/constants.py:G` | PHYSICAL | Standard sea-level gravitational acceleration | None |
+| Atmospheric & vapor pressure | `101325 Pa`, `2340 Pa` | `hydrofoil/monitor.py:165`, `design.py:282` | PHYSICAL | Sea-level 1 atm and saturated water vapor pressure at 20 °C (for cavitation number $\sigma$) | Local altitude pressure (~97 kPa at Kelowna, 344 m elevation) |
+| Kinematic viscosity $\nu$ | `1.05e-6 m²/s` | `hydrofoil/design.py:283` | PHYSICAL | Water viscosity at ~18 °C (for Reynolds number estimate) | Lake temperature value if needed |
+| Wave dispersion | $\omega = \sqrt{g k}$ | `hydrofoil/waves/airy.py:AiryWave` | MODEL-APPROX | Deep-water linear Airy dispersion ($k \cdot \text{depth} \gg 1$); period auto-derived from wavelength unless overridden | Finite-depth dispersion or JONSWAP irregular spectrum if shallow/real seas needed |
+| Above-SWL orbital clamp | $z_{\text{eff}} = \min(z, 0)$ | `hydrofoil/waves/airy.py:86` | MODEL-APPROX | Truncates linear Airy decay $e^{k z}$ at the still-water plane so wave crests or emerged foils cannot cause exponential velocity blowup | Wheeler stretching if steep nonlinear waves are modeled |
+| Default wave (`DEFAULT_PARAMS` / `MANNED_PARAMS`) | `A = 0.05 m`, `λ = 5.0 m`, `dir = 0°` (`viewer --waves` manned: `0.15 m`, `10.0 m`) | `params.py:51`, `viewer.py:955` | PLACEHOLDER | Nominal light chop scaled roughly to $0.3 \times$ flying height and $2.5\text{–}3 \times$ hull length | Target Okanagan Lake / test-site wave buoy spectra |
+
+---
+
+## 3. Vehicle Mass, Inertia, CG & Hydrodynamic Added Mass
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Total mass `mass` | `25.0 kg` | `275.0 kg` | `params.py:8,105` | USER-SPEC / PLACEHOLDER | Model: initial scale craft guess; Manned: 200 kg craft + 75 kg rider nominal (tested 250–300 kg) | Scale-weighed craft + rider |
+| Default payload (`default_payloads`) | `[]` | `Rider: 75 kg at (-0.43, 0, +0.33) m` | `params.py:109` | PLACEHOLDER | Seated rider aft of CG (`-0.12 L`) and above nominal CG; used by `design.py` parallel-axis shifts | CAD seat/cockpit CG coordinates |
+| Dry inertia `ixx, iyy, izz` | `2.0, 5.0, 5.0 kg·m²` | `80.0, 260.0, 280.0 kg·m²` | `params.py:9,106` | PLACEHOLDER | Round-number diagonal inertia estimates scaled with $m L^2, m B^2$; products of inertia ($I_{xz}, I_{xy}, I_{yz}$) assumed zero | SolidWorks/CAD mass-properties inertia tensor |
+| Nominal CG offset `cg_offset` | `(0.0, 0.0) m` | `(0.0, 0.0) m` | `params.py:20` | MODEL-APPROX | Body frame origin placed at nominal CG (`r_g = 0`); vertical CG shift ($z$) is reported in `design.py` but not shifted in `RigidBody` | Full 3D `r_g` once hull + rider CAD mass properties exist |
+| Heave / pitch added mass (`M[2,2], M[4,4]`) | `24.15 kg`, `3.48 kg·m²` | `150.48 kg`, `46.53 kg·m²` | `dynamics/rigid_body.py:strip_added_mass_heave_pitch`, `vehicle.py:92` | DERIVED / MODEL-APPROX | 2D flat-plate strip theory $m_a = \frac{\pi}{4}\rho c^2 b$ per surface; pitch via lumped parallel axis $\sum m_{a,i} x_i^2$. Overstates finite-AR (~4) panels by ~15–20% | 3D potential-flow / BEM added-mass matrix |
+| Roll added inertia (`M[3,3]`) | `3.39 kg·m²` | `64.23 kg·m²` | `dynamics/rigid_body.py:strip_added_mass_roll`, `vehicle.py:97` | DERIVED / MODEL-APPROX | Exact spanwise strip integral $\sum m_{a,i}(y_i^2 + b_i^2/12)$ for horizontal lifting surfaces | 3D BEM added-mass matrix (including strut roll-sway coupling $K_{\dot{v}}$) |
+| Sway / yaw added mass (`M[1,1], M[5,5]`) | `8.26 kg`, `3.70 kg·m²` | `27.82 kg`, `37.10 kg·m²` | `dynamics/rigid_body.py:strip_added_mass_sway_yaw`, `vehicle.py:102` | DERIVED / MODEL-APPROX | 2D strip theory on nominal foilborne wetted lengths of `main_strut` and `elev_strut`; generates passive yaw Munk moment $-(Y_{\dot{v}} - X_{\dot{u}}) u v$ while preserving $\nu^T C_A \nu = 0$. Surge $X_{\dot{u}}$ assumed 0 | Depth-varying strut added mass or 3D BEM matrix |
+| Explicit linear `heave_damping` | `50.0 N·s/m` | `600.0 N·s/m` | `params.py:10,110` | PLACEHOLDER | Legacy ad-hoc damping (~4–7% of foil heave damping $\partial L/\partial w \approx 1400 / 8400\text{ N·s/m}$); kept for continuity and low-speed numerical damping | Set to `0` once validated hull radiation/heave damping is modeled |
+
+---
+
+## 4. Hydrofoils, Split Front Flaps, Struts, Free Surface & Ventilation
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Foil section polar | NACA 0009, XFLR5 v6.61, Re `2.70e6`, $N_{\text{crit}} = 9$, $\alpha \in [-17.8^\circ, +17.8^\circ]$ | Same | `data/foil_tables/naca0009_xflr5_re2700000.dat` | SOURCED / PLACEHOLDER | Single symmetric section polar used for all foils and struts; negative side mirrored symmetrically (`-17.8°..-10.2°`). Appropriate Re for manned (~`2.1e6`), optimistic for model (~`0.57e6`) | Teammate CAD `.STL` / Flow Simulation CSV polar at actual foil Re |
+| Post-stall / reverse-flow blend | Smoothstep over `7°` beyond table edge into flat-plate $C_L = 1.15 |\sin 2\alpha| \operatorname{sgn}(\alpha)$, $C_D = 2 \sin^2\alpha + 0.02$ | Same | `forces/foil.py:328-338` | MODEL-APPROX | Viterna-style flat-plate post-stall extension ensuring $C^1$ continuity through $\pm 90^\circ$ and $\pm 180^\circ$ reverse flow | High-AoA CFD or wind/water-tunnel polar |
+| Main foil geometry (per half) `main_chord`, `main_span`, `main_lateral_offset` | `0.15 m`, `0.60 m`, `0.35 m` | `0.28 m`, `1.10 m`, `0.60 m` | `params.py:11,13,111` | USER-SPEC / PLACEHOLDER | Two split front halves, `0.10 m` root gap (strut pod); total area `0.18 m²` (model) / `0.616 m²` (manned). Each half uses its own local $AR = b_{\text{half}}/c$ (`4.0` / `3.93`) | Final wing CAD span, chord, taper, and root-junction interference check (continuous `AR = 7.86` vs split `AR = 3.93`) |
+| Main foil placement `main_pos_x`, `main_pos_z` | `0.0 m`, `0.50 m` | `0.0 m`, `1.75 m` | `params.py:13,123` | PLACEHOLDER | Directly beneath nominal CG; gives `1.10 m` (model) / `1.40 m` (manned) strut length from hull bottom | CAD foil-to-CG coordinates |
+| Main foil fixed incidence `main_incidence_deg` | `2.5°` | `3.0°` | `params.py:17,112` | DERIVED / TUNED | Chosen so cruise trim flap sits near neutral (`+1.63°` @ 4 m/s model, `-1.74°` @ 8 m/s manned), keeping symmetric authority margin | Real wing section zero-lift angle + mounting jig angle |
+| Main flap geometry `main_flap_frac`, `main_flap_span_frac`, `main_flap_setback` | `0.40`, `0.50`, `0.00` | `0.25`, `1.00`, `0.15` | `params.py:75,78,116` | USER-SPEC / DERIVED | Manned adopted 2026-11-16 (`docs/20`): 25% chord, full half-span split flaps with 15% overhang balance (`< 0.6×` thin-theory overbalance ~33%) cutting hinge torque ~4× | Final flap CAD geometry & hinge axis location |
+| Reference flap effectiveness `MAIN_FOIL_FLAP_EFFECTIVENESS` | `0.21` at `(0.4, 0.5)` → `0.21` (model), `0.342` (manned) | `0.342` (derived) | `forces/foil.py:28-41` | PLACEHOLDER / DERIVED | Baseline `0.21` scaled by Glauert $\tau(c_f/c) \cdot \text{span\_frac}$, implying a fixed `0.56` viscous/gap/3D loss factor (`0.21 / (0.747 × 0.5)`) | CFD / tow-tank $\partial C_L / \partial \delta_f$ for the real sealed/gapped hinge |
+| Plain-flap separation `flap_stall_deg` | `15.0°` | `15.0°` | `forces/foil.py:309-313`, `vehicle.py:118` | MODEL-APPROX | Smooth trailing-edge separation rolloff above `15°`: $\delta_{\text{eff}} = d_0 + e - 0.55 e^2/(e+4)$ and $\Delta C_D = 2.5\times 10^{-4} e^2$ (Abbott & von Doenhoff plain-flap trend) | CFD / experimental high-deflection flap polar |
+| Flap pitching moment factor `flap_cm_factor` | `0.80` | `0.80` | `vehicle.py:117` | PLACEHOLDER | Viscous knockdown on thin-airfoil Glauert $C_{m,\delta}$ about $c/4$ (matches hinge `viscous_factor`) | Section CFD $C_m(\alpha, \delta)$ |
+| Oswald efficiency `MAIN_FOIL_OSWALD_EFFICIENCY` | `0.80` | `0.80` | `forces/foil.py:48` | PLACEHOLDER | Used identically in both Helmbold lift-slope $1/(1 + a_{2D}/(\pi e AR))$ and induced drag $C_L^2/(\pi e AR)$; assumes non-elliptic split-wing span loading | Vortex-lattice / 3D CFD span efficiency |
+| Elevator geometry `elev_chord`, `elev_span`, `elev_pos_x`, `elev_pos_z` | `0.10 m`, `0.30 m`, `-1.20 m`, `0.40 m` | `0.17 m`, `0.50 m`, `-2.00 m`, `1.65 m` | `params.py:12,21,124` | USER-SPEC / PLACEHOLDER | Single-piece all-moving aft stabilizer (`ELEVATOR_FLAP_EFFECTIVENESS = 1.0`), pitch-only (no roll/yaw control), mounted `0.10 m` higher than main foil | Final tail CAD dimensions & arm |
+| Vertical strut chords `main_strut_chord`, `elev_strut_chord` | `0.12 m`, `0.08 m` | `0.16 m`, `0.12 m` | `params.py:25,125` | PLACEHOLDER | Assumed NACA 0009 vertical struts; strongly govern steady turn radius (~32–35% of coordinated turn rate) and roll-from-sideslip $K_v$ | Real strut airfoil sections, chords, and rake/taper |
+| Wing-to-tail `downwash_factor` | `1.0` (lagged by $\ell/u$) | `1.0` | `vehicle.py:435,442` | MODEL-APPROX | Elliptic far-field downwash $\varepsilon = 2 C_L / (\pi AR_{\text{wing}})$ convected at speed $u$ over tail arm $\ell$ | 3D CFD wake downwash factor at tail plane |
+| Free-surface lift decay `DECAY_LENGTH_CHORDS` | `1.58` chords | `1.58` chords | `forces/foil.py:150` | PLACEHOLDER / MODEL-APPROX | Monotone exponential $1 - e^{-(h/c)/1.58}$ fitted so $f(3) \approx 0.85, f(10) \approx 0.998$; evaluated via 3-station spanwise Simpson quadrature in banked turns; smoothstep emergence wetting over $0 < h/c < 0.25$ | Froude-dependent Wadlin / Hough-Moran / CFD free-surface curve |
+| Foil breach ventilation (`vent_breach_hc`, `vent_recover_hc`, lift/drag impact, time constants) | Trigger `0.25 c`, recover `0.85 c`, lift `×0.45`, $\Delta C_D = +0.08$, $\tau_{\text{on}} = 0.08\text{ s}$, $\tau_{\text{off}} = 0.40\text{ s}$ | Same | `vehicle.py:715-732`, `forces/foil.py:354-365` | MODEL-APPROX / PLACEHOLDER | Empirical hysteretic wingtip-first breach ventilation (partial `0.55` on tip-only breach, `1.0` on panel breach); activates above `2.0 m/s` | Tow-tank / flight-test ventilation & re-attachment data |
+| Strut sideslip ventilation (`strut_vent_deg`, `strut_vent_recover_deg`) | Trigger `8.5°`, recover `4.5°`, $V > 3.5\text{ m/s}$, $\tau_{\text{on}} = 0.08\text{ s}$, $\tau_{\text{off}} = 0.40\text{ s}$ | Same | `vehicle.py:733-746` | MODEL-APPROX / PLACEHOLDER | Typical surface-piercing NACA 0009/0012 strut ventilation onset at $Fr > 1.5$ (Harwood et al. / Rothblum) | Experimental strut ventilation boundary for actual strut section & fences |
+
+---
+
+## 5. Hull Hydrostatics, Drag Hump & Damping
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Hull footprint `hull_length`, `hull_beam`, `hull_x` | `2.0 m`, `0.30 m`, `0.0 m` | `3.6 m`, `1.2 m`, `0.0 m` | `params.py:65,127` | PLACEHOLDER | Rectangular wall-sided prism discretized into `11 × 7 = 77` hydrostatic cells (`nx=11, ny=7` in `HullHydrostatics`); reproduces metacentric $GM_T, GM_L$ within 1% | Real CAD hull lines / hydrostatic tables |
+| `hull_offset`, `max_draft` | `+0.60 m`, `0.30 m` | `-0.35 m`, `0.30 m` | `params.py:66,126-127` | PLACEHOLDER | Vertical distance from CG to hull bottom (`>0` = hull above CG on model; `<0` = CG 0.35 m inside hull above keel on manned). Buoyancy caps linearly at `max_draft` | CAD waterline-to-CG geometry & reserve buoyancy curve |
+| Surge drag `hull_drag_coeff` & Froude hump (`hull_hump_amp`, peak `Fr_L`, width) | `20.0 N/(m/s)²`, hump `0.8` at $Fr_L = 0.48$, width `0.22` | `120.0 N/(m/s)²`, same hump | `params.py:67,128`, `forces/hull.py:187-190`, `vehicle.py:595` | PLACEHOLDER / MODEL-APPROX | Quadratic wetted-fraction surge drag with Gaussian wave-making resistance hump near hull-speed transition ($Fr_L \approx 0.45\text{–}0.50$) | Savitsky planing / CFD or tow-tank resistance curve |
+| Hull lateral sway drag `sway_coeff` | $0.5 \rho L d_{\max} \approx 308\text{ N/(m/s)}^2$ | $0.5 \rho L d_{\max} \approx 2214\text{ N/(m/s)}^2$ (× wetted) | `forces/hull.py:191-193` | MODEL-APPROX / PLACEHOLDER | Crossflow drag ($C_{Dy} \approx 1.0$) on submerged hull side area $L \cdot d$, scaled by wetted fraction (zero when foilborne) | Hull maneuvering CFD / towing test |
+| Rotational hull damping `hull_rot_damping` | `400 N·m·s/rad` | `6000 N·m·s/rad` | `params.py:70,128`, `forces/hull.py:195-197` | PLACEHOLDER | Linear roll, pitch, and yaw damping at full draft (~0.2 critical in pitch at rest draft), scaled by wetted fraction | Strip-theory radiation damping / roll-decay test |
+| Initial rest pitch `theta_0` | `+2.0°` | `+2.0°` | `vehicle.py:462` | PLACEHOLDER | Small initial pitch perturbation in `rest_state()` (used in damping tests) | Trim float attitude from hull hydrostatics |
+
+---
+
+## 6. Control-Surface Actuation Chain (moteus r4.11 + BLDC + Gearbox + Mechanics)
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Motor `kv_rpm_per_v`, `peak_torque` | `330 rpm/V`, `1.7 N·m` | Same | `actuation/drive.py:39,42` | SOURCED | mj5208 reseller listing (`Kt = Ke = 60/(2π Kv) = 0.0289 N·m/A`) | Measured `moteus_tool` calibration & dyno |
+| Motor `r_line_line`, `j_rotor` | `0.10 Ω`, `7.0e-5 kg·m²` | Same | `actuation/drive.py:40-41` | PLACEHOLDER | Typical 5208-class winding resistance and ~100 g outrunner bell at $r \approx 27\text{ mm}$ | `moteus_tool` phase calibration & rotor CAD |
+| Controller `v_bus`, `supply_i_max` | `40.0 V`, `25.0 A` | `40.0 V`, `25.0 A` | `params.py:82-83`, `drive.py:52-53` | USER-SPEC | 40 V battery → PDB → actuators (`25 A` shared actuator rail; propulsion on separate path for manned) | Final battery pack nominal/sag voltage & PDB breaker spec |
+| Controller `i_peak`, `p_peak`, `k_mod`, `p_idle` | `100 A`, `900 W`, `0.90`, `1.5 W` | Same | `actuation/drive.py:54-58` | SOURCED / PLACEHOLDER | moteus r4.11 datasheet (`100 A`, `900 W @ 30 V`); `k_mod = 0.90` PWM dead-time margin; `p_idle = 1.5 W` placeholder | Measured board idle power & thermal derating |
+| Continuous drive current `drive_i_cont` | `12.0 A` | `20.0 A` | `drive.py:55`, `params.py:139` | SOURCED / PLACEHOLDER | moteus bare rating (`12 A`) vs water-cooled / heatsunk rating (`20–32 A`); stands in for future firmware co-dependency thermal limit | Bench thermal soak test in sealed strut nacelle |
+| Gearbox `gear_ratio`, `efficiency`, `rated_torque`, `friction_out` | `20:1`, `0.85`, `30.0 N·m`, `0.05 N·m` | Same | `params.py:81`, `drive.py:63-66` | USER-SPEC / PLACEHOLDER | 2-stage planetary typical `0.85` efficiency, `30 N·m` rating, `0.05 N·m` seal/bearing Coulomb friction (smoothed by $\tanh(\dot\delta / 0.05)$) | Selected gearbox datasheet + bench back-drive test |
+| Output shaft `shaft_diameter`, `shaft_shear_yield` | `13 mm`, `140 MPa` | `15 mm`, `140 MPa` | `drive.py:74-76`, `params.py:142` | PLACEHOLDER / SOURCED | 316 stainless ($\tau_y \approx 0.58 \times 240 = 140\text{ MPa}$, static SF 2 → `70 MPa` allowable); sized for worst-case drive torque into stop/jam | Final shaft alloy, keyway/spline $K_t$, and fatigue SF |
+| Servo loop `kp`, `kd`, `torque_cap`, `delay_s`, `n_sub` | `250 N·m/rad`, `4.5 N·m·s/rad`, `10.0 N·m`, `0.01 s`, `10` | Same except `torque_cap = 28.0 N·m` | `actuation/servo.py:52-58`, `params.py:141` | PLACEHOLDER / TUNED | ~15 Hz / $\zeta \approx 0.8$ position loop with 10 ms CAN-FD + flight-computer latency; manned cap `28 N·m` (~97% of 20:1 motor peak) prevents lateral-CG stall | Measured moteus closed-loop step response & CAN latency |
+| Drive compliance `backlash_deg`, `gear_stiffness`, `gear_damping_ratio`, `encoder` | Rigid (`0°`, `None`, `motor`) | `0.10°` (6 arcmin), `5000 N·m/rad`, `0.05`, `"dual"` | `actuation/servo.py:60-64`, `params.py:141` | PLACEHOLDER | Precision preloaded planetary stage + dual-encoder (output position + motor-velocity collocated damping) | Gearbox catalog backlash/torsional stiffness & encoder choice |
+| Spanwise torsional rigidity `main_flap_GJ`, `elev_GJ` | Rigid (`None`) | `250 N·m²`, `1000 N·m²` | `params.py:119`, `vehicle.py:388-399` | PLACEHOLDER | Estimated carbon closed-box section (`70×13×1.5 mm` flap, `170×15×2 mm` elevator); $k_{tw} = 3 GJ / L$ (flap) or $12 GJ / L$ (center-driven elevator) | Coupon torsional bench test or laminate FEA |
+| Surface structural inertia `main_surface_inertia`, `elev_surface_inertia` | `4e-4`, `4e-4 kg·m²` | `2.7e-3`, `6e-3 kg·m²` | `params.py:80,133`, `hinge.py:105` | PLACEHOLDER / DERIVED | Composite plate scaling law `FLAP_INERTIA_K` anchored to initial `9e-3` (manned 40% flap) & `4e-4` (model) placeholders | CAD solid-model inertia about hinge axis |
+| Hinge moment `viscous_factor` & unsteady flap plate model | `0.80`; isolated plate ($a = -1$) | Same | `actuation/hinge.py:39-43,121` | PLACEHOLDER / MODEL-APPROX | 2D lumped-vortex thin-airfoil panel method (`n = 400`) × `0.80` boundary-layer knockdown; unsteady inertia/damping via quasi-steady Theodorsen ($C(k) = 1$) | CFD hinge moments + bench water-tunnel torque sensor |
+| Mechanical stops `flap_stop_deg`, `elev_stop_deg` & `cmd_slew_deg_s` | `±30°`, `±20°`, `None` | `±30°`, `±20°`, `150 °/s` | `params.py:88,122` | PLACEHOLDER / TUNED | Physical travel stops; manned `150 °/s` slew limiter eliminates 48 A takeoff current spike (cruise waves need ~40 °/s) | Final linkage/cove mechanical stop geometry |
+| Elevator pivot `elev_pivot_frac` | `0.22` (22% chord) | `0.22` | `params.py:79` | PLACEHOLDER | Placed 3% chord ahead of thin-airfoil AC (25%) so limp elevator weathervanes fail-safe | Real tail section AC curve across AoA & Re |
+| Legacy kinematic actuator `DEFAULT_ACTUATOR_PARAMS` | `720 °/s`, `τ = 0.02 s`, `delay = 0.02 s` | Same (unused in default `"servo"` mode) | `control/actuator.py:16-20` | PLACEHOLDER | MyActuator RMD-X8-class BLDC placeholder; active only if `actuator_model="kinematic"` | Not used for default hardware simulation |
+
+---
+
+## 7. Propulsion & Surge Loop
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Max static thrust `max_thrust` | `50.0 N` | `1000.0 N` | `params.py:57,129` | PLACEHOLDER | Model: legacy Unity value; Manned: scaled to clear hull hump (~`2.5×` hump drag, 600 N also tested) | Bollard-pull test of actual thruster/propeller |
+| Shaft power ceiling `prop_power_max` | `300.0 W` | `6500.0 W` | `params.py:91,143`, `vehicle.py:669` | PLACEHOLDER | Caps thrust at high speed via $T \le P_{\max} / \max(u, 1.0)$; represents electric powertrain limit | Motor/ESC/propeller $T(u, \text{throttle})$ map |
+| Propulsion spool lag `prop_tau_s` | `0.08 s` | `0.12 s` | `params.py:90,143`, `vehicle.py:672` | PLACEHOLDER | First-order ESC + propeller hydrodynamic inertia spool time constant | Step-throttle bench response |
+| Thrust line offset | `(0, 0, 0)` (through CG) | `(0, 0, 0)` | `vehicle.py:596` | MODEL-APPROX | Thrust applied along body $+x$ with zero pitch moment arm. Real pod-mounted prop near foil (`z ≈ +1.5 m`) adds a nose-up pitching moment $T \cdot z_{\text{prop}}$ | Add `thrust_pos_z` once motor pod location is frozen |
+| Surge PID gains `kp_speed`, `ki_speed`, `kd_speed` | `30.0`, `5.0`, `0.0` | `360.0`, `60.0`, `0.0` | `params.py:56,130` | TUNED / PLACEHOLDER | Scaled roughly with mass ratio (~11×) | Retune against actual motor-ESC throttle curve |
+| Overall propulsion efficiency `PROP_EFF` | `0.35` | `0.35` | `tools/actuator_budget.py:32` | PLACEHOLDER | Rough ESC × motor × propeller efficiency for rail-current estimate only | Measured electrical power vs thrust × speed |
+
+---
+
+## 8. Sensors & State Estimation
+
+| Parameter | Value | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|
+| Gyro channel (`p, q, r`) | `200 Hz`, $\sigma = 0.2\text{ °/s}$, bias walk `0.01 °/s/√s` | `sensors/models.py:68` | PLACEHOLDER | Typical consumer/industrial MEMS IMU (e.g. BMI088 / ICM-42688 / VN-100 class); runs at sim rate `100 Hz` when `dt = 0.01 s` | Selected IMU Allan-variance datasheet |
+| AHRS attitude (`phi, theta`) | `100 Hz`, $\sigma = 0.3^\circ$ | `sensors/models.py:69` | PLACEHOLDER | Stands in for onboard fused EKF attitude solution (ignores centripetal turn-acceleration tilt error on raw accelerometer!) | Real AHRS/INS dynamic turn accuracy spec |
+| Primary & secondary height rangers (`height`, `height_aux`) | `20 Hz`, $\sigma = 1.0 / 1.5\text{ cm}$, latency `50 / 40 ms`, dropout `2%`, stagger `25 ms` | `sensors/models.py:70-71,77` | PLACEHOLDER | Typical ultrasonic / ToF / mmWave water-surface rangers; assumed tilt-compensated at CG (ignores bow lever-arm pitch coupling and beam slant-range geometry) | Chosen ranger datasheets + mount coordinates `(x_s, y_s, z_s)` |
+| Vertical accelerometer (`az`) | `200 Hz`, $\sigma = 0.05\text{ m/s}^2$, bias walk `0.002 m/s²/√s` | `sensors/models.py:72,100` | PLACEHOLDER | Backward-differenced true NED $\dot{v}_z$ + white noise + bias walk (stands in for gravity-removed rotated specific force) | True IMU specific force rotated by noisy AHRS |
+| Water speed (`speed`) | `10 Hz`, $\sigma = 0.1\text{ m/s}$ | `sensors/models.py:73` | PLACEHOLDER | Paddlewheel / pitot / GPS speed sensor (no current offset modeled) | Chosen water-speed sensor spec |
+| GNSS vertical velocity (`gnss_vz`) | `10 Hz`, $\sigma = 0.06\text{ m/s}$, latency `80 ms`, dropout `1%` | `sensors/models.py:74` | PLACEHOLDER | Typical RTK/Doppler GNSS vertical velocity accuracy; used automatically as fallback when both ranging sensors fail | Selected GNSS receiver spec |
+| `KalmanEstimator` measurement $\sigma$ & process noise `q` | `z: 1 cm, phi/th: 0.3°, p/q/r: 0.2°/s`; `q = {z:3e-3, phi/th:5e-3, v:0.3, w:0.15, p/q:0.5, r:0.3}` | `estimation/kalman.py:35-41` | TUNED / PLACEHOLDER | Retuned on noisy pitch-kick & wave flights (`docs/19`); linearized about nominal CG and level flight | Re-tune on logged hardware sensor noise & vibration |
+| `HeaveFilter` defaults (`sigma_h, sigma_a, bias_walk, latency, gate, max_reject`) | `0.01 m`, `0.05 m/s²`, `0.02` (model) / `0.005` (manned), `0.05 s`, `5.0 σ`, `4` | `estimation/kalman.py:121-123`, `params.py:148` | TUNED | `bias_walk` inflated ~2.5–10× over sensor walk to bound calm drift; `kf_wave = {w0: 4.0, zeta: 1.0, sigma: 0.10}` (model) / `{2.0, 1.0, 0.15}` (manned) tuned for 8 m/s encounter frequencies | Re-tune against real IMU bias stability & lake wave spectra |
+| Dual-height freeze quarantine & voting | Freeze check `same_t > 0.15 s` when `|vz| > 0.05` or `|h - z| > 0.03` | `vehicle.py:295-304` | TUNED | Prevents frozen-but-fresh height readings from poisoning `HeaveFilter` bias state `b_a` before `sensor_timeout` (`0.5 s`) | Verify against actual ranger failure modes |
+
+---
+
+## 9. Flight Control Laws (PID, Delay-Aware LQR & Turning Control)
+
+| Parameter | Model (`DEFAULT`) | Manned (`MANNED`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|---|
+| Takeoff / backup PID gains | Heave `40/6/10`, Pitch `1/1/0.1`, Roll `2/0/0.2` | Heave `62.38/6.015/6.793`, Pitch `3.019/1.447/0.092`, Roll `1.915/0/0.2135` | `params.py:28-32,168-170` | TUNED | Model: 2026-11-04 sweeps; Manned: 2026-11-16 autotuner including supervised takeoff (`docs/20 §8`). `ki_roll = 0` prevents wave windup in PID mode | Re-run `python -m hydrofoil.tuning.autotune --target auto` after CAD update |
+| Virtual flap command limit `lim` / `limit_deg` & physical diamond `phys_limit` | `±20.0°` virtual / `±24.0°` physical (`min(flap_stop_deg, limit_deg + 4°)`) | `±20.0°` / `±24.0°` | `control/pid.py:127`, `control/lqr.py:224` | USER-SPEC / TUNED | Virtual channels capped at `±20°`; LQR enforces roll-prioritized physical split-flap diamond `|main| + |roll| <= phys_limit` inside the `30°` stop without starving heave during steep wave crests | Adjust to real flap stall / servo travel envelope |
+| Trim feedforward `trim_ff_deg` @ `trim_ff_speed` | `1.63°` @ `4.0 m/s` | `4.11°` @ `6.0 m/s` | `params.py:40,149`, `vehicle.py:445-456` | DERIVED | Exact solution of `linearize.trim` at `trim_ff_speed` (verified by `consistency.py` and `test_method_fixes.py`); scaled as $1/u^2$ on total AoA | Re-derived automatically by `design.py` / `consistency.py` check |
+| LQR Bryson weights `DEFAULT_WEIGHTS` / `lqr_weights` | `z: 0.03, phi: 0.8°, th: 2°, v: 0.3, w: 0.15, p/q: 8°/s, r: 15°/s, u: 8°, du: 250°/s` | Overrides: `z: 0.01084, phi: 0.07882 rad (4.5°), th: 0.0348 rad (2.0°), w: 0.08196, q: 0.2391, iz: 0.01292, du: 566.2°/s` | `control/lqr.py:36-42`, `params.py:175-176` | TUNED | Bryson's rule + 4 rounds re-weighting + 6 rounds cross-entropy search across 5 scenarios incl. noisy sensors (`docs/19`) | Re-tune weights after final craft CAD/sensors arrive |
+| LQR schedule `lqr_speeds`, `lqr_engage_speed`, `est_engage_speed` | `(3,4,5,6,7) m/s`, `3.2 m/s`, `3.0 m/s` | `(4.5,5.5,6.5,8.0,9.5) m/s`, `4.8 m/s`, `4.5 m/s` | `params.py:177`, `vehicle.py:225-226,347` | DERIVED / TUNED | Covers trimmable foilborne envelope (`|flap| <= 15°`); auto-rescheduled in `design.py` on geometry/mass edits | Update if speed envelope changes |
+| LQR handover & integrator limits `engage_height_err`, `blend_s`, `int_limit` | `0.15 m`, `0.5 s`, `(0.05 m·s, 0.03 rad·s, 0.03 rad·s)` | Same | `control/lqr.py:167-168` | TUNED | `0.5 s` blend eliminates handover command step (`docs/19`); `int_limit` prevents windup while retaining authority for CG shifts | Re-check after retuning LQR weights |
+| LQR steady-turn equilibrium feedforward | Linear `(turn_nu, turn_u)` from `As, Bs` + exact level-turn `w_ref, q_ref` + `cos(phi)-1` gravity compensation | Same | `control/lqr.py:steady_turn_sensitivity`, `_turn_reference` | DERIVED | Computed directly from the linearized plant at each scheduled speed; zero at `phi_ref = 0`, eliminates integrator fighting and cuts turn height drop by 2–4× | Automatically follows plant parameters (no manual tuning) |
+| Autotuner scoring weights & targets | `LQR_TARGETS = {z_rms: 0.03*h, pitch/roll_peak: 1.5°, rate: 60°/s, lim: 2%}`; failure penalty `+100`; phases `rising`, `cruising` (incl. `turn`), `falling` (`landing`) | Same | `tuning/classical.py:105`, `tuning/scoring.py` | TUNED / DESIGN-CHOICE | Balances wave ride height, 3D turn tracking, soft landing touchdown, and actuator effort/limiting on noisy sensors | Adjust per club comfort vs energy efficiency priority |
+
+---
+
+## 10. Supervisor Envelope, Turning Limits, FDI & Flight Monitor
+
+| Parameter | Value (`DEFAULT_SUPERVISOR`) | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|
+| Speed envelope `v_disp_max`, `v_liftoff`, `v_takeoff`, `v_min_foil`, `v_max` | `4.0`, `5.5`, `6.5`, `6.0`, `9.5 m/s` | `control/supervisor.py:46-50` | DERIVED / TUNED | Sized for `MANNED_PARAMS` (275 kg): avoids hump waste in displacement, clears hull at 5.6–6.3 m/s, keeps `>7°` flap margin above `6.0 m/s` and $\sigma \approx 2.3$ cavitation margin at `9.5 m/s` | Re-derive for final craft foil area, weight & cavitation limit |
+| Height envelope `h_min`, `h_max`, `h_default`, `wave_margin` | `0.15 m`, `0.60 m`, `0.25 m`, `1.2` | `control/supervisor.py:51-54` | TUNED / DERIVED | Keeps hull above waves while keeping foil `>= 0.80 m` deep on `1.40 m` struts | Update for final strut length & lake wave height |
+| Pilot reference ramps `climb_rate`, `sink_rate`, `speed_rate`, `bank_rate` | `0.10 m/s`, `0.08 m/s`, `0.5 m/s²`, `12.0 °/s` | `control/supervisor.py:55-57,62` | TUNED | Gentle rider accelerations; `bank_rate = 12°/s` cuts calm S-turn sideslip spikes (`7.1° → 3.0°`) and roll-entry shocks (`24°/s` in `EMERGENCY_LANDING`) | Tune for rider comfort during sea trials |
+| Attitude fault limits `roll_limit`, `pitch_limit`, `takeoff_pitch_limit`, `attitude_time` | `20.0°`, `10.0°`, `14.0°`, `0.25 s` | `control/supervisor.py:60,65-67` | TUNED / DERIVED | `roll_limit = 20°` sits `5°` above calm `bank_max = 15°` and well inside ~`25–30°` wingtip breach / hull strike; `0.25 s` persistence on soft foiling limits avoids single-tick wave-crest noise aborts while tripping instantaneously on hard ceilings (`25°` roll / `14°` pitch); `TAKEOFF → FOILING` requires attitude & pitch-rate hysteresis margin | Validate against real craft pitch/roll structural limits |
+| Safe turning envelope `bank_max`, `tip_hc_min`, `chine_clear_min` | `15.0°`, `1.25 chords`, `0.10 m` | `control/supervisor.py:61,63-64`, `safe_bank_limit` | DERIVED / TUNED | Dynamic safe bank combines: (1) `roll_limit - 5°` margin, (2) simultaneous wingtip + chine wave lens, (3) wingtip depth at active ride height, (4) low-speed flap authority taper (`12°` @ 6 m/s → `15°` @ 7.5+ m/s) | Update `tip_hc_min` & `chine_clear_min` from tow-tank / sea-trial breach data |
+| Drive FDI thresholds `fault_err_deg`, `fault_time`, `elev_fault_time`, `still_time`, `still_deg`, `fault_time_limited`, limp current | `4.0°`, `0.30 s`, `0.15 s`, `0.20 s`, `0.2°`, `1.5 s`, `< 0.5 A` | `control/supervisor.py:67-73,240` | TUNED | Rate- and hinge-load-compensated residual separates healthy high-rate wave slews from jams/power loss; elevator trips fast (`0.15 s`) because pitch diverges in ~1 s | Tune on bench hardware encoder noise & current ripple |
+| Sensor & landing timers `sensor_timeout`, `takeoff_timeout`, `touchdown_clearance`, `jam_land_thrust` | `0.5 s`, `25.0 s`, `0.0 m` (`+0.03 m` hysteresis), `0.0 N` | `control/supervisor.py:58,74-76,304` | TUNED | `0.5 s` = 10 missed 20 Hz height frames or 5 missed 10 Hz speed frames | Match real sensor bus watchdog timeout |
+| `FlightMonitor` thresholds | Hull `< 0.04 m`, breach `< 1 / 2 c` (wingtip), authority `> 15 / 19°`, drives `> 20 / 60%`, ride `> 0.1 g rms / 0.5 g pk`, $\sigma < 1.2 / 2.0$, sideslip `> 5 / 8°` | `hydrofoil/monitor.py:95-185` | TUNED / SOURCED | ISO 2631-1 comfort guidance (`~0.1 g`), cavitation margin (`sigma`), flap saturation & strut ventilation proximity (`beta`) | Adjust alert levels per test-team protocol |
+| `consistency.py` sizing assumptions | `SF_TORQUE = 1.5`, `AUTH_DEG = 3.0°`, `PLAIN_FLAP_LINEAR_DEG = 20.0°`, `TAU_ALLOW = 70 MPa` | `hydrofoil/consistency.py:29-32` | DESIGN-CHOICE / SOURCED | Static actuator sizing check (`±3°` effective AoA gust authority × 1.5 SF) and 316 SS shear SF 2 | Update once firmware co-dependency limits exist |
+
+---
+
+## 11. Numerical Integration, Safety Clamps & UI Constants
+
+| Parameter | Value | File & Symbol | Class | Derivation / Basis | Replace With |
+|---|---|---|---|---|---|
+| Simulation step `dt` | `0.01 s` (`100 Hz`) | `params.py:52` | TUNED | RK4 step error `< 1e-5` near trim, `< 4e-4` in aggressive maneuvers; matches flight-computer loop rate | Match real flight controller loop rate (e.g. `100–250 Hz`) |
+| RK4 state clamps `MAX_ATTITUDE_RAD`, `MAX_LINEAR_VEL`, `MAX_ANGULAR_VEL` | `70°`, `15.0 m/s`, `3.0 rad/s` | `vehicle.py:48-50` | SAFETY-GUARD | Keeps Euler transform `T_euler` clear of `±90°` gimbal lock and prevents NaN propagation to viewer | Replace Euler angles with quaternions if extreme post-crash motion is needed |
+| `design.py` root gap & flap trim limit | `0.10 m` gap (`lat = 0.05 + span/2`), `FLAP_TRIM_LIMIT = 15.0°` | `design.py:38,189` | DESIGN-CHOICE | Keeps `5°` margin below `±20°` command limit when auto-scheduling speeds | Match CAD strut-pod root width |
+| `viewer.py` pilot stick bounds & water patch | Height `-0.3..1.0 m`, speed `0..10 m/s`, bank `±15°` (spring `10°/s`), water `128×128` over `±30 m` | `viewer.py:69-72,94` | UI-CHOICE | Interactive range matching manned flight envelope; supervisor enforces tighter dynamic `safe_bank_limit` when enabled | Update if boat speed/bank envelope changes |
+
+---
+
+## 12. Priority Replacement Roadmap (What Changes Results Most)
+
+Ranked by physical impact on flight performance, turning behavior, and hardware sizing:
+
+1. **Main wing & elevator CAD + CFD/Flow-Sim polars (`data/foil_tables/`, `params.py`, `forces/foil.py`)**:
+   - Real section $C_L(\alpha, \delta)$, $C_D$, $C_m$, continuous vs split-wing effective aspect ratio (`AR = 3.93` vs `7.86`), and real flap effectiveness (`0.342` assumption) directly set takeoff speed, trim angle, hinge torque, and stall margin.
+2. **Vertical strut chords & sections (`main_strut_chord`, `elev_strut_chord`)**:
+   - Directly govern **turn radius** (currently ~29–34% of ideal coordinated rate because `main_strut` carries large outward side force in rudderless turns), **overbanking spiral rate** ($K_v$), and **strut ventilation onset** (`8.5°` placeholder).
+3. **Measured mass, 3D CG (`r_g`), and inertia tensor (`ixx, iyy, izz`)**:
+   - Sets natural frequencies, roll/pitch control power, and whether thrust-line pitching moment ($z_{\text{prop}}$) shifts trim significantly.
+4. **Bench drive characterization (`R_ll`, `J_rotor`, `gearbox efficiency`, `backlash_deg`, `gear_stiffness`, thermal `drive_i_cont`)**:
+   - Sets servo bandwidth, phase margin, peak rail current, and whether tooth knock occurs across backlash in waves.
+5. **Hull lines & tow-tank/CFD resistance hump (`hull_drag_coeff`, `hull_hump_amp`, `hull_rot_damping`)**:
+   - Governs realistic takeoff thrust requirement and wave-takeoff slamming; current wall-sided box hull is qualitative only.
+6. **Measured sensor specs & mounting geometry (`sensors/models.py`)**:
+   - Real ranging-sensor mount location (bow preview vs CG), beam tilt error during `15°` banks, and AHRS turn-acceleration error will dominate noisy-sensor turning accuracy on water.

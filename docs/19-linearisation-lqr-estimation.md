@@ -395,7 +395,7 @@ Not covered: turns, irregular seas, rider moving during takeoff/landing, propell
    - LQR: Bryson's rule (Bryson and Ho, Applied Optimal Control, 1975), then iterative re-weighting that tightens whatever overshot its target. This loop is the project's own heuristic, not a published method.
 3. a cross-entropy search (Rubinstein, Methodology and Computing in Applied Probability 1, 1999) seeded at the best of 1-2.
 
-CLI: `python -m hydrofoil.tuning.autotune --preset manned --target pid|lqr`. The dashboard's Autotuner tab runs the same thing.
+CLI: `python -m hydrofoil.tuning.autotune --preset manned --target auto|pid|lqr`. `--target auto` (default) runs a two-stage phase-aware search: Stage 1 tunes the PID gains on the Rising (`takeoff`, `supervised`) and Falling (`landing`) scenarios where PID owns control, and Stage 2 locks those PID gains and tunes the LQR weights (with `iphi`/`itheta` coupled to `phi`/`theta`) across Cruising & 3D Turning (`head`, `following`, `shift`, `noisy`, `turn`) and full-envelope handovers. The dashboard's Autotuner tab runs the same thing.
 
 Manned results (275 kg; height rms, mm):
 

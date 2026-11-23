@@ -57,9 +57,14 @@ DEFAULT_SUPERVISOR = {
     "speed_rate": 0.5,          # m/s^2: speed-ref ramp
     "takeoff_timeout": 25.0,    # s: abort takeoff if liftoff speed not reached
     "disp_flap_deg": 0.0,       # flap angle held in displacement mode
-    "roll_limit": 15.0,         # deg: attitude fault while foiling
+    "roll_limit": 20.0,         # deg: attitude fault while foiling (5 deg margin above bank_max; inside ~25-30 deg tip breach)
+    "bank_max": 15.0,           # deg: calm-water turning bank ceiling (further narrowed by safe_bank_limit)
+    "bank_rate": 12.0,          # deg/s: bank-reference ramp rate (prevents adverse-yaw & sideslip spikes on turn entry/reversals)
+    "tip_hc_min": 1.25,         # chords: minimum high-side outer wingtip submergence kept in a banked turn
+    "chine_clear_min": 0.10,    # m: minimum low-side hull chine clearance above waves in a banked turn
     "pitch_limit": 10.0,        # deg: foiling pitch limit (inside foil stall while tolerating 0.25 m wave slope)
     "takeoff_pitch_limit": 14.0,  # deg: wider hull pitch allowance during displacement/takeoff wave climbs
+    "attitude_time": 0.25,      # s: persistence before soft foiling attitude limit trips (instant on hard ceiling)
     "fault_err_deg": 4.0,       # encoder vs command error that counts as a drive fault
     "fault_time": 0.30,         # s it must persist (flaps)
     "elev_fault_time": 0.15,    # s (elevator: the boat diverges in about 1 s without it)
@@ -105,12 +110,15 @@ class Supervisor:
         self._last_reject_events = 0
         self.speed_ref = 0.0
         self.height_ref = None
+        self.bank_ref = 0.0
+        self.bank_limit = float(self.c["bank_max"])
         self.jam = None                              # ("left"|"right", angle deg) when a main-flap drive is lost
         self.wave_amp = 0.0
         self._wave_hist = []
         self.log = []                                # (t, from, to, reason)
         self._down_t = 0.0
         self._down_h_t = 0.0
+        self._att_t = 0.0
 
     def _set_mode(self, t, mode, reason=""):
         if mode != self.mode:
@@ -122,6 +130,7 @@ class Supervisor:
         """What a UI shows: mode, references, envelope and latched faults."""
         hs = getattr(self.vp, "height_status", None) or {}
         return {"mode": self.mode, "speed_ref": self.speed_ref, "height_ref": self.height_ref,
+                "bank_ref": self.bank_ref, "bank_max": self.bank_limit,
                 "v_min": self.c["v_min_foil"], "v_max": self.c["v_max"], "h_min": self._h_min(),
                 "h_max": self.c["h_max"], "faults": sorted(self.faults),
                 "warnings": sorted(self.warnings), "using_gnss": bool(hs.get("using_gnss", False)),
@@ -132,9 +141,55 @@ class Supervisor:
         """Hull bottom above the mean surface [m] from the controllers' height estimate."""
         return float(self.vp.params["hull_offset"] - cstate[2])
 
+    def safe_bank_limit(self, cstate=None) -> float:
+        """
+        Physics-derived maximum safe steady bank angle [deg] balancing four constraints:
+          1. Attitude fault margin (roll_limit - 5 deg) and configured bank_max.
+          2. Simultaneous high-side wingtip submergence (>= tip_hc_min * main_chord) and
+             low-side chine clearance (>= chine_clear_min) across wave crests/troughs.
+          3. High-side wingtip submergence at the active target ride height.
+          4. Low-speed split-flap stall/authority taper near v_min_foil.
+        """
+        c, p = self.c, self.vp.params
+        b_cap = min(float(c["bank_max"]), max(0.0, float(c["roll_limit"]) - 5.0))
+        u = float(cstate[6]) if cstate is not None else float(self.speed_ref or c["v_min_foil"])
+        # Low-speed flap authority taper: 12 deg at v_min_foil, full bank_max by v_min_foil + 1.5 m/s
+        v_lo = float(c["v_min_foil"])
+        if u < v_lo + 1.5:
+            frac = float(np.clip((u - v_lo) / 1.5, -1.0, 1.0))
+            b_speed = 12.0 + (b_cap - 12.0) * max(0.0, frac) + 4.0 * min(0.0, frac)
+        else:
+            b_speed = b_cap
+
+        wm_a = float(c["wave_margin"]) * float(self.wave_amp)
+        z_main = float(p["main_pos_z"])
+        y_tip = float(p["main_lateral_offset"]) + 0.5 * float(p["main_span"])
+        half_b = 0.5 * float(p["hull_beam"])
+        tip_req = float(c["tip_hc_min"]) * float(p["main_chord"])
+
+        def _solve_cos_sin(a_cos: float, b_sin: float, rhs: float) -> float:
+            r = float(np.hypot(a_cos, b_sin))
+            if r <= 1e-9 or rhs >= r:
+                return 0.0
+            if rhs <= -r:
+                return 90.0
+            alpha = float(np.arctan2(b_sin, a_cos))
+            return max(0.0, float(np.degrees(np.arccos(rhs / r) - alpha)))
+
+        # Simultaneous chine-clearance + wingtip-submergence geometric lens (eliminates ride height h)
+        rhs_lens = tip_req + float(c["chine_clear_min"]) + 2.0 * wm_a - float(p["hull_offset"])
+        b_lens = _solve_cos_sin(z_main, y_tip + half_b, rhs_lens)
+
+        # High-side wingtip submergence at the active ride height target
+        h_ref = float(self.height_ref if self.height_ref is not None else c["h_default"])
+        z_cg = float(p["hull_offset"]) - max(h_ref, float(c["h_min"]) + wm_a)
+        b_tip = _solve_cos_sin(z_main, y_tip, tip_req + wm_a - z_cg)
+
+        return float(np.clip(min(b_cap, b_speed, b_lens, b_tip), 0.0, b_cap))
+
     def _h_min(self, phi_rad: float = 0.0) -> float:
-        cmd_phi = abs(float(self.pilot["bank"])) if self.mode == "FOILING" else abs(float(self.vp.params.get("phi_ref", 0.0)))
-        bank_deg = max(abs(float(np.degrees(phi_rad))), min(8.0, cmd_phi))
+        cmd_phi = min(self.bank_limit, abs(float(self.pilot["bank"]))) if self.mode == "FOILING" else abs(float(self.bank_ref))
+        bank_deg = max(abs(float(np.degrees(phi_rad))), abs(float(self.bank_ref)), cmd_phi)
         bank_boost = 0.5 * float(self.vp.params["hull_beam"]) * float(np.sin(np.radians(bank_deg)))
         return self.c["h_min"] + self.c["wave_margin"] * self.wave_amp + bank_boost
 
@@ -240,11 +295,17 @@ class Supervisor:
         roll_deg = abs(float(np.degrees(cstate[3])))
         pitch_deg = abs(float(np.degrees(cstate[4])))
         if self.mode == "TAKEOFF":
+            self._att_t = 0.0
             if roll_deg > c["roll_limit"] or pitch_deg > c["takeoff_pitch_limit"]:
                 self.faults.setdefault("attitude", t)
         elif self.mode == "FOILING":
-            if roll_deg > c["roll_limit"] or pitch_deg > c["pitch_limit"]:
+            hard = roll_deg > c["roll_limit"] + 5.0 or pitch_deg > c["takeoff_pitch_limit"]
+            soft = roll_deg > c["roll_limit"] or pitch_deg > c["pitch_limit"]
+            self._att_t = self._att_t + dt if soft else 0.0
+            if hard or self._att_t >= c["attitude_time"]:
                 self.faults.setdefault("attitude", t)
+        else:
+            self._att_t = 0.0
 
     # ------------------------------------------------------------ main step
     def update(self, t: float, cstate) -> None:
@@ -269,6 +330,8 @@ class Supervisor:
             # phase, "auto" (or no entry) keeps the automatic handover; DISPLACEMENT also takes "fixed"
             choice = self._phase_choice()
             vp.lqr.force = {"pid": False, "fixed": False, "lqr": True}.get(choice)
+            if p.get("controller") == "auto" and self.mode in ("LANDING", "EMERGENCY_LANDING") and not airborne and vp.lqr.force is None:
+                vp.lqr.force = False
 
         mode = self.mode
         pv = self.pilot
@@ -288,8 +351,9 @@ class Supervisor:
             if not pv["foil"]:
                 self._set_mode(t, "LANDING", "pilot")
             elif (airborne and abs(clear - h_target) < 0.03 and self.height_ref >= h_target - 1e-6
-                  and abs(np.degrees(cstate[4])) < c["pitch_limit"]
-                  and abs(np.degrees(cstate[3])) < c["roll_limit"]):
+                  and abs(np.degrees(cstate[4])) < max(c["pitch_limit"] - 2.0, 2.0)
+                  and abs(np.degrees(cstate[4] + 0.15 * cstate[10])) < c["pitch_limit"] - 1.0
+                  and abs(np.degrees(cstate[3])) < max(c["roll_limit"] - 5.0, 5.0)):
                 self._set_mode(t, "FOILING", "airborne")
             elif t - self.t_mode > c["takeoff_timeout"] and u < c["v_liftoff"]:
                 self._set_mode(t, "LANDING", "takeoff timeout")
@@ -316,9 +380,13 @@ class Supervisor:
 
         self.speed_ref = self._ramp(self.speed_ref, spd, c["speed_rate"], dt) if self.mode != "EMERGENCY_LANDING" \
             else spd
+        self.bank_limit = self.safe_bank_limit(cstate)
+        bank_tgt = float(np.clip(pv["bank"], -self.bank_limit, self.bank_limit)) if self.mode == "FOILING" else 0.0
+        bank_rate = float(c["bank_rate"]) * (2.0 if self.mode == "EMERGENCY_LANDING" else 1.0)
+        self.bank_ref = self._ramp(self.bank_ref, bank_tgt, bank_rate, dt)
         p["target_speed"] = self.speed_ref
         p["flying_height"] = float(self.height_ref)
-        p["phi_ref"] = float(np.clip(pv["bank"], -8.0, 8.0)) if self.mode == "FOILING" else 0.0
+        p["phi_ref"] = float(self.bank_ref)
         pid = vp.surge.pid
         pid.output_min, pid.output_max = 0.0, thrust_max                 # a propeller gives no useful reverse thrust
 
@@ -350,7 +418,14 @@ class Supervisor:
     def _phase_choice(self) -> str:
         pc = self.vp.params.get("phase_controllers") or {}
         mode = "LANDING" if self.mode == "EMERGENCY_LANDING" else self.mode
-        return pc.get(mode, "auto")
+        if mode in pc:
+            return pc[mode]
+        ctrl = self.vp.params.get("controller")
+        if ctrl == "pid":
+            return "pid"
+        if ctrl == "auto":
+            return {"DISPLACEMENT": "pid", "TAKEOFF": "auto", "FOILING": "lqr", "LANDING": "auto"}.get(mode, "auto")
+        return "auto"
 
     def shape_raw(self, raw: dict, cstate) -> dict:
         """Virtual-channel commands after the controllers: displacement flaps."""

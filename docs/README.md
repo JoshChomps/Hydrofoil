@@ -27,6 +27,8 @@ Docs 01–12 were written by reading; doc 13 and the updates it triggered were p
 | [19-linearisation-lqr-estimation.md](19-linearisation-lqr-estimation.md) | Trim, linearisation, scheduled / delay-aware LQR, sensors and Kalman, manned sizing, supervisor, autotuner |
 | [20-flap-and-drive-design.md](20-flap-and-drive-design.md) | Main-flap geometry and gear ratio vs hinge torque, current and mechanics; what mechanism has to be designed |
 | [21-per-phase-controller-trials.md](21-per-phase-controller-trials.md) | 108-run sweep of controller choice per supervisor phase (`DISPLACEMENT`, `TAKEOFF`, `FOILING`, `LANDING`) across calm, head, and following seas |
+| [22-assumptions-and-provenance.md](22-assumptions-and-provenance.md) | **Master ledger of all assumed, placeholder, derived, tuned, and physical values** across every module, with origin, risk, and hardware replacement plan |
+| [23-code-audit-and-3d-turning.md](23-code-audit-and-3d-turning.md) | **Three-tier adversarial code/logic audit and 3D split-front-flap turning analysis**: module/subgroup/project break tests, sideways forces, adverse yaw, spiral overbanking, safe bank envelope, and coordinated-turn LQR/supervisor design |
 | [14-error-register-and-fixes.md](14-error-register-and-fixes.md) | **Every error expanded: cause, evidence, fix, test; retuned gains; unit/conversion map; still-open items** |
 
 Conventions used across the code (and these docs): Fossen (2011) notation,

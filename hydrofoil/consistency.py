@@ -86,7 +86,7 @@ def check(params: dict) -> list[dict]:
     i_cap = cap / (N * eta * kt)
     rows.append(_row("current at torque_cap <= controller peak", round(i_cap, 1), c.i_peak, i_cap <= c.i_peak))
     t_shaft = min(cap, full)
-    shaft_d = float(p.get("shaft_diameter") or spec.shaft_diameter)
+    shaft_d = max(float(p.get("shaft_diameter") or spec.shaft_diameter), 1e-4)
     stress = 16 * t_shaft / (np.pi * shaft_d ** 3)
     rows.append(_row("output shaft shear at min(cap, full) <= allowable", round(stress / 1e6, 1), TAU_ALLOW / 1e6,
                      stress <= TAU_ALLOW, note=f"needs >= {1e3 * (16 * t_shaft / (np.pi * TAU_ALLOW)) ** (1 / 3):.1f} mm"))
@@ -104,7 +104,7 @@ def check(params: dict) -> list[dict]:
         env = vp.wave_sample(x[:6], 0.0, CalmWater())
         m0 = abs(steady_moments(vp, x, cmds, env, vp.hinges)["left"])
         k = hinge_stiffness(vp, "left", u) if flap else 0.0
-        d_auth = AUTH_DEG / vp.main_flap_eff
+        d_auth = AUTH_DEG / max(vp.main_flap_eff, 1e-4)
         worst_m = max(worst_m, m0 + k * np.radians(d_auth))
         worst_hold = max(worst_hold, m0)
         worst_d = max(worst_d, abs(uu[0]) + d_auth)
@@ -149,7 +149,7 @@ def check(params: dict) -> list[dict]:
         j = flap_inertia(p["main_chord"], p["main_span"] * p["main_flap_span_frac"], p["main_flap_frac"],
                          p.get("main_flap_setback", 0.0))
         rows.append(_row("main_surface_inertia matches the flap geometry (+-30 %)", p["main_surface_inertia"],
-                         float(f"{j:.3g}"), abs(p["main_surface_inertia"] / j - 1.0) <= 0.3, warn_only=True,
+                         float(f"{j:.3g}"), abs(p["main_surface_inertia"] / max(j, 1e-9) - 1.0) <= 0.3, warn_only=True,
                          note="hinge.flap_inertia scaling; replace both with the CAD value"))
         co = thin_airfoil_coeffs(p["main_flap_frac"], setback=p.get("main_flap_setback", 0.0))
         rows.append(_row("main flap not overbalanced (Ch_delta < 0, Ch_alpha < 0)", round(co["ch_delta"], 3), "< 0",

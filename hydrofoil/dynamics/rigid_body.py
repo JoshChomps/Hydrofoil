@@ -16,9 +16,11 @@ lifting surfaces' geometry. This is a deliberate exception to the usual
 "added by the caller" split: Fossen's nu_dot solve is against a single
 combined M = M_RB + M_A, so keeping the diagonal M_A terms in the same
 matrix M_RB builds gets callers a correct combined solve for free.
-Off-diagonal terms and surge/sway/yaw added mass are NOT modeled — only
-M[2,2] (heave), M[3,3] (roll), and M[4,4] (pitch). The matching added-mass Coriolis term C_A
-(Munk moment) IS included in C(). Damping (D) is still added by the caller.
+Off-diagonal terms and surge added mass are NOT modeled — diagonal M_A covers
+M[1,1] (sway), M[2,2] (heave), M[3,3] (roll), M[4,4] (pitch), and M[5,5] (yaw).
+The matching added-mass Coriolis term C_A (pitch and yaw Munk moments) IS included
+in C(), preserving exact passivity nu^T C(nu) nu == 0. Damping (D) is still added
+by the caller.
 """
 
 import numpy as np
@@ -91,6 +93,32 @@ def strip_added_mass_heave_pitch(strips, rho: float = RHO_WATER):
     return float(added_mass_heave), float(added_inertia_pitch)
 
 
+def strip_added_mass_sway_yaw(strips, rho: float = RHO_WATER):
+    """
+    2D-strip-theory hydrodynamic added mass in sway and yaw about body z, for
+    one or more submerged vertical struts.
+
+    Parameters
+    ----------
+    strips : iterable of (chord, wetted_span, x) — one entry per vertical strut,
+             chord/wetted_span in [m], x = fore-aft position relative to CoG [m].
+
+    Returns
+    -------
+    (added_mass_sway, added_inertia_yaw) : added mass [kg] for M[1,1] and added
+        yaw inertia [kg*m^2] for M[5,5], using 2D flat-plate strip mass
+        rho*pi*c^2/4 * wetted_span and lumped parallel-axis m_a * x^2.
+    """
+    added_mass_sway = 0.0
+    added_inertia_yaw = 0.0
+    for chord, wetted_span, x in strips:
+        w = max(float(wetted_span), 0.0)
+        m_a = rho * np.pi * chord**2 / 4.0 * w
+        added_mass_sway += m_a
+        added_inertia_yaw += m_a * x**2
+    return float(added_mass_sway), float(added_inertia_yaw)
+
+
 class RigidBody:
     """
     Rigid-body mass matrix and Coriolis matrix.
@@ -109,15 +137,18 @@ class RigidBody:
 
     def __init__(self, mass: float, I_b: np.ndarray, r_g: np.ndarray = None,
                  added_mass_heave: float = 0.0, added_inertia_pitch: float = 0.0,
-                 added_inertia_roll: float = 0.0):
+                 added_inertia_roll: float = 0.0, added_mass_sway: float = 0.0,
+                 added_inertia_yaw: float = 0.0):
         self.mass = mass
         self.I_b = np.asarray(I_b, dtype=float)
         self.r_g = np.zeros(3) if r_g is None else np.asarray(r_g, dtype=float)
-        # Diagonal hydrodynamic added mass (heave + roll + pitch only). Zero by default so callers
-        # that don't pass these (e.g. sim.py) get unchanged rigid-body-only behavior.
+        # Diagonal hydrodynamic added mass (sway + heave + roll + pitch + yaw). Zero by default so
+        # callers that don't pass these get unchanged rigid-body-only behavior.
+        self.added_mass_sway = added_mass_sway
         self.added_mass_heave = added_mass_heave
         self.added_inertia_pitch = added_inertia_pitch
         self.added_inertia_roll = added_inertia_roll
+        self.added_inertia_yaw = added_inertia_yaw
         self._M = self._build_M()
         self._M_inv = np.linalg.inv(self._M)
 
@@ -132,9 +163,11 @@ class RigidBody:
         M[3:, 3:] = I
 
         # --- Hydrodynamic added mass (M_A), diagonal only ---------------------
+        M[1, 1] += self.added_mass_sway
         M[2, 2] += self.added_mass_heave
         M[3, 3] += self.added_inertia_roll
         M[4, 4] += self.added_inertia_pitch
+        M[5, 5] += self.added_inertia_yaw
 
         return M
 
@@ -159,10 +192,11 @@ class RigidBody:
         C[3:, 3:] = -skew(self.I_b @ v2)
 
         # Added-mass Coriolis C_A(nu) (Fossen 6.43): the SAME skew structure as C_RB with
-        # M_A in place of M_RB. Includes the Munk moment (Z_wdot - X_udot) u w, which is
-        # destabilising in pitch. M_A is diagonal: heave, roll, and pitch are modelled.
-        a1 = np.array([0.0, 0.0, self.added_mass_heave * v1[2]])
-        a2 = np.array([self.added_inertia_roll * v2[0], self.added_inertia_pitch * v2[1], 0.0])
+        # M_A in place of M_RB. Includes both pitch Munk moment (Z_wdot - X_udot) u w and
+        # yaw Munk moment (Y_vdot - X_udot) u v, preserving exact passivity nu^T C_A nu == 0.
+        a1 = np.array([0.0, self.added_mass_sway * v1[1], self.added_mass_heave * v1[2]])
+        a2 = np.array([self.added_inertia_roll * v2[0], self.added_inertia_pitch * v2[1],
+                       self.added_inertia_yaw * v2[2]])
         C[:3, 3:] += -skew(a1)
         C[3:, :3] += -skew(a1)
         C[3:, 3:] += -skew(a2)

@@ -8,6 +8,7 @@ The foil struts contribute negligibly and are ignored here.
 import numpy as np
 
 from hydrofoil.constants import RHO_WATER, G
+from hydrofoil.dynamics.kinematics import R_body_to_ned
 
 
 def buoyancy_force(
@@ -38,7 +39,6 @@ def buoyancy_force(
     -------
     tau_b : (6,) generalized force [X, Y, Z, K, M, N] in body frame
     """
-    from hydrofoil.dynamics.kinematics import R_body_to_ned
     phi, theta, psi = eta[3], eta[4], eta[5]
     R = R_body_to_ned(phi, theta, psi)
 
@@ -65,7 +65,6 @@ def gravity_force(mass: float, eta: np.ndarray, g: float = G) -> np.ndarray:
     -------
     tau_g : (6,) generalized force in body frame
     """
-    from hydrofoil.dynamics.kinematics import R_body_to_ned
     phi, theta, psi = eta[3], eta[4], eta[5]
     R = R_body_to_ned(phi, theta, psi)
 

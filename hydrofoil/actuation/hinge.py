@@ -68,6 +68,9 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400, setback: float = 0.0) ->
     Returns dict: cl_alpha, cl_delta, tau (= cl_delta/cl_alpha), x_ac, cm_alpha / cm_delta (about c/4),
                   ch_alpha, ch_delta   (flap only; 0 when flap_frac == 0).
     """
+    n = max(int(n), 8)
+    flap_frac = float(np.clip(flap_frac, 0.0, 0.95))
+    setback = float(np.clip(setback, 0.0, 0.95))
     h = 1.0 / n
     xv = (np.arange(n) + 0.25) * h          # vortex positions
     xc = (np.arange(n) + 0.75) * h          # collocation points
@@ -90,7 +93,7 @@ def thin_airfoil_coeffs(flap_frac: float, n: int = 400, setback: float = 0.0) ->
 
     out = {"cl_alpha": cl_a, "cl_delta": cl_d, "tau": cl_d / cl_a, "x_ac": x_ac,
            "cm_alpha": cm_a, "cm_delta": cm_d, "ch_alpha": 0.0, "ch_delta": 0.0}
-    if flap_frac > 0:
+    if flap_frac > 0 and on_flap_v.any():
         cf = flap_frac
         arm = np.where(on_flap_v, xv - (x_h + setback * cf), 0.0)
         # Upward load aft of the hinge pushes the TE up = negative in the TE-down convention.

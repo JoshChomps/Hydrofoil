@@ -25,12 +25,14 @@ zero-gain MuJoCo actuators (ctrl), shared by the keys and the API, and read ever
 
 Keys (click the viewer window first):
     Up / Down        climb / dive   (height_ref, holds)
-    Left / Right     bank left / right (bank_ref, +-8 deg, springs back to 0)
-    [  /  ]          speed_ref down / up (holds)
+    Left / Right     bank left / right (bank_ref, +-15 deg, springs back to 0)
+    Space            level wings immediately (bank_ref -> 0 deg)
+    [  /  ] (- / +)  speed_ref down / up (holds)
     R                reset to rest
-    C                switch PID <-> LQR (restarts from rest; the PID always flies takeoff)
-    F                toggle Foil / Land request (when --supervisor is enabled)
-    U                show speeds in m/s or km/h
+    C                cycle controller mode: Auto Combined -> LQR -> PID
+    F                toggle Foil / Land request (or cruise / land height without --supervisor)
+    U                cycle speed units: m/s -> km/h -> mph
+    D                open / bring up the web dashboard (http://127.0.0.1:8765)
 
 The PID gain sliders act on the PID loops, which fly takeoff in both modes and everything in PID mode.
 
@@ -68,7 +70,7 @@ from hydrofoil.actuation.loads import DRIVES, surface_models, drive_angles, stea
 DASHBOARD_URL = "http://127.0.0.1:8765"
 HEIGHT_MIN, HEIGHT_MAX, HEIGHT_STEP = -0.3, 1.0, 0.02   # m, per key event
 SPEED_MIN, SPEED_MAX, SPEED_STEP = 0.0, 10.0, 0.25       # m/s, per key event
-BANK_MIN, BANK_MAX, BANK_STEP = -8.0, 8.0, 1.0           # deg, per key event
+BANK_MIN, BANK_MAX, BANK_STEP = -15.0, 15.0, 1.0         # deg, per key event (supervisor enforces dynamic safe_bank_limit)
 BANK_RETURN_RATE = 10.0                                   # deg/s spring-back
 
 # UI sliders: (name, param key or None, lo, hi). Order = MuJoCo actuator / ctrl index.
@@ -157,18 +159,31 @@ def build_mjcf(p: dict) -> str:
     if ex - ec_s / 2 < transom:
         struts += f"""
       <geom name="elev_bracket" type="box" size="{(transom - ex) / 2 + ec_s / 2} {0.08 * B} 0.03" pos="{(transom + ex) / 2} 0 {hull_off + 0.03}" material="strut"/>"""
+    rider_p = next((q for q in p.get("default_payloads", []) if str(q.get("name", "")).lower() == "rider"), None)
+    deck = hull_off + D
     rider = ""
-    if p["mass"] > 100.0:                                # manned preset: a seated rider for scale
-        rx, deck = p["hull_x"] - 0.12 * L, hull_off + D
+    if p["mass"] > 100.0 or rider_p is not None:         # seated rider positioned at Rider payload (x fwd, y_mj = -y stbd)
+        rx = float(rider_p["x"]) if rider_p is not None else p["hull_x"] - 0.12 * L
+        ry = -float(rider_p["y"]) if rider_p is not None else 0.0
         rider = f"""
-      <geom name="rider_thigh_l" type="capsule" fromto="{rx + 0.02} 0.10 {deck + 0.10} {rx + 0.40} 0.11 {deck + 0.30}" size="0.06" material="rider_dark"/>
-      <geom name="rider_thigh_r" type="capsule" fromto="{rx + 0.02} -0.10 {deck + 0.10} {rx + 0.40} -0.11 {deck + 0.30}" size="0.06" material="rider_dark"/>
-      <geom name="rider_shin_l" type="capsule" fromto="{rx + 0.40} 0.11 {deck + 0.30} {rx + 0.56} 0.12 {deck + 0.05}" size="0.05" material="rider_dark"/>
-      <geom name="rider_shin_r" type="capsule" fromto="{rx + 0.40} -0.11 {deck + 0.30} {rx + 0.56} -0.12 {deck + 0.05}" size="0.05" material="rider_dark"/>
-      <geom name="rider_arm_l" type="capsule" fromto="{rx - 0.02} 0.19 {deck + 0.58} {rx + 0.30} 0.17 {deck + 0.36}" size="0.04" material="rider_vest"/>
-      <geom name="rider_arm_r" type="capsule" fromto="{rx - 0.02} -0.19 {deck + 0.58} {rx + 0.30} -0.17 {deck + 0.36}" size="0.04" material="rider_vest"/>
-      <geom name="rider_body" type="capsule" fromto="{rx} 0 {deck + 0.14} {rx - 0.05} 0 {deck + 0.62}" size="0.15" material="rider_vest"/>
-      <geom name="rider_head" type="sphere" pos="{rx - 0.05} 0 {deck + 0.86}" size="0.11" material="rider_dark"/>"""
+      <geom name="rider_thigh_l" type="capsule" fromto="{rx + 0.02} {ry + 0.10} {deck + 0.10} {rx + 0.40} {ry + 0.11} {deck + 0.30}" size="0.06" material="rider_dark" contype="0" conaffinity="0"/>
+      <geom name="rider_thigh_r" type="capsule" fromto="{rx + 0.02} {ry - 0.10} {deck + 0.10} {rx + 0.40} {ry - 0.11} {deck + 0.30}" size="0.06" material="rider_dark" contype="0" conaffinity="0"/>
+      <geom name="rider_shin_l" type="capsule" fromto="{rx + 0.40} {ry + 0.11} {deck + 0.30} {rx + 0.56} {ry + 0.12} {deck + 0.05}" size="0.05" material="rider_dark" contype="0" conaffinity="0"/>
+      <geom name="rider_shin_r" type="capsule" fromto="{rx + 0.40} {ry - 0.11} {deck + 0.30} {rx + 0.56} {ry - 0.12} {deck + 0.05}" size="0.05" material="rider_dark" contype="0" conaffinity="0"/>
+      <geom name="rider_arm_l" type="capsule" fromto="{rx - 0.02} {ry + 0.19} {deck + 0.58} {rx + 0.30} {ry + 0.17} {deck + 0.36}" size="0.04" material="rider_vest" contype="0" conaffinity="0"/>
+      <geom name="rider_arm_r" type="capsule" fromto="{rx - 0.02} {ry - 0.19} {deck + 0.58} {rx + 0.30} {ry - 0.17} {deck + 0.36}" size="0.04" material="rider_vest" contype="0" conaffinity="0"/>
+      <geom name="rider_body" type="capsule" fromto="{rx} {ry} {deck + 0.14} {rx - 0.05} {ry} {deck + 0.62}" size="0.15" material="rider_vest" contype="0" conaffinity="0"/>
+      <geom name="rider_head" type="sphere" pos="{rx - 0.05} {ry} {deck + 0.86}" size="0.11" material="rider_dark" contype="0" conaffinity="0"/>"""
+    extra_loads = ""
+    for i, q in enumerate(p.get("default_payloads", [])):
+        if str(q.get("name", "")).lower() == "rider" and (p["mass"] > 100.0 or rider_p is not None):
+            continue
+        sz = float(np.clip(0.03 + 0.008 * np.sqrt(max(float(q.get("mass", 1.0)), 0.1)), 0.025, 0.12))
+        qx, qy = float(q.get("x", 0.0)), -float(q.get("y", 0.0))
+        extra_loads += f'\n      <geom name="payload_{i}" type="box" size="{sz:.3f} {sz:.3f} {0.6 * sz:.3f}" pos="{qx:.3f} {qy:.3f} {deck + 0.6 * sz:.3f}" material="flap" contype="0" conaffinity="0"/>'
+    cg_off = p.get("cg_offset", (0.0, 0.0))
+    if abs(float(cg_off[0])) > 1e-4 or abs(float(cg_off[1])) > 1e-4 or p.get("default_payloads"):
+        extra_loads += f'\n      <geom name="cg_deck_dot" type="sphere" size="0.03" pos="{float(cg_off[0]):.3f} {-float(cg_off[1]):.3f} {deck + 0.025:.3f}" material="foil" contype="0" conaffinity="0"/>'
     return f"""
 <mujoco model="hydrofoil">
   <option gravity="0 0 0"/>
@@ -204,7 +219,7 @@ def build_mjcf(p: dict) -> str:
     <body name="vehicle" pos="0 0 0">
       <freejoint name="root"/>
       <geom name="hull" type="mesh" mesh="hull" pos="{p["hull_x"]} 0 {hull_off}" material="hull" contype="0" conaffinity="0"/>
-      <geom name="cockpit" type="box" size="{0.22 * L} {0.36 * B} 0.006" pos="{p["hull_x"] - 0.08 * L} 0 {hull_off + D}" material="deck" contype="0" conaffinity="0"/>{rider}
+      <geom name="cockpit" type="box" size="{0.22 * L} {0.36 * B} 0.006" pos="{p["hull_x"] - 0.08 * L} 0 {hull_off + D}" material="deck" contype="0" conaffinity="0"/>{rider}{extra_loads}
       {struts}
       {half("left_foil", lat)}
       {half("right_foil", -lat)}
@@ -271,16 +286,34 @@ class MujocoPose:
 class Pilot:
     """Keyboard stick. Writes into the slider values (ctrl) so keys and sliders stay one source."""
 
+    UNITS = (("m/s", 1.0), ("km/h", 3.6), ("mph", 2.2369362920544))
+
     def __init__(self, ctrl: np.ndarray):
         self.ctrl = ctrl
         self.reset_flag = False
         self.toggle_ctrl = False
+        self.next_ctrl_mode: str | None = None
         self.toggle_foil = False
         self.open_dashboard = False
-        self.kmh = False           # U key: show speeds in km/h instead of m/s (display only)
+        self.unit_idx = 0          # U key: cycle m/s -> km/h -> mph (display only)
         self.focus = False         # set by the dashboard's "Show 3D view"
         self.bank_spring = False   # True after a key bank input; a slider-set bank holds
         self.key_bank_value = None
+        self.gain_updates: dict = {}
+
+    @property
+    def kmh(self) -> bool:
+        return self.unit_idx == 1
+
+    def unit_info(self) -> tuple[str, float]:
+        return self.UNITS[self.unit_idx]
+
+    def set_unit(self, name: str) -> str:
+        for i, (u, _scale) in enumerate(self.UNITS):
+            if u == name:
+                self.unit_idx = i
+                return u
+        return self.UNITS[self.unit_idx][0]
 
     def _nudge(self, name, step):
         _n, _k, lo, hi = SLIDERS[IDX[name]]
@@ -295,18 +328,23 @@ class Pilot:
             self._nudge("bank_ref", BANK_STEP if code == 262 else -BANK_STEP)
             self.bank_spring = True
             self.key_bank_value = float(self.ctrl[IDX["bank_ref"]])
-        elif code == 93:     # ]
+        elif code == 32:     # Space -> level wings immediately
+            self.ctrl[IDX["bank_ref"]] = 0.0
+            self.bank_spring = False
+            self.key_bank_value = None
+        elif code in (93, 61, 334):   # ], =, numpad + -> speed up
             self._nudge("speed_ref", SPEED_STEP)
-        elif code == 91:     # [
+        elif code in (91, 45, 333):   # [, -, numpad - -> speed down
             self._nudge("speed_ref", -SPEED_STEP)
         elif code in (ord("R"), ord("r")):
             self.reset_flag = True
         elif code in (ord("C"), ord("c")):
+            self.next_ctrl_mode = None
             self.toggle_ctrl = True
         elif code in (ord("F"), ord("f")):
             self.toggle_foil = True
         elif code in (ord("U"), ord("u")):
-            self.kmh = not self.kmh
+            self.unit_idx = (self.unit_idx + 1) % len(self.UNITS)
         elif code in (ord("D"), ord("d")):        # open the dashboard (auto-starting hydrofoil.sim_server if needed)
             self.open_dashboard = True
 
@@ -496,8 +534,24 @@ class Hud:
                 self._cache[key] = self._IF.load_default()
         return self._cache[key]
 
+    def _fit_text(self, g, text: str, kind: str, size: int, max_w: int, min_size: int = 9):
+        """Scale down font size until `text` fits inside `max_w`; truncate with ellipsis if still wider."""
+        max_w = max(int(max_w), 16)
+        s = max(int(size), min_size)
+        font = self._font(kind, s)
+        while s > min_size and g.textlength(text, font=font) > max_w:
+            s = max(min_size, s - max(1, (s - min_size) // 3))
+            font = self._font(kind, s)
+        if g.textlength(text, font=font) > max_w:
+            t = text
+            while len(t) > 1 and g.textlength(t + "…", font=font) > max_w:
+                t = t[:-1]
+            text = (t + "…") if len(t) > 0 else ""
+        return text, font
+
     def render(self, w: int, h: int, d: dict) -> np.ndarray:
         from PIL import Image, ImageDraw
+        w, h = max(int(w), 160), max(int(h), 72)
         im = Image.new("RGB", (w, h), _C["deep"])
         g = ImageDraw.Draw(im)
         bar = max(18, h // 6)                                    # key-hint bar along the top of the strip
@@ -505,28 +559,34 @@ class Hud:
         if al:                                                   # the observer's worst alert replaces the key help
             col = _C["flag"] if al[0] == "danger" else _C["signal"]
             g.rectangle([0, 0, w, bar], fill=col)
-            g.text((14, bar // 2), ("Danger: " if al[0] == "danger" else "Caution: ") + al[1],
-                   font=self._font("ui5", int(bar * 0.66)), fill=(10, 30, 36), anchor="lm")
+            msg = ("Danger: " if al[0] == "danger" else "Caution: ") + str(al[1])
+            atxt, afnt = self._fit_text(g, msg, "ui5", int(bar * 0.66), w - 28)
+            g.text((14, bar // 2), atxt, font=afnt, fill=(10, 30, 36), anchor="lm")
         else:
             g.rectangle([0, 0, w, bar], fill=_C["trench"])
-            g.text((14, bar // 2), d["keys"], font=self._font("ui", int(bar * 0.62)), fill=_C["mist"], anchor="lm")
+            ktxt, kfnt = self._fit_text(g, str(d["keys"]), "ui", int(bar * 0.62), w - 28)
+            g.text((14, bar // 2), ktxt, font=kfnt, fill=_C["mist"], anchor="lm")
         body = h - bar
         cells = [0.22, 0.2, 0.2, 0.2, 0.18]
         x = 0
-        lab, big, sml = self._font("ui", int(body * 0.17)), self._font("num", int(body * 0.42)), self._font("ui", int(body * 0.15))
-        pad = 16
+        lab_sz, big_sz, sml_sz = int(body * 0.17), int(body * 0.42), int(body * 0.15)
+        pad = 12 if w < 900 else 16
         for i, frac in enumerate(cells):
-            cw = int(w * frac)
+            cw = (w - x) if i == len(cells) - 1 else int(w * frac)
+            avail = max(24, cw - 2 * pad)
             if i:
                 g.line([x, bar + 8, x, h - 8], fill=_C["rule"], width=1)
             y0 = bar + int(body * 0.08)
             if i == 0:
-                g.text((x + pad, y0), d["time"], font=lab, fill=_C["mist"])
-                g.text((x + pad, y0 + int(body * 0.2)), d["mode"], font=self._font("ui5", int(body * 0.3)),
+                ttxt, tfnt = self._fit_text(g, str(d["time"]), "ui", lab_sz, avail)
+                mtxt, mfnt = self._fit_text(g, str(d["mode"]), "ui5", int(body * 0.30), avail)
+                ctxt, cfnt = self._fit_text(g, str(d["ctl"]), "ui", sml_sz, avail)
+                g.text((x + pad, y0), ttxt, font=tfnt, fill=_C["mist"])
+                g.text((x + pad, y0 + int(body * 0.2)), mtxt, font=mfnt,
                        fill=_C["signal"] if d["mode"] == "Foilborne" else _C["spray"])
-                g.text((x + pad, y0 + int(body * 0.62)), d["ctl"], font=sml, fill=_C["mist"])
+                g.text((x + pad, y0 + int(body * 0.62)), ctxt, font=cfnt, fill=_C["mist"])
             elif i == 3:                                          # heel dial + numbers
-                r = int(body * 0.34)
+                r = min(int(body * 0.34), max(16, int(cw * 0.19)))
                 cx, cy = x + pad + r, bar + body // 2
                 g.ellipse([cx - r, cy - r, cx + r, cy + r], fill=_C["trench"], outline=_C["rule"])
                 for a in (-30, -20, -10, 0, 10, 20, 30):
@@ -540,17 +600,26 @@ class Hud:
                 dx, dy = np.cos(t) * r * 0.65, np.sin(t) * r * 0.65
                 g.line([cx - dx, cy - dy, cx + dx, cy + dy], fill=_C["signal"], width=3)
                 g.line([cx, cy, cx + np.sin(t) * r * 0.6, cy - np.cos(t) * r * 0.6], fill=_C["signal"], width=2)
-                tx = cx + r + 12
-                g.text((tx, y0), "Heel / trim", font=lab, fill=_C["mist"])
-                g.text((tx, y0 + int(body * 0.18)), f"{d['roll']:+.1f}°", font=big, fill=_C["signal"])
-                g.text((tx, y0 + int(body * 0.66)), f"trim {d['pitch']:+.1f}°", font=sml, fill=_C["mist"])
+                tx = cx + r + 10
+                avail_r = max(24, x + cw - tx - 8)
+                htxt, hfnt = self._fit_text(g, "Heel / trim", "ui", lab_sz, avail_r)
+                rtxt, rfnt = self._fit_text(g, f"{d['roll']:+.1f}°", "num", big_sz, avail_r)
+                ptxt, pfnt = self._fit_text(g, f"trim {d['pitch']:+.1f}°", "ui", sml_sz, avail_r)
+                g.text((tx, y0), htxt, font=hfnt, fill=_C["mist"])
+                g.text((tx, y0 + int(body * 0.18)), rtxt, font=rfnt, fill=_C["signal"])
+                g.text((tx, y0 + int(body * 0.66)), ptxt, font=pfnt, fill=_C["mist"])
             else:
                 k, v, unit, sub_, warn = d["cells"][i]
-                g.text((x + pad, y0), k, font=lab, fill=_C["mist"])
-                g.text((x + pad, y0 + int(body * 0.18)), v, font=big, fill=_C["signal"])
-                vw = g.textlength(v, font=big)
-                g.text((x + pad + vw + 6, y0 + int(body * 0.18) + int(body * 0.2)), unit, font=sml, fill=_C["spray"])
-                g.text((x + pad, y0 + int(body * 0.66)), sub_, font=sml, fill=_C["flag"] if warn else _C["mist"])
+                ktxt, kfnt = self._fit_text(g, str(k), "ui", lab_sz, avail)
+                sml_f = self._font("ui", max(9, sml_sz))
+                uw = g.textlength(str(unit), font=sml_f) if unit else 0.0
+                vtxt, vfnt = self._fit_text(g, str(v), "num", big_sz, max(20, avail - int(uw) - 8))
+                stxt, sfnt = self._fit_text(g, str(sub_), "ui", sml_sz, avail)
+                g.text((x + pad, y0), ktxt, font=kfnt, fill=_C["mist"])
+                g.text((x + pad, y0 + int(body * 0.18)), vtxt, font=vfnt, fill=_C["signal"])
+                vw = g.textlength(vtxt, font=vfnt)
+                g.text((x + pad + vw + 6, y0 + int(body * 0.18) + int(body * 0.2)), str(unit), font=sml_f, fill=_C["spray"])
+                g.text((x + pad, y0 + int(body * 0.66)), stxt, font=sfnt, fill=_C["flag"] if warn else _C["mist"])
             x += cw
         return np.ascontiguousarray(np.asarray(im))               # rows top-down: set_images flips them itself
 
@@ -575,16 +644,24 @@ def _find_window(title_prefix: str):
 
 
 def _focus_window(title_prefix: str):
-    """Bring the viewer window to the front (dashboard's "Show 3D view"). Windows only; elsewhere a no-op."""
+    """Bring the viewer window to the front (dashboard's "Show 3D view"), best effort across platforms."""
+    import subprocess
     import sys
-    if sys.platform != "win32":
-        return
-    import ctypes
-    u = ctypes.windll.user32
-    h = _find_window(title_prefix)
-    if h:
-        u.ShowWindow(h, 9 if u.IsIconic(h) else 5)               # SW_RESTORE / SW_SHOW
-        u.SetForegroundWindow(h)
+    try:
+        if sys.platform == "win32":
+            import ctypes
+            u = ctypes.windll.user32
+            h = _find_window(title_prefix)
+            if h:
+                u.ShowWindow(h, 9 if u.IsIconic(h) else 5)       # SW_RESTORE / SW_SHOW
+                u.SetForegroundWindow(h)
+        elif sys.platform == "darwin":
+            script = 'tell application "System Events" to set frontmost of (first process whose name contains "Python" or name contains "mjpython") to true'
+            subprocess.run(["osascript", "-e", script], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5)
+        else:
+            subprocess.run(["wmctrl", "-a", title_prefix], stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL, timeout=1.5)
+    except Exception:
+        pass
 
 
 class ControlAPI:
@@ -632,17 +709,25 @@ class ControlAPI:
                     if act == "reset":
                         pilot.reset_flag = True
                     elif act == "toggle_ctrl":
+                        pilot.next_ctrl_mode = None
                         pilot.toggle_ctrl = True
                     elif act == "toggle_foil":
                         pilot.toggle_foil = True
                     elif act == "focus":
                         pilot.focus = True
+                    if "unit" in body:
+                        pilot.set_unit(str(body.pop("unit")))
+                    if "controller_mode" in body:
+                        pilot.next_ctrl_mode = str(body.pop("controller_mode")).lower()
+                        pilot.toggle_ctrl = True
                     for name, val in body.items():
                         if name in IDX:
                             _n, _k, lo, hi = SLIDERS[IDX[name]]
                             ctrl[IDX[name]] = float(np.clip(float(val), lo, hi))
                             if name == "bank_ref":
                                 pilot.bank_spring = False          # a set bank holds
+                        elif name == "ki_pitch":
+                            pilot.gain_updates["ki_pitch"] = float(val)
                 self._json({"ok": True})
 
             def log_message(self, *a):
@@ -670,14 +755,17 @@ def _wave_from(p: dict):
 def _apply_gains(vp: VehiclePhysics, p: dict):
     c = vp.controller
     c.heave_pid.Kp, c.heave_pid.Ki, c.heave_pid.Kd = p["kp_heave"], p["ki_heave"], p["kd_heave"]
-    c.pitch_pid.Kp, c.pitch_pid.Kd = p["kp_pitch"], p["kd_pitch"]
+    c.pitch_pid.Kp, c.pitch_pid.Ki, c.pitch_pid.Kd = p["kp_pitch"], p.get("ki_pitch", c.pitch_pid.Ki), p["kd_pitch"]
     c.roll_pid.Kp, c.roll_pid.Kd = p["kp_roll"], p["kd_roll"]
 
 
-def _ctrl_label(vp: VehiclePhysics) -> str:
-    if vp.lqr is None:
-        return "PID"
-    return "LQR" if vp.lqr.engaged else "LQR (PID takeoff)"
+def _ctrl_label(vp: VehiclePhysics, u: float = 0.0) -> str:
+    st = vp.controller_status(u)
+    if st["mode"] == "auto":
+        return f"Auto ({st['active']})"
+    if st["mode"] == "lqr" and not st["engaged"] and st["active"].startswith("PID"):
+        return "LQR (PID takeoff)"
+    return st["active"]
 
 
 def _ensure_dashboard(api_port: int = 8766, port: int = 8765, open_browser: bool = True):
@@ -735,7 +823,6 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
     dt = params["dt"]
 
     vp = VehiclePhysics(params)
-    lqr_spare = None            # the LQR not in use, kept so the C key can swap without a redesign
     pose = MujocoPose(params)
     ctrl = pose.data.ctrl
     for i, (_n, key, _lo, _hi) in enumerate(SLIDERS):
@@ -793,6 +880,9 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                     if vp.supervisor is not None and key in pilot_keys:
                         continue
                     params[key] = float(ctrl[i])
+                if pilot.gain_updates:
+                    params.update(pilot.gain_updates)
+                    pilot.gain_updates.clear()
                 if vp.supervisor is not None:
                     vp.supervisor.pilot["height"] = float(ctrl[IDX["height_ref"]])
                     vp.supervisor.pilot["bank"] = float(ctrl[IDX["bank_ref"]])
@@ -801,23 +891,27 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                         pilot.toggle_foil = False
                         vp.supervisor.pilot["foil"] = not vp.supervisor.pilot["foil"]
                 else:
-                    pilot.toggle_foil = False
+                    if pilot.toggle_foil:
+                        pilot.toggle_foil = False
+                        ctrl[IDX["height_ref"]] = -0.10 if ctrl[IDX["height_ref"]] > 0.0 else float(fh)
+                        params["flying_height"] = float(ctrl[IDX["height_ref"]])
             last_wall = now
             _apply_gains(vp, params)
             wk = (params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
             if wk != wave_key:
                 wave, wave_key = _wave_from(params), wk
 
-            if pilot.toggle_ctrl:          # switch PID <-> LQR; restarts from rest (no mid-flight handover)
+            if pilot.toggle_ctrl:          # cycle auto -> lqr -> pid smoothly (or explicit controller_mode)
                 pilot.toggle_ctrl = False
-                if vp.lqr is not None:
-                    vp.lqr, lqr_spare = None, vp.lqr
-                elif vp.actuator_model == "servo":
-                    if lqr_spare is None:
-                        vp._build_lqr()    # ~3 s: designs the gains
-                    else:
-                        vp.lqr, lqr_spare = lqr_spare, None
-                pilot.reset_flag = True
+                cycle = ("auto", "lqr", "pid")
+                if pilot.next_ctrl_mode in cycle:
+                    target_mode = pilot.next_ctrl_mode
+                else:
+                    cur_m = str(params.get("controller", "lqr")).lower()
+                    target_mode = cycle[(cycle.index(cur_m) + 1) % len(cycle)] if cur_m in cycle else "auto"
+                pilot.next_ctrl_mode = None
+                vp.set_controller_mode(target_mode)
+                params["controller"] = vp.params["controller"]
             if pilot.reset_flag:
                 pilot.reset_flag = False
                 vp.reset(); drives.reset(); plots.clear(); monitor.reset()
@@ -866,9 +960,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                     hud_alert = ("caution", "SUP WARN: " + ", ".join(sup_stat["warnings"]))
             height = -state[2] + params["hull_offset"]
             limits = drives.flags()
-            ctl = f"{_ctrl_label(vp)}, {'noisy sensors + Kalman' if vp.sensors is not None else 'ideal sensors'}"
-            sea = (f"{100 * params['wave_amplitude']:.0f} cm / {params['wave_wavelength']:.0f} m / {params['wave_direction']:.0f} deg"
-                   if params["wave_amplitude"] > 1e-4 else "calm")
+            ctrl_str = _ctrl_label(vp, float(state[6]))
             if pilot.focus:
                 pilot.focus = False
                 _focus_window("MuJoCo : hydrofoil")
@@ -881,8 +973,8 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                             dash_procs.append(pr)
                 threading.Thread(target=_open_dash, daemon=True).start()
             vp_ = v.viewport
+            su, k = pilot.unit_info()
             if vp_ is not None and vp_.width > 0:
-                k, su = (3.6, "km/h") if pilot.kmh else (1.0, "m/s")
                 pw = Plots.width(vp_)
                 sw, sh = max(320, vp_.width - pw), int(np.clip(vp_.height * 0.17, 104, 168))
                 hud_n += 1
@@ -890,13 +982,11 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                 if hud_img is None or hud_n % 6 == 0 or hud_img.shape[:2] != (sh, sw) or akey != getattr(hud, "_akey", None):
                     hud._akey = akey    # ~10 Hz redraw (a draw takes ~14 ms)
                     ok = limits == "within limits"
-                    key_bar = ("Up / Down ride height     Left / Right bank     [ ] speed     "
-                               + ("F foil/land     " if vp.supervisor is not None else "")
-                               + "R rest     C PID / LQR     U units"
-                               + ("     D dashboard" if api.srv else ""))
+                    key_bar = ("Up/Down height  Left/Right bank  Space level  [ ] speed  F foil/land  R rest  C mode  U units"
+                               + ("  D dashboard" if api.srv else ""))
                     hud_img = hud.render(sw, sh, {
                         "time": f"{t:6.1f} s", "mode": mode.capitalize(),
-                        "ctl": f"{_ctrl_label(vp)}, {'noisy' if vp.sensors is not None else 'ideal'} sensors"
+                        "ctl": f"{ctrl_str}, {'noisy' if vp.sensors is not None else 'ideal'} sensors"
                                + (" [sup]" if vp.supervisor is not None else ""),
                         "roll": float(np.degrees(state[3])), "pitch": float(np.degrees(state[4])), "bank_ref": params["phi_ref"],
                         "alert": hud_alert,
@@ -917,10 +1007,14 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                 "geom": {k: params[k] for k in ("hull_length", "hull_x", "hull_offset", "main_pos_x", "main_pos_z",
                                                 "main_chord", "elev_pos_x", "elev_pos_z", "elev_chord")},
                 "wave": {"amp": params["wave_amplitude"], "len": params["wave_wavelength"], "dir": params["wave_direction"]},
-                "speed": float(state[6]), "speed_ref": params["target_speed"],
+                "speed": float(state[6]), "speed_ref": params["target_speed"], "unit": su,
                 "height": float(height), "height_ref": params["flying_height"],
                 "roll": float(np.degrees(state[3])), "pitch": float(np.degrees(state[4])), "bank_ref": params["phi_ref"],
-                "thrust": float(thrust), "draft": float(draft), "controller": _ctrl_label(vp),
+                "yaw": float(np.degrees(state[5])), "yaw_rate": float(np.degrees(state[11])),
+                "sideslip": float(np.degrees(np.arctan2(state[7], max(float(state[6]), 0.1)))),
+                "bank_max": float(sup_stat["bank_max"]) if sup_stat is not None else BANK_MAX,
+                "thrust": float(thrust), "draft": float(draft), "controller": ctrl_str,
+                "controller_detail": vp.controller_status(float(state[6])),
                 "sensors": "noisy" if vp.sensors is not None else "ideal", "limits": limits,
                 "surfaces": {k: float(a) for k, a in drive_angles(cmds).items()},
                 "drives": {d: {k: float(dm[d].get(k, 0.0)) for k in ("M", "I", "P")} for d in DRIVES},
@@ -942,7 +1036,7 @@ def main():
     ap.add_argument("--duration", type=float, default=600.0, help="run length [sim s]")
     ap.add_argument("--waves", action="store_true", help="start with an Airy wave (amp/len/dir also on sliders)")
     ap.add_argument("--wave-dir", type=float, default=0.0, help="wave travel direction [deg from +x]; try 90 for beam seas")
-    ap.add_argument("--controller", choices=("lqr", "pid"), help="flight controller (default: params)")
+    ap.add_argument("--controller", choices=("auto", "lqr", "pid"), help="flight controller (default: params)")
     ap.add_argument("--sensors", choices=("ideal", "noisy"), help="ideal truth, or noisy sensors + Kalman")
     ap.add_argument("--windowed", action="store_true", help="do not maximise the window on start")
     ap.add_argument("--overrides", help="JSON file of design edits (boat editor), see hydrofoil/design.py")

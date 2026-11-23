@@ -43,6 +43,10 @@ class AiryWave:
         rho: float = RHO_WATER,
         g: float = G,
     ):
+        if wavelength <= 0.0:
+            raise ValueError(f"wavelength must be > 0, got {wavelength}")
+        if period is not None and period <= 0.0:
+            raise ValueError(f"period must be > 0, got {period}")
         self.A = amplitude
         self.lam = wavelength
         self.k = 2 * np.pi / wavelength     # wavenumber [rad/m]
@@ -78,7 +82,10 @@ class AiryWave:
         """
         kx = self.k * (x * np.cos(self.direction) + y * np.sin(self.direction))
         phase_arg = kx - self.omega * t + self.phase
-        depth_decay = np.exp(self.k * z)   # z <= 0, so this decays with depth
+        # Linear Airy theory is valid for z <= 0; clamp above still-water datum so
+        # emerged foils or wave-crest samples cannot cause exponential blowup.
+        z_eff = min(float(z), 0.0)
+        depth_decay = np.exp(self.k * z_eff)
 
         Vh = self.A * self.omega * depth_decay * np.cos(phase_arg)
         Vv = self.A * self.omega * depth_decay * np.sin(phase_arg)

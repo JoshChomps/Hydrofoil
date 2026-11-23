@@ -255,6 +255,55 @@ flap effectiveness (0.21/1.0), finite-span AR/(AR+2), free-surface lift loss, in
 
 - Launchers & packaging: added `run_sim.bat` / `run_sim.sh`, promoted `local/sim_server.py` -> `hydrofoil/sim_server.py` (and `page.html` + web fonts to `hydrofoil/assets/launcher/`) with supervisor toggle while keeping `local/` gitignored for runtime logs/overrides, and wired `viewer.py` (`D` key) to auto-start `sim_server` on `127.0.0.1:8765` if not already running.
 
+### 2026-11-18 — Three-tier code/logic audit, full 3D split-front-flap turning, and assumptions ledger (docs 22 & 23)
+- Audit fixes (module, subgroup, and project level):
+  - `waves/airy.py`: clamped `z_eff = min(z, 0.0)` in `orbital_velocity` (eliminated `12.3x` exponential blowup above SWL) and added positive `wavelength`/`period` validation.
+  - `forces/foil.py`: eliminated emerged-foil phantom water drag and pitching moment (`h/c <= 0` now returns zero generalized force with smooth emergence wetting over `0 < h/c < 0.25` and ventilated `flap_cm_delta`).
+  - `forces/buoyancy.py`: hoisted `R_body_to_ned` import out of the inner RK4 call path.
+  - `sensors/models.py`, `estimation/kalman.py`, `control/lqr.py`, `control/pid.py`: fixed `Channel.step` schedule drift when `rate_hz > 1/dt`, single-speed `0/0 = NaN` in `KalmanEstimator._interp` and `LQRController._sched`, and inverted roll-sign comments in `pid.py`.
+  - `design.py`, `sim_server.py`, `viz.py`: guarded `mass <= sum(default_payloads)` in `design.py`, fixed Windows path-traversal validation and log-file leaks in `sim_server.py`, and fixed inverted pitch sign + NED depth axis in `viz.py`.
+  - `vehicle.py`: switched servo `q_schedule_speed` to measured `cnu[0]` and routed the legacy `kinematic` actuator branch through `ceta` and `supervisor.shape_raw`.
+- 3D lateral-directional turning physics & control (split front flaps, single-piece rear elevator, no rudder):
+  - `dynamics/rigid_body.py`, `vehicle.py`, `forces/hull.py`: added analytical strut sway/yaw added mass (`strip_added_mass_sway_yaw`, `27.82 kg` / `37.10 kg·m²` on manned) with exact passive destabilizing yaw Munk moment, displacement hull lateral crossflow drag & yaw rotational damping, geometrically tilted wetted strut length, wingtip submergence (`_foil_tip_submergence_over_chord`) + 3-station span-averaged free-surface lift loss, wingtip-first breach ventilation, and strut sideslip ventilation hysteresis (`8.5°` onset / `4.5°` recovery).
+  - `control/lqr.py`: added steady-turn equilibrium feedforward (`steady_turn_sensitivity` + `_turn_reference` solving linear `(v_ref, r_ref, du_roll)` plus exact level-turn `w_ref`, `q_ref`, and second-order `(cos(phi)-1)` body-z gravity shift) and roll-prioritized split-flap diamond allocator (`allocate_split_flaps`) with saturation-aware anti-windup.
+  - `control/supervisor.py`, `monitor.py`, `viewer.py`: added dynamic `safe_bank_limit` (`15°` calm cruise, `12°` at `6 m/s`, narrowing automatically with wave height and ride height to protect both outer wingtip submergence `>= 1.25 c` and inner chine clearance `>= 0.10 m`), smooth `12°/s` bank ramp (`24°/s` emergency), `roll_limit = 20°`, `TAKEOFF → FOILING` attitude/pitch-rate hysteresis + `0.25 s` soft attitude persistence (`14°` pitch / `25°` roll hard ceiling instantaneous), wingtip-aware breach alert + sideslip alert in `FlightMonitor`, and `yaw`/`yaw_rate`/`sideslip`/`bank_max` viewer telemetry.
+- Documentation & tests:
+  - Created `docs/22-assumptions-and-provenance.md` (complete ledger of all assumed/placeholder/derived/tuned values across the codebase) and `docs/23-code-audit-and-3d-turning.md` (three-tier break-test report and 3D turning engineering study).
+  - Added `tests/test_3d_turning_and_audit.py` (13 regression tests).
+- Follow-ups:
+  - Replace placeholder structural/hydrodynamic/drive values per `docs/22-assumptions-and-provenance.md` once CAD `.STL`, Flow Simulation polars, and bench tests arrive.
+  - Decide whether to tighten `LQR_WEIGHTS` `iphi` coupling in `autotune.py` (currently causes ~`2°` transient bank overshoot because `phi` was relaxed to `4.52°` while `iphi` stayed at `0.8°·s`) and whether a steering rudder or smaller aft strut chord is desired if tighter turn radii than `R ≈ 78 m` (`15°` bank at `8 m/s`) are required.
+
+### 2026-11-20 — Ergonomics, Auto Combined PID/LQR Mode, Interactive 3D CG Boat Editor & Persistent Autotuner
+- Launchers & cross-platform reliability:
+  - Added `.gitattributes` enforcing LF for `*.sh` and CRLF for `*.bat`.
+  - Fixed `run_sim.bat` dependency check (`if not errorlevel 1` so missing deps properly install into `.venv`), added `PIL` to both `run_sim.bat` and `run_sim.sh` import checks, added macOS `mjpython` auto-detection in `run_sim.sh` and `sim_server.py::_viewer_python()`, and updated options 2–3 to `--controller auto`.
+  - Expanded `viewer.py` keybinds (`Space` level wings, `-`/`+` speed aliases, `F` foil/land in both supervised and unsupervised modes, `C` cycle `Auto Combined -> LQR -> PID` smoothly, `U` cycle `m/s -> km/h -> mph`), cross-platform `_focus_window`, 3D Rider/payload visualization at edited `(x, y)` coordinates, and `ki_pitch` live gain updates.
+- Auto Combined PID/LQR controller (`controller="auto"`):
+  - Added `auto_handback` and `status_dict()` to `control/lqr.py`: engages LQR only once foilborne and steady, and smoothly hands back (`0.5 s` fade) to PID when slowing down or returning onto the hull.
+  - Updated `control/supervisor.py::_phase_choice()` and `vehicle.py` (`set_controller_mode`, `controller_status`, `draft` passing) so `controller="auto"` uses PID on the water and for landing touchdown and LQR for foilborne flight and turns.
+- Interactive Boat Editor & 3D Center-of-Gravity / Inertia Auto-Calculation:
+  - Updated `design.py` (`apply_design`, `mass_properties`, `derived`, `design_summary`): idempotent `_base_mass`/`_base_inertia`/`_base_payloads` preservation across sequential edits, explicit `empty_mass` + placed `payloads` 3D parallel-axis CG `(cg_x, cg_y, cg_z)` and inertia calculation, and plain-English qualitative assessments (`verdict`, `balance`, `wings`, `power`).
+  - Added `HullHydrostatics.set_cg_offset()` and wired it through `VehiclePhysics.set_cg_offset()` so CG shifts consistently move hull buoyancy as well as foils/struts.
+- Web Dashboard (`page.html` & `sim_server.py`):
+  - Added 3-way `m/s -> km/h -> mph` speed unit selector synced between header, Fly gauges/helm, Boat Editor fields/chart/table, and the 3D viewer (`U` key).
+  - Added live controller mode bar + newcomer-friendly explanation cards comparing Auto Combined, LQR, and PID, plus `Foil / Land (F)` helm button.
+  - Made payloads draggable on the Boat Editor SVG blueprint with real-time CG/inertia recalculation, empty hull mass field, quick-add mass buttons, plain-English field descriptions, and qualitative design summary cards.
+  - Fixed autotuner tab-switching & backend persistence: atomic `.tmp` JSON writes in `tuning/autotune.py`, cached last progress in `sim_server.py::tune_status`, automatic backend saving of best PID/LQR results to `local/overrides.json` with a live "Stored Backend Controller Parameters" readout, background progress badge on the Autotuner tab button, and live PID gain sync to the running viewer.
+
+### 2026-11-20 (evening) — Phase-Aware Combined Autotuning (Rising + Cruising/Turning + Falling)
+- `hydrofoil/control/lqr.py`: added module-level `_PLANT_LIN_CACHE` keyed on plant/geometry/servo/speed parameters (excluding PID gains, LQR weights, wave/sensor/supervisor flags) so repeated `LQRController` constructions during tuning reuse pre-linearized matrices bit-for-bit without redundant Newton trim solves.
+- `hydrofoil/tuning/scoring.py`: added `turn` (12° banked 3D split-flap maneuver: `roll_overshoot`, `roll_rms_err`, `sideslip_peak`) and `landing` (descent to touchdown + LQR→PID handback: `vz_touch`, `touch_pitch`, `touch_roll`, `handback_ok`, post-touchdown bobbing `z_rms`) scenarios, plus `PHASE_SCENARIOS`, `phase_scenarios()`, and `phase_costs()` separating costs into Rising, Cruising/Turning, and Falling phases.
+- `hydrofoil/tuning/classical.py`: fixed `relay_test`'s monkeypatched `relay(error, meas, integrate=True)` signature to accept the `integrate` keyword passed by `HydrofoilController.pid_commands`, excluded landing/rising runs from foilborne `bryson_update`, and measured `turn` roll excursion relative to the commanded 12° bank angle rather than zero.
+- `hydrofoil/tuning/autotune.py`: added default `--target auto` ("Both — Phase-Aware Combined") pipeline: Stage 1 tunes PID gains specifically on Rising (`takeoff`, `supervised`) and Falling (`landing`) in `controller="auto"`, while Stage 2 locks those PID gains and tunes LQR weights (with `iphi`/`itheta` coupled proportionally to `phi`/`theta`) across Cruising & 3D Turning (`head`, `following`, `shift`, `noisy`, `turn`) + full-envelope handovers.
+- `hydrofoil/sim_server.py`, `hydrofoil/assets/launcher/page.html`: `_persist_tuned` now saves both PID gains and `lqr_weights` together for `target="auto"`; dashboard Autotuner defaults to Phase-Aware Both and displays per-phase score breakdown cards (`Rising`, `Cruising & Turning`, `Falling`) alongside all 8 scenario cards.
+
+### 2026-11-21 — UI Anti-Clipping, Backend Cleanup, and Null / Collapsing Edge-Case Hardening
+- `hydrofoil/viewer.py`: added adaptive font scaling & ellipsis fitting (`Hud._fit_text`) across the key bar, alert banner, cell text, and heel dial readout so narrow viewer windows never clip text across cell borders; removed dead variables (`lqr_spare`, `ctl`, `sea`) in `run()`.
+- `hydrofoil/assets/launcher/page.html`: widened/wrapped `.bar` grids, added horizontal scroll wrappers on `.storebox` and `#cmp` tables, word-wrapped preformatted blocks, scaled `drawSide`/`drawPlan` bounds to include aft tails and outboard payloads, and flipped right-edge SVG payload/CG labels + tick anchors cleanly.
+- `hydrofoil/forces/foil.py`, `hydrofoil/actuation/hinge.py`, `hydrofoil/forces/hull.py`, `hydrofoil/vehicle.py`, `hydrofoil/consistency.py`, `hydrofoil/estimation/kalman.py`, `hydrofoil/monitor.py`, `hydrofoil/design.py`: hardened against zero/collapsing foil chords & spans, stale `last_CL`, zero vector axes, extreme attitude cosines, zero `w0` in `HeaveFilter`, duplicate timestamps in `FlightMonitor`, `None` scalar overrides, missing payload coordinates, and sub-minimum slider inputs.
+- `tests/test_ergonomics_and_auto.py`: added `test_null_collapsing_physics_and_hud_anticlipping`.
+
 ### Template for future entries
 ```
 ### YYYY-MM-DD — Title

@@ -22,11 +22,12 @@ python -m hydrofoil.viewer --waves --wave-dir 90   # beam seas (excites roll)
 Sequence: the vehicle starts at rest floating (draft ≈ 4 cm, pitch 2°). The surge PID accelerates toward the target speed and
 the heave PID raises the flaps; the mode text flips from **DISPLACEMENT** to **FOILBORNE** once the hull is dry.
 
-- **Keys** (click the window first): Up/Down height, Left/Right bank (springs back), `[` `]` speed, `R` reset.
-- **Sliders**: right panel → **Control**: references, waves, PID gains and the drive's gear ratio / bus voltage, all live.
+- **Keys** (click the window first): Up/Down height, Left/Right bank (springs back), `Space` level wings, `[` `]` (`-` `+`) speed, `F` foil/land, `R` reset, `C` cycle `Auto Combined -> LQR -> PID`, `U` cycle `m/s -> km/h -> mph`, `D` open web dashboard (`http://127.0.0.1:8765`).
+- **Launchers**: double-click `run_sim.bat` on Windows or run `./run_sim.sh` on macOS/Linux (automatically sets up `.venv` with all dependencies including Pillow and selects `mjpython` on macOS for MuJoCo).
+- **Sliders**: right panel → **Control** (and mirrored in the web dashboard Helm): references, waves, PID gains and the drive's gear ratio / bus voltage, all live.
 - **Plots** on the left: height vs target, roll/pitch, surface angles, drive currents (last 15 s).
 - **Top-right text**: state, and per drive the hinge moment, motor current and bus power, with a limit flag.
-Geometry/mass changes: edit `hydrofoil/params.py` and restart. Details in doc 08.
+Geometry, empty hull mass, and interactive payload/CG placement: edit in the web dashboard's **Boat editor** tab (drag mass circles or edit coordinates, saves to `local/overrides.json` and relaunches cleanly) or via `hydrofoil/design.py`. Details in doc 08.
 
 ## 3. Actuator budget
 
@@ -63,6 +64,7 @@ Cover polar loading/symmetry, kinematics, rigid body, foil force signs, buoyancy
 | Heading | ψ in degrees; drifts as a result of banked turns |
 
 ## 7. Tuning workflow (current practice)
+- **Automated Phase-Aware Tuning (Recommended):** Open the **Autotuner** tab in `sim_server` (or run `python -m hydrofoil.tuning.autotune --preset manned --target auto`) to tune PID gains on Rising/Falling phases (`takeoff`, `supervised`, `landing`) and LQR weights on Cruising & 3D Turning (`head`, `following`, `shift`, `noisy`, `turn`), saving both to `local/overrides.json`.
 1. Calm water, default geometry. Change one gain at a time on the Live tab → Apply & Restart.
 2. Check takeoff time, depth overshoot, pitch settling, roll settling.
 3. Add waves; confirm no divergence for ≥ 90 s.

@@ -86,11 +86,14 @@ class FlightMonitor:
                 self.established = True
         flying = foilborne and self.established          # checks that only make sense once settled
 
-        # hull clearance over the local wave surface, and main-foil depth in chords
+        # hull clearance over the local wave surface, and shallowest main-foil depth (center & outer wingtip)
         env = vp.wave_sample(eta, t, wave)
         clearance = -state[2] + p["hull_offset"] + env.hull_surface_z          # surface z is NED (up = negative)
-        foil_hc = min(vp._submergence_over_chord(f, eta, env.foil_surface_z[n])
-                      for n, f in (("left", vp.left_foil), ("right", vp.right_foil)))
+        foil_hc = min(
+            min(vp._submergence_over_chord(f, eta, env.foil_surface_z[n]),
+                vp._foil_tip_submergence_over_chord(f, eta, env.foil_surface_z[n]))
+            for n, f in (("left", vp.left_foil), ("right", vp.right_foil))
+        )
         if flying:
             if clearance < 0.04:
                 self._set(out, "hull", "danger", f"Hull {clearance * 100:.0f} cm off the water: a strike at speed", clearance)
@@ -134,6 +137,14 @@ class FlightMonitor:
         elif foilborne and u < self.lim["v_min"]:
             self._set(out, "speed", "caution", f"{u:.1f} m/s, under the {self.lim['v_min']:.1f} m/s foiling minimum", u)
 
+        # sideslip (strut ventilation / skid risk in banked turns)
+        if flying and u > 2.0:
+            beta_deg = float(np.degrees(np.arctan2(state[7], u)))
+            if abs(beta_deg) > 8.0:
+                self._set(out, "sideslip", "danger", f"Sideslip {beta_deg:+.1f}°: strut ventilation risk", beta_deg)
+            elif abs(beta_deg) > 5.0:
+                self._set(out, "sideslip", "caution", f"Sideslip {beta_deg:+.1f}° in turn/waves", beta_deg)
+
         # growing oscillation (height, heel): rms of the last 3 s against the 3 s before
         if tt[-1] - tt[0] > 5.5 and flying and t - self.air_since > 8.0:
             new, old = tt > t - 3.0, (tt <= t - 3.0)
@@ -151,14 +162,15 @@ class FlightMonitor:
 
         # ride: vertical acceleration felt aboard
         v = np.asarray(self.buf["vz"])
-        if len(v) > 10 and flying:
+        if len(v) > 10 and flying and np.all(np.diff(tt) > 1e-6):
             acc = np.gradient(v, tt)
             a2 = acc[tt > t - 2.0]
-            rms, pk = a2.std() / G, np.abs(a2).max() / G
-            if pk > 0.5:
-                self._set(out, "ride", "danger", f"Slam: {pk:.1f} g vertical", pk)
-            elif rms > 0.1:
-                self._set(out, "ride", "caution", f"Rough ride: {rms:.2f} g rms vertical", rms)
+            if len(a2) >= 2:
+                rms, pk = a2.std() / G, np.abs(a2).max() / G
+                if pk > 0.5:
+                    self._set(out, "ride", "danger", f"Slam: {pk:.1f} g vertical", pk)
+                elif rms > 0.1:
+                    self._set(out, "ride", "caution", f"Rough ride: {rms:.2f} g rms vertical", rms)
 
         # cavitation
         depth = max(foil_hc * p["main_chord"], 0.0)

@@ -131,17 +131,30 @@ class HullHydrostatics:
     def __init__(self, length: float, beam: float, x_center: float, hull_offset: float,
                  max_draft: float, nx: int = 11, ny: int = 7,
                  rho: float = RHO_WATER, g: float = G):
+        length = max(float(length), 1e-3)
+        beam = max(float(beam), 1e-3)
+        max_draft = max(float(max_draft), 0.0)
+        nx = max(int(nx), 1)
+        ny = max(int(ny), 1)
         xs = x_center + ((np.arange(nx) + 0.5) / nx - 0.5) * length
         ys = ((np.arange(ny) + 0.5) / ny - 0.5) * beam
         X, Y = np.meshgrid(xs, ys, indexing="ij")
         self.xy = np.stack([X.ravel(), Y.ravel()], axis=1)                       # (N, 2)
         self.bottom = np.column_stack([self.xy, np.full(len(self.xy), -hull_offset)])   # (N, 3) body coords
+        self.xy0 = self.xy.copy()
+        self.bottom0 = self.bottom.copy()
         self.dA = length * beam / (nx * ny)
         self.waterplane_area = length * beam
         self.hull_offset = hull_offset
         self.max_draft = max_draft
         self.rho, self.g = rho, g
         self.n = len(self.xy)
+
+    def set_cg_offset(self, dx: float = 0.0, dy: float = 0.0) -> None:
+        """Shift hull footprint coordinates relative to body origin when CG moves by (dx, dy)."""
+        off = np.array([float(dx), float(dy)])
+        self.xy = self.xy0 - off
+        self.bottom[:, :2] = self.xy
 
     def cell_world_xy(self, eta):
         """NED (x, y, z) of every cell's hull-bottom point (for sampling the wave field)."""
@@ -179,16 +192,22 @@ class HullHydrostatics:
         """
         Placeholder hull damping, scaled by wetted fraction (0 once foilborne):
         quadratic surge drag with an optional wave-making Froude hump peaking near
-        Fr_L = |u| / sqrt(g L) ~ 0.48 before liftoff, plus linear roll/pitch
-        damping standing in for radiation damping.
+        Fr_L = |u| / sqrt(g L) ~ 0.48 before liftoff, quadratic lateral crossflow
+        sway drag (C_Dy ~ 1.0 on projected hull side area L * d_max), plus linear
+        roll/pitch/yaw damping standing in for radiation damping.
         """
         wetted = mean_draft / self.max_draft if self.max_draft > 0 else 0.0
         hump = 1.0
         if hull_length and hull_length > 0.0 and hump_amp > 0.0:
             fr = abs(float(nu[0])) / np.sqrt(self.g * hull_length)
             hump = 1.0 + hump_amp * np.exp(-((fr - 0.48) / 0.22) ** 2)
+        sway_coeff = (0.5 * self.rho * hull_length * self.max_draft
+                      if (hull_length and hull_length > 0.0 and self.max_draft > 0.0)
+                      else 4.0 * drag_coeff)
         tau = np.zeros(6)
         tau[0] = -drag_coeff * hump * wetted * nu[0] * abs(nu[0])
+        tau[1] = -sway_coeff * wetted * nu[1] * abs(nu[1])
         tau[3] = -rot_damping * wetted * nu[3]
         tau[4] = -rot_damping * wetted * nu[4]
+        tau[5] = -rot_damping * wetted * nu[5]
         return tau

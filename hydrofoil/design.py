@@ -31,7 +31,7 @@ from hydrofoil.actuation.servo import DEFAULT_SERVO_PARAMS
 from hydrofoil.dynamics.rigid_body import strip_added_mass_heave_pitch, strip_added_mass_roll
 from hydrofoil.forces.foil import main_flap_effectiveness, MAIN_FOIL_FLAP_EFFECTIVENESS
 
-TRIM_EDIT_KEYS = {"payloads", "mass", "strut_length", "main_span", "main_chord", "main_incidence_deg", "main_flap_frac",
+TRIM_EDIT_KEYS = {"payloads", "mass", "empty_mass", "strut_length", "main_span", "main_chord", "main_incidence_deg", "main_flap_frac",
                   "main_flap_span_frac", "main_flap_setback", "main_flap_effectiveness",
                   "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset",
                   "hull_length", "hull_beam"}
@@ -43,24 +43,56 @@ def _point_inertia(m, r):
     return m * (np.dot(r, r) * np.eye(3) - np.outer(r, r))
 
 
-def mass_properties(p: dict, payloads: list | None) -> dict:
+def _sanitize_payloads(loads_raw) -> list[dict]:
+    """Normalize a list of payload dicts so missing or None fields default cleanly to zero."""
+    return [
+        {"name": str((q or {}).get("name") or "Load"),
+         "mass": max(float((q or {}).get("mass") or 0.0), 0.0),
+         "x": float((q or {}).get("x") or 0.0),
+         "y": float((q or {}).get("y") or 0.0),
+         "z": float((q or {}).get("z") or 0.0)}
+        for q in (loads_raw or ())
+    ]
+
+
+def mass_properties(p: dict, payloads: list | None, empty_mass: float | None = None,
+                    hull_scale: tuple[float, float] = (1.0, 1.0)) -> dict:
     """Total mass, CG (relative to the nominal CG) and inertia about the new CG for the given payload list."""
-    defaults = p.get("default_payloads", [])
+    defaults = _sanitize_payloads(p.get("_base_payloads", p.get("default_payloads", [])))
+    base_mass = float(p.get("_base_mass", p["mass"]))
+    base_I = p.get("_base_inertia", (p["ixx"], p["iyy"], p["izz"]))
     m_def = sum(q["mass"] for q in defaults)
-    m_empty = p["mass"] - m_def
-    I_nom = np.diag([p["ixx"], p["iyy"], p["izz"]])                   # boat + default payloads, about the nominal CG
+    m_e0 = base_mass - m_def
+    if m_e0 <= 0.0:
+        raise ValueError(f"total mass ({base_mass} kg) must exceed default payload mass ({m_def} kg)")
+    I_nom = np.diag([float(x) for x in base_I])                       # boat + default payloads, about the nominal CG
     I_empty = I_nom - sum((_point_inertia(q["mass"], (q["x"], q["y"], q["z"])) for q in defaults), np.zeros((3, 3)))
-    loads = defaults if payloads is None else payloads
-    # the empty boat's own CG: nominal CG = (m_empty r_e + sum m_i r_i) / m_total = 0
-    r_e = -sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3)) / max(m_empty, 1e-9)
+    # the empty boat's own CG: nominal CG = (m_e0 r_e + sum m_i r_i) / base_mass = 0
+    r_e = -sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3)) / m_e0
+    if empty_mass is not None:
+        m_empty = float(empty_mass)
+        if m_empty <= 0.0:
+            raise ValueError(f"empty_mass must be > 0, got {m_empty}")
+    else:
+        cur_def = _sanitize_payloads(p.get("default_payloads", defaults))
+        m_cur_empty = float(p.get("mass_empty", float(p["mass"]) - sum(q["mass"] for q in cur_def)))
+        m_empty = m_cur_empty if m_cur_empty > 0.0 else m_e0
+    sm = m_empty / m_e0
+    sb, sl = float(hull_scale[0]), float(hull_scale[1])
+    I_e_cm = I_empty - _point_inertia(m_e0, r_e)                      # empty boat about its own CG
+    scale_vec = np.array([sm * sb * sb, sm * sl * sl, sm * 0.5 * (sb * sb + sl * sl)])
+    I_e_cm = np.diag(np.maximum(np.diag(I_e_cm) * scale_vec, 1e-4))
+    loads = _sanitize_payloads(p.get("default_payloads", defaults) if payloads is None else payloads)
     m = m_empty + sum(q["mass"] for q in loads)
+    if m <= 0.0:
+        raise ValueError(f"resulting total mass must be > 0, got {m}")
     cg = (m_empty * r_e + sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in loads), np.zeros(3))) / m
-    # I_empty is about the nominal CG; move everything to the new CG
-    I_e_cm = I_empty - _point_inertia(m_empty, r_e)                    # empty boat about its own CG
+    # I_e_cm is about the empty boat's CG; move everything to the combined CG via parallel axis
     I = I_e_cm + _point_inertia(m_empty, r_e - cg)
     for q in loads:
         I = I + _point_inertia(q["mass"], np.array([q["x"], q["y"], q["z"]]) - cg)
-    return {"mass": float(m), "mass_empty": float(m_empty), "cg": cg.tolist(), "inertia": np.diag(I).tolist()}
+    return {"mass": float(m), "mass_empty": float(m_empty), "cg": cg.tolist(), "inertia": np.diag(I).tolist(),
+            "payloads": loads}
 
 
 def _wetted_proxy(p: dict) -> float:
@@ -79,24 +111,32 @@ def _foil_eff(p: dict) -> float:
 
 def _scale_inertias_and_hull(old: dict, p: dict, ov: dict):
     """Scale empty-boat dry inertias, hull drag, and critical rotational damping on boat-size edits."""
-    defaults = p.get("default_payloads", [])
+    defaults = _sanitize_payloads(p.get("default_payloads", []))
     m_def = sum(q["mass"] for q in defaults)
-    m_e_old = max(old["mass"] - m_def, 1e-6)
-    m_e_new = max(p["mass"] - m_def, 1e-6)
-    sb = p["hull_beam"] / old["hull_beam"]
-    sl = p["hull_length"] / old["hull_length"]
-    if ("mass" in ov or "hull_length" in ov or "hull_beam" in ov) and not any(k in ov for k in ("ixx", "iyy", "izz")):
-        sm = m_e_new / m_e_old
-        I_nom = np.diag([old["ixx"], old["iyy"], old["izz"]])
-        I_empty = I_nom - sum((_point_inertia(q["mass"], (q["x"], q["y"], q["z"])) for q in defaults), np.zeros((3, 3)))
-        r_e = -sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3)) / m_e_old
-        I_e_cm = I_empty - _point_inertia(m_e_old, r_e)
-        scale_vec = np.array([sm * sb * sb, sm * sl * sl, sm * 0.5 * (sb * sb + sl * sl)])
-        I_e_scaled = np.diag(np.maximum(np.diag(I_e_cm) * scale_vec, 1e-4))
-        cg = (m_e_new * r_e + sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3))) / p["mass"]
-        I = I_e_scaled + _point_inertia(m_e_new, r_e - cg)
-        for q in defaults:
-            I = I + _point_inertia(q["mass"], np.array([q["x"], q["y"], q["z"]]) - cg)
+    m_e_old = old["mass"] - m_def
+    m_e_new = p["mass"] - m_def
+    sb = p["hull_beam"] / max(old["hull_beam"], 1e-4)
+    sl = p["hull_length"] / max(old["hull_length"], 1e-4)
+    if ("mass" in ov or "hull_length" in ov or "hull_beam" in ov) and not any(
+        k in ov for k in ("ixx", "iyy", "izz", "payloads", "empty_mass")
+    ):
+        if m_e_old > 0.0 and m_e_new > 0.0:
+            sm = m_e_new / m_e_old
+            I_nom = np.diag([old["ixx"], old["iyy"], old["izz"]])
+            I_empty = I_nom - sum((_point_inertia(q["mass"], (q["x"], q["y"], q["z"])) for q in defaults), np.zeros((3, 3)))
+            r_e = -sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3)) / m_e_old
+            I_e_cm = I_empty - _point_inertia(m_e_old, r_e)
+            scale_vec = np.array([sm * sb * sb, sm * sl * sl, sm * 0.5 * (sb * sb + sl * sl)])
+            I_e_scaled = np.diag(np.maximum(np.diag(I_e_cm) * scale_vec, 1e-4))
+            cg = (m_e_new * r_e + sum((q["mass"] * np.array([q["x"], q["y"], q["z"]]) for q in defaults), np.zeros(3))) / p["mass"]
+            I = I_e_scaled + _point_inertia(m_e_new, r_e - cg)
+            for q in defaults:
+                I = I + _point_inertia(q["mass"], np.array([q["x"], q["y"], q["z"]]) - cg)
+        else:
+            # Whole-craft mass override below default payload mass: scale total dry inertias directly
+            sm = max(p["mass"] / max(old["mass"], 1e-6), 1e-4)
+            I = np.diag([old["ixx"] * sm * sb * sb, old["iyy"] * sm * sl * sl,
+                         old["izz"] * sm * 0.5 * (sb * sb + sl * sl)])
         if "ixx" not in ov:
             p["ixx"] = round(float(I[0, 0]), 3)
         if "iyy" not in ov:
@@ -120,11 +160,11 @@ def _scale_structures_drives_and_gains(old: dict, p: dict, ov: dict):
                              p["main_flap_frac"], p.get("main_flap_setback", 0.0))
             p["main_surface_inertia"] = float(f"{j:.3g}")
         if "main_flap_GJ" not in ov and p.get("main_flap_GJ") is not None:
-            cf_o = old["main_chord"] * old["main_flap_frac"]
-            cf_n = p["main_chord"] * p["main_flap_frac"]
-            p["main_flap_GJ"] = round(old["main_flap_GJ"] * (p["main_chord"] / old["main_chord"]) * (cf_n / cf_o) ** 3, 2)
+            cf_o = max(old["main_chord"] * old["main_flap_frac"], 1e-4)
+            cf_n = max(p["main_chord"] * p["main_flap_frac"], 1e-4)
+            p["main_flap_GJ"] = round(old["main_flap_GJ"] * (p["main_chord"] / max(old["main_chord"], 1e-4)) * (cf_n / cf_o) ** 3, 2)
     if "elev_chord" in ov and "elev_GJ" not in ov and p.get("elev_GJ") is not None:
-        p["elev_GJ"] = round(old["elev_GJ"] * (p["elev_chord"] / old["elev_chord"]) ** 4, 2)
+        p["elev_GJ"] = round(old["elev_GJ"] * (p["elev_chord"] / max(old["elev_chord"], 1e-4)) ** 4, 2)
     if ({"servo_params", "gear_ratio"} & set(ov)) and "shaft_diameter" not in ov:
         spec = DriveSpec()
         N = p["gear_ratio"]
@@ -134,10 +174,11 @@ def _scale_structures_drives_and_gains(old: dict, p: dict, ov: dict):
         d_req = float((16.0 * t_shaft * 1.5 / (np.pi * 70e6)) ** (1.0 / 3.0))
         p["shaft_diameter"] = max(float(old.get("shaft_diameter", spec.shaft_diameter)), round(d_req, 4))
     if {"mass", "payloads", "target_speed"} & set(ov):
+        m_old = max(old["mass"], 1e-4)
         if "max_thrust" not in ov and ({"mass", "payloads"} & set(ov)):
-            p["max_thrust"] = round(old["max_thrust"] * (p["mass"] / old["mass"]), 1)
+            p["max_thrust"] = round(old["max_thrust"] * (p["mass"] / m_old), 1)
         if "prop_power_max" not in ov and p.get("prop_power_max") is not None:
-            p["prop_power_max"] = round(old["prop_power_max"] * (p["mass"] / old["mass"])
+            p["prop_power_max"] = round(old["prop_power_max"] * (p["mass"] / m_old)
                                          * (p["target_speed"] / max(old["target_speed"], 0.5)), 1)
     # First-order control-authority gain scaling so resized craft stay flyable before re-autotuning
     if (main_keys | {"mass", "payloads", "elev_chord", "elev_span", "elev_pos_x", "main_lateral_offset", "ixx", "iyy"}) & set(ov):
@@ -177,30 +218,55 @@ def apply_design(p: dict, overrides: dict) -> dict:
     """New params dict with the edits applied (the input is not modified)."""
     old = dict(p)
     p = dict(p)
+    p.setdefault("_base_mass", old["mass"])
+    p.setdefault("_base_inertia", (old["ixx"], old["iyy"], old["izz"]))
+    p.setdefault("_base_payloads", list(old.get("default_payloads", [])))
     ov = dict(overrides or {})
     payloads = ov.pop("payloads", None)
+    empty_mass = ov.pop("empty_mass", None)
     strut = ov.pop("strut_length", None)
     extra_keys = ("lqr_weights", "gear_rated_torque", "shaft_diameter", "prop_power_max",
-                  "prop_tau_s", "dual_height", "gnss_fallback")
+                  "prop_tau_s", "dual_height", "gnss_fallback", "empty_mass", "mass_empty", "cg_z")
     for k, v in ov.items():
         if k in p or k in extra_keys:
+            if k in p and isinstance(p[k], (int, float)) and not isinstance(p[k], bool) and v is None:
+                continue
             p[k] = v
+    dim_bounds = {
+        "main_chord": (0.02, None), "main_span": (0.05, None),
+        "elev_chord": (0.02, None), "elev_span": (0.05, None),
+        "main_flap_frac": (0.05, 0.85), "main_flap_span_frac": (0.1, 1.0),
+        "hull_length": (0.2, None), "hull_beam": (0.1, None),
+        "max_draft": (0.02, None), "target_speed": (0.5, None), "max_thrust": (1.0, None),
+    }
+    for k, (lo, hi) in dim_bounds.items():
+        if k in p and p[k] is not None:
+            val = max(float(p[k]), lo)
+            p[k] = min(val, hi) if hi is not None else val
     if "main_span" in ov:
         p["main_lateral_offset"] = 0.05 + p["main_span"] / 2
     if strut is not None:
+        strut_v = max(float(strut), 0.15)
         dz = p["main_pos_z"] - p["elev_pos_z"]
-        p["main_pos_z"] = float(strut) - p["hull_offset"]
+        p["main_pos_z"] = strut_v - p["hull_offset"]
         p["elev_pos_z"] = p["main_pos_z"] - dz
-    if payloads is not None:
-        mp_ = mass_properties(p, payloads)
+    if payloads is not None or empty_mass is not None:
+        sb = p["hull_beam"] / max(old["hull_beam"], 1e-6)
+        sl = p["hull_length"] / max(old["hull_length"], 1e-6)
+        mp_ = mass_properties(p, payloads, empty_mass=empty_mass, hull_scale=(sb, sl))
         p["mass"] = mp_["mass"]
-        p["ixx"], p["iyy"], p["izz"] = mp_["inertia"]
+        p["mass_empty"] = mp_["mass_empty"]
+        p["ixx"], p["iyy"], p["izz"] = [round(float(x), 3) for x in mp_["inertia"]]
         p["cg_offset"] = (mp_["cg"][0], mp_["cg"][1])
-        p["default_payloads"] = payloads
-    if ov or payloads is not None or strut is not None:
+        p["cg_z"] = float(mp_["cg"][2])
+        if payloads is not None:
+            p["default_payloads"] = mp_["payloads"]
+    if ov or payloads is not None or empty_mass is not None or strut is not None:
         ov_flags = dict(ov)
         if payloads is not None:
             ov_flags["payloads"] = True
+        if empty_mass is not None:
+            ov_flags["empty_mass"] = True
         if strut is not None:
             ov_flags["strut_length"] = True
         _scale_inertias_and_hull(old, p, ov_flags)
@@ -223,7 +289,8 @@ def _trim_flap(p: dict, speed: float):
 
 _CURVES: dict = {}
 _CONTROL_KEYS = ("lqr_", "est_", "trim_ff", "kp_", "ki_", "kd_", "controller", "sensors", "supervisor", "kf_",
-                 "servo_params", "default_payloads", "target_speed", "max_thrust", "phi_ref", "theta_ref")
+                 "servo_params", "default_payloads", "target_speed", "max_thrust", "phi_ref", "theta_ref",
+                 "_base_", "mass_empty", "cg_z")
 
 
 def trim_curve(p: dict, speeds=None) -> list[dict]:
@@ -259,20 +326,105 @@ def _reschedule(p: dict):
     p["est_engage_speed"] = float(v_lo)
 
 
-def derived(p: dict) -> dict:
+def design_summary(base_d: dict | None, edit_d: dict, p: dict) -> dict:
+    """Plain-English qualitative design assessment for newcomers and operators."""
+    v_min = edit_d.get("v_min_foil")
+    cf = edit_d.get("cruise_flap")
+    margin = edit_d.get("flap_margin")
+    thrust = edit_d.get("cruise_thrust")
+    max_thr = float(p["max_thrust"])
+    depth = float(edit_d.get("foil_depth", 0.0))
+    cav = float(edit_d.get("cavitation_number", 9.9))
+    ar = float(edit_d.get("aspect_ratio", 0.0))
+    cgx = float(edit_d.get("cg_x", 0.0))
+    cgy = float(edit_d.get("cg_y", 0.0))
+    cgz = float(edit_d.get("cg_z", 0.0))
+
+    issues, cautions = [], []
+    if v_min is None or cf is None or margin is None:
+        issues.append("the boat cannot find a level trim at cruise speed with these weights/foils")
+    else:
+        if margin < 5.0:
+            issues.append(f"only {margin:.1f}° of flap travel remains at cruise before hitting ±20° stops")
+        elif margin < 8.0:
+            cautions.append(f"flap headroom is modest ({margin:.1f}°) in steep turns or waves")
+        if v_min > float(edit_d["cruise_speed"]) * 0.9:
+            cautions.append(f"cruise speed ({edit_d['cruise_speed']:.1f} m/s) sits close to the {v_min:.1f} m/s minimum foil speed")
+    if depth <= 0.15:
+        issues.append(f"main foil is only {depth:.2f} m deep at flying height and will breach the surface")
+    elif depth < 0.35:
+        cautions.append(f"shallow foil submergence ({depth:.2f} m) limits safe bank angle in waves")
+    if thrust is not None and thrust > 0.92 * max_thr:
+        issues.append(f"cruise thrust ({thrust:.0f} N) leaves almost no margin under the {max_thr:.0f} N motor limit for takeoff")
+    elif thrust is not None and thrust > 0.65 * max_thr:
+        cautions.append(f"cruise uses {100 * thrust / max(max_thr, 1e-6):.0f}% of max thrust; hump acceleration may be slow")
+    if cav < 1.3:
+        issues.append(f"cavitation number σ={cav:.2f} indicates likely blade cavitation at cruise speed")
+    elif cav < 2.0:
+        cautions.append(f"cavitation margin is getting thin (σ={cav:.2f})")
+    if abs(cgy) > 0.10:
+        cautions.append(f"sideways CG offset ({cgy:+.2f} m) forces unequal flap lift even when flying straight")
+
+    if issues:
+        verdict = {"status": "danger", "headline": "Needs adjustment before flying — " + "; ".join(issues) + "."}
+    elif cautions:
+        verdict = {"status": "caution", "headline": "Flyable with narrower margins — " + "; ".join(cautions) + "."}
+    else:
+        verdict = {"status": "good",
+                   "headline": (f"Balanced and ready to fly: takes off near {v_min:.1f} m/s, cruises at "
+                                f"{edit_d['cruise_speed']:.1f} m/s with {margin:.1f}° spare flap travel.")}
+
+    fwd_txt = ("well balanced fore/aft" if abs(cgx) <= 0.03 else
+               f"{abs(cgx) * 100:.0f} cm nose-heavy (front wing carries extra lift; tail works harder to hold nose up)" if cgx > 0 else
+               f"{abs(cgx) * 100:.0f} cm tail-heavy (rear elevator carries more load; watch pitch sensitivity)")
+    lat_txt = ("symmetrical left/right" if abs(cgy) <= 0.015 else
+               f"pulled {abs(cgy) * 100:.0f} cm to {'starboard' if cgy > 0 else 'port'} (front split flaps trim asymmetrically in straight flight)")
+    if abs(cgz) > 0.02:
+        z_txt = f" Vertical CG shifted {cgz:+.2f} m (updates pitch/roll inertias Ixx/Iyy; reported info-only)."
+    else:
+        z_txt = ""
+    inertia_txt = ""
+    if base_d is not None and base_d.get("iyy") and edit_d.get("iyy"):
+        d_ixx = 100.0 * (edit_d["ixx"] - base_d["ixx"]) / max(base_d["ixx"], 1e-6)
+        d_iyy = 100.0 * (edit_d["iyy"] - base_d["iyy"]) / max(base_d["iyy"], 1e-6)
+        inertia_txt = f" Roll inertia {d_ixx:+.0f}%, pitch inertia {d_iyy:+.0f}% vs preset."
+    balance = f"Center of gravity is {fwd_txt} and {lat_txt}.{z_txt}{inertia_txt}"
+
+    ar_txt = ("high-aspect narrow wing (efficient low drag, but outer tips sit closer to breaching in steep turns)"
+              if ar >= 5.5 else
+              "compact lower-aspect wing (slightly higher induced drag, more tip clearance in turns)"
+              if ar <= 3.0 else
+              "moderate-aspect wing (good balance of efficiency and tip clearance)")
+    wings = (f"{edit_d['wing_area']:.3f} m² main wing with AR {ar:.2f} per half — {ar_txt}. "
+             + (f"Slowest clean foil speed is ~{v_min:.1f} m/s." if v_min else "Cannot maintain level lift across the speed sweep."))
+
+    thr_str = f"{thrust:.0f} N ({edit_d['cruise_power_kw']:.2f} kW hydro power)" if thrust is not None else "unavailable"
+    cav_str = "safe margin from cavitation bubbles" if cav >= 2.2 else ("tight cavitation margin" if cav >= 1.5 else "high cavitation risk")
+    power = f"Estimated cruise drag/thrust is {thr_str} vs {max_thr:.0f} N max thrust; σ={cav:.2f} ({cav_str}) at {depth:.2f} m foil depth."
+
+    return {"verdict": verdict, "balance": balance, "wings": wings, "power": power}
+
+
+def derived(p: dict, include_summary: bool = True) -> dict:
     """What the design does, without flying it: wing loading, takeoff and cruise trim, power, margins."""
     warnings.simplefilter("ignore")
-    S = 2 * p["main_chord"] * p["main_span"]
+    mc = max(float(p["main_chord"]), 1e-6)
+    ms = max(float(p["main_span"]), 1e-6)
+    S = max(2 * mc * ms, 1e-6)
     W = p["mass"] * G
     curve = trim_curve(p)
     ok = [c for c in curve if c["flap"] is not None and abs(c["flap"]) <= FLAP_TRIM_LIMIT]
     cruise = _trim_flap(p, p["target_speed"])
     depth = (p["hull_offset"] - p["flying_height"]) + p["main_pos_z"]
-    q = 0.5 * RHO_WATER * p["target_speed"] ** 2
+    q = 0.5 * RHO_WATER * max(float(p["target_speed"]), 0.1) ** 2
     cg = p.get("cg_offset", (0.0, 0.0))
-    return {
-        "mass": p["mass"], "cg_x": cg[0], "cg_y": cg[1],
-        "wing_area": S, "aspect_ratio": p["main_span"] / p["main_chord"], "wing_loading": W / S,
+    m_def = sum(q_i["mass"] for q_i in _sanitize_payloads(p.get("default_payloads", [])))
+    m_empty = float(p.get("mass_empty", max(float(p["mass"]) - m_def, 0.0)))
+    out = {
+        "mass": p["mass"], "mass_empty": m_empty,
+        "cg_x": cg[0], "cg_y": cg[1], "cg_z": float(p.get("cg_z", 0.0)),
+        "ixx": float(p["ixx"]), "iyy": float(p["iyy"]), "izz": float(p["izz"]),
+        "wing_area": S, "aspect_ratio": ms / mc, "wing_loading": W / S,
         "foil_depth": depth, "strut_length": p["hull_offset"] + p["main_pos_z"],
         "v_min_foil": ok[0]["speed"] if ok else None, "v_max_trim": max(c["speed"] for c in ok) if ok else None,
         "cruise_speed": p["target_speed"],
@@ -283,3 +435,6 @@ def derived(p: dict) -> dict:
         "reynolds": p["target_speed"] * p["main_chord"] / 1.05e-6,
         "curve": curve,
     }
+    if include_summary:
+        out["summary"] = design_summary(None, out, p)
+    return out

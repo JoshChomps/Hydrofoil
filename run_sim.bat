@@ -19,7 +19,7 @@ if not defined PY (
 )
 
 rem Reuse current Python directly if dependencies are already installed; otherwise isolate in .venv.
-"%PY%" -c "import mujoco, numpy, scipy, matplotlib, plotly" >nul 2>&1
+"%PY%" -c "import mujoco, numpy, scipy, matplotlib, plotly, PIL" >nul 2>&1
 if not errorlevel 1 goto :menu
 
 if /I "%PY%"=="%VENV_PY%" goto :install_reqs
@@ -47,8 +47,8 @@ if errorlevel 1 (
 echo.
 echo Hydrofoil Sim Launcher ^(Python: %PY%^)
 echo   [1] Web Dashboard + Boat Editor + 3D Viewer Launcher ^(default^)
-echo   [2] Manned 275 kg 3D Viewer - Supervisor + Waves + Noisy Sensors
-echo   [3] Manned 275 kg 3D Viewer - Supervisor + Calm
+echo   [2] Manned 275 kg 3D Viewer - Auto Combined PID/LQR + Supervisor + Waves + Noisy Sensors
+echo   [3] Manned 275 kg 3D Viewer - Auto Combined PID/LQR + Supervisor + Calm
 echo   [4] Model 25 kg 3D Viewer   - Raw LQR/PID + Calm
 echo   [5] Model Consistency Check
 echo   [6] Run Pytest Suite
@@ -58,11 +58,12 @@ set /p "CHOICE=Select option [1-6] (Enter for 1): "
 for /f "tokens=1" %%C in ("%CHOICE%") do set "CHOICE=%%C"
 
 if "%CHOICE%"=="1" (
+    echo Starting web dashboard on http://127.0.0.1:8765 ^(Ctrl+C to stop^)...
     "%PY%" -m hydrofoil.sim_server
 ) else if "%CHOICE%"=="2" (
-    "%PY%" -m hydrofoil.viewer --preset manned --supervisor --sensors noisy --waves
+    "%PY%" -m hydrofoil.viewer --preset manned --controller auto --supervisor --sensors noisy --waves
 ) else if "%CHOICE%"=="3" (
-    "%PY%" -m hydrofoil.viewer --preset manned --supervisor
+    "%PY%" -m hydrofoil.viewer --preset manned --controller auto --supervisor
 ) else if "%CHOICE%"=="4" (
     "%PY%" -m hydrofoil.viewer
 ) else if "%CHOICE%"=="5" (

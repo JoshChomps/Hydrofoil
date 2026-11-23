@@ -106,7 +106,8 @@ class HydrofoilController:
     Outputs:
         delta_main  : symmetric main foil flap angle [deg]
         delta_elev  : elevator angle [deg]
-        delta_roll  : differential main foil angle (left - right) [deg]
+        delta_roll  : differential main foil half-angle (right - left)/2 [deg]
+                      (left = delta_main - delta_roll, right = delta_main + delta_roll)
 
     Usage:
         ctrl = HydrofoilController(gains, dt=0.02)
@@ -182,7 +183,7 @@ class HydrofoilController:
         (used directly by the servo drive model, which mixes them onto the physical drives)."""
         heave_err = z_meas - z_ref      # +ve: too deep → need more lift to rise
         pitch_err = np.degrees(theta_meas - theta_ref)  # +ve: nose up → need upward rear force → –M_y → nose down
-        roll_err  = np.degrees(phi_meas - phi_ref)      # +ve: rolled right → need upward left force
+        roll_err  = np.degrees(phi_meas - phi_ref)      # +ve: rolled right → +delta_roll lifts right wing back up
 
         cmd_main = self.heave_pid.update(heave_err, z_meas, integrate=integrate)
         cmd_elev = self.pitch_pid.update(pitch_err, np.degrees(theta_meas), integrate=integrate)

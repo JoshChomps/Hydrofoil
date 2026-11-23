@@ -10,6 +10,7 @@ from __future__ import annotations
 import argparse
 import html
 import json
+import shutil
 import subprocess
 import sys
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
@@ -33,11 +34,13 @@ tune_proc: subprocess.Popen | None = None
 NO_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 proc: subprocess.Popen | None = None
 last_cmd: list[str] = []
+_last_tune_data: dict = {"status": "idle"}
+_auto_saved_sig: tuple | None = None
 
 FIELDS = {   # name: (choices or None for free numeric, default)
     "preset": (("model", "manned"), "manned"),
     "supervisor": (("off", "on"), "on"),
-    "controller": (("lqr", "pid"), "lqr"),
+    "controller": (("auto", "lqr", "pid"), "auto"),
     "sensors": (("ideal", "noisy"), "ideal"),
     "waves": (("off", "on"), "off"),
     "wave_dir": (None, "0"),
@@ -67,6 +70,18 @@ def running() -> bool:
     return proc is not None and proc.poll() is None
 
 
+def _viewer_python() -> str:
+    """Use mjpython beside sys.executable or on PATH when running MuJoCo viewer on macOS."""
+    if sys.platform == "darwin":
+        cand = Path(sys.executable).with_name("mjpython")
+        if cand.is_file():
+            return str(cand)
+        found = shutil.which("mjpython")
+        if found:
+            return found
+    return sys.executable
+
+
 def start(form: dict) -> None:
     global proc, last_cmd
     stop()
@@ -80,7 +95,7 @@ def start(form: dict) -> None:
                 v[k] = str(float(v[k]))
             except ValueError:
                 v[k] = d
-    cmd = [sys.executable, "-m", "hydrofoil.viewer", "--preset", v["preset"], "--controller", v["controller"],
+    cmd = [_viewer_python(), "-m", "hydrofoil.viewer", "--preset", v["preset"], "--controller", v["controller"],
            "--sensors", v["sensors"], "--speed", v["speed"], "--wave-dir", v["wave_dir"]]
     if v["supervisor"] == "on":
         cmd.append("--supervisor")
@@ -94,7 +109,8 @@ def start(form: dict) -> None:
         cmd += ["--overrides", str(f)]
     last_cmd = cmd
     last_form.update(v)
-    proc = subprocess.Popen(cmd, cwd=ROOT, stdout=open(LOG, "w"), stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
+    with open(LOG, "w") as log_fh:
+        proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log_fh, stderr=subprocess.STDOUT, creationflags=NO_WINDOW)
 
 
 def stop() -> None:
@@ -128,49 +144,106 @@ def design_info(preset: str) -> dict:
     """Preset values for the editor fields, and what is saved for this preset."""
     from hydrofoil.params import DEFAULT_PARAMS, MANNED_PARAMS
     p = MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS
+    payloads = p.get("default_payloads", [])
     base = {k: p[k] for k in EDIT_KEYS}
     base["strut_length"] = p["hull_offset"] + p["main_pos_z"]
+    base["empty_mass"] = float(p["mass"] - sum(float(q["mass"]) for q in payloads))
     geom = {k: p[k] for k in ("hull_length", "hull_beam", "hull_x", "main_lateral_offset")}
-    return {"preset": preset, "base": base, "payloads": p.get("default_payloads", []), "geom": geom,
+    return {"preset": preset, "base": base, "payloads": payloads, "geom": geom,
             "saved": load_overrides().get(preset, {})}
 
 
 def design_preview(preset: str, overrides: dict) -> dict:
     from hydrofoil.params import DEFAULT_PARAMS, MANNED_PARAMS
-    from hydrofoil.design import apply_design, derived
+    from hydrofoil.design import apply_design, derived, design_summary
     p = dict(MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS)
     design_only = {k: v for k, v in overrides.items() if k not in ("lqr_weights",) and not k.startswith(("kp_", "ki_", "kd_"))}
     e = apply_design(p, design_only)
-    return {"base": derived(p), "edited": derived(e),
+    base_d = derived(p, include_summary=False)
+    edit_d = derived(e, include_summary=False)
+    base_d["summary"] = design_summary(None, base_d, p)
+    edit_d["summary"] = design_summary(base_d, edit_d, e)
+    return {"base": base_d, "edited": edit_d,
             "edited_geom": {k: e[k] for k in ("main_chord", "main_span", "main_lateral_offset", "elev_chord", "elev_span",
                                                "elev_pos_x", "hull_length", "hull_beam", "hull_x")}}
 
 
+def _persist_tuned(preset: str, vals: dict) -> None:
+    allov = load_overrides()
+    ov = allov.setdefault(preset, {})
+    ov.update(vals)
+    save_overrides(allov)
+    (_ensure_state_dir() / f"overrides_{preset}.json").write_text(json.dumps(ov, indent=1), encoding="utf-8")
+
+
+def stored_controller_values(preset: str) -> dict:
+    """Return both preset defaults and persisted backend overrides for PID gains and LQR weights."""
+    from hydrofoil.params import DEFAULT_PARAMS, MANNED_PARAMS
+    from hydrofoil.control.lqr import DEFAULT_WEIGHTS
+    from hydrofoil.tuning.autotune import PID_KEYS
+    p = MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS
+    ov = load_overrides().get(preset, {})
+    defaults_pid = {k: float(p[k]) for k in PID_KEYS}
+    stored_pid = {k: float(ov.get(k, p[k])) for k in PID_KEYS}
+    defaults_lqr = {k: float(v) for k, v in dict(DEFAULT_WEIGHTS, **(p.get("lqr_weights") or {})).items()}
+    stored_lqr = {k: float(v) for k, v in dict(defaults_lqr, **(ov.get("lqr_weights") or {})).items()}
+    return {
+        "preset": preset,
+        "has_tuned_pid": any(k in ov for k in PID_KEYS),
+        "has_tuned_lqr": "lqr_weights" in ov,
+        "defaults": {"pid": defaults_pid, "lqr_weights": defaults_lqr},
+        "stored": {"pid": stored_pid, "lqr_weights": stored_lqr},
+        "overrides_path": str(OVERRIDES),
+    }
+
+
 def tune_start(preset: str, target: str):
-    global tune_proc
+    global tune_proc, _last_tune_data, _auto_saved_sig
     if tune_proc is not None and tune_proc.poll() is None:
         return False
     _ensure_state_dir()
+    _auto_saved_sig = None
     ov = load_overrides().get(preset)
     f = STATE_DIR / f"overrides_{preset}.json"
     f.write_text(json.dumps(ov or {}))
-    TUNE_PROGRESS.write_text(json.dumps({"status": "starting", "preset": preset, "target": target}))
+    _last_tune_data = {"status": "starting", "preset": preset, "target": target}
+    TUNE_PROGRESS.write_text(json.dumps(_last_tune_data))
     cmd = [sys.executable, "-m", "hydrofoil.tuning.autotune", "--preset", preset, "--target", target,
            "--overrides", str(f), "--progress", str(TUNE_PROGRESS)]
-    tune_proc = subprocess.Popen(cmd, cwd=ROOT, stdout=open(STATE_DIR / "tune.log", "w"), stderr=subprocess.STDOUT,
-                                 creationflags=NO_WINDOW)
+    with open(STATE_DIR / "tune.log", "w") as log_fh:
+        tune_proc = subprocess.Popen(cmd, cwd=ROOT, stdout=log_fh, stderr=subprocess.STDOUT,
+                                     creationflags=NO_WINDOW)
     return True
 
 
-def tune_status() -> dict:
+def tune_status(preset_hint: str | None = None) -> dict:
+    global _last_tune_data, _auto_saved_sig
+    running_now = tune_proc is not None and tune_proc.poll() is None
+    d = None
     try:
-        d = json.loads(TUNE_PROGRESS.read_text())
+        if TUNE_PROGRESS.exists():
+            d = json.loads(TUNE_PROGRESS.read_text(encoding="utf-8"))
     except (OSError, ValueError):
-        return {"status": "idle"}
+        d = None
+    if d is None:
+        d = dict(_last_tune_data) if (running_now or _last_tune_data.get("status") != "idle") else {"status": "idle"}
+    else:
+        _last_tune_data = dict(d)
     if tune_proc is not None and tune_proc.poll() not in (None, 0) and d.get("status") != "done":
         d["status"] = "failed"
         log_path = STATE_DIR / "tune.log"
         d["log"] = log_path.read_text(errors="replace")[-1500:] if log_path.exists() else ""
+    preset = d.get("preset") or preset_hint or last_form.get("preset", "manned")
+    best = d.get("best")
+    stages = d.get("stages") or []
+    improved = bool(best and (d.get("status") == "done" or not stages or best["cost"] <= stages[0]["cost"]))
+    if best and improved:
+        sig = (preset, d.get("target"), round(float(best.get("cost", 0.0)), 6), best.get("source"))
+        if sig != _auto_saved_sig:
+            _persist_tuned(preset, best["values"])
+            _auto_saved_sig = sig
+        d["auto_saved"] = True
+    d["stored"] = stored_controller_values(preset_hint or preset)
     return d
 
 
@@ -178,15 +251,10 @@ def tune_apply() -> dict:
     d = tune_status()
     if not d.get("best"):
         return {"ok": False}
-    allov = load_overrides()
-    ov = allov.setdefault(d["preset"], {})
+    preset = d.get("preset") or last_form.get("preset", "manned")
     vals = d["best"]["values"]
-    if "lqr_weights" in vals:
-        ov["lqr_weights"] = vals["lqr_weights"]
-    else:
-        ov.update(vals)
-    save_overrides(allov)
-    return {"ok": True, "applied": vals}
+    _persist_tuned(preset, vals)
+    return {"ok": True, "applied": vals, "stored": stored_controller_values(preset)}
 
 
 def page() -> str:
@@ -232,10 +300,12 @@ class Handler(BaseHTTPRequestHandler):
             preset = parse_qs(self.path.partition("?")[2]).get("preset", [last_form.get("preset", "manned")])[0]
             return self._json(design_info(preset))
         if self.path.startswith("/api/tune/status"):
-            return self._json(tune_status())
+            preset = parse_qs(self.path.partition("?")[2]).get("preset", [None])[0]
+            return self._json(tune_status(preset))
         name = self.path.split("?")[0].removeprefix("/fonts/")
-        f = FONTS / name
-        if self.path.startswith("/fonts/") and "/" not in name and f.is_file():   # bundled fonts, no internet needed
+        f = (FONTS / name).resolve()
+        if (self.path.startswith("/fonts/") and "/" not in name and "\\" not in name
+                and f.is_relative_to(FONTS.resolve()) and f.is_file()):   # bundled fonts, no internet needed
             b = f.read_bytes()
             self.send_response(200)
             self.send_header("Content-Type", {".css": "text/css", ".woff2": "font/woff2"}.get(f.suffix, "text/plain"))
@@ -273,15 +343,23 @@ class Handler(BaseHTTPRequestHandler):
                     start(form)
                     return self._json({"ok": True})
                 if self.path == "/api/tune/start":
-                    return self._json({"ok": tune_start(preset, body.get("target", "pid"))})
+                    return self._json({"ok": tune_start(preset, body.get("target", "auto"))})
                 if self.path == "/api/tune/apply":
                     return self._json(tune_apply())
                 if self.path == "/api/tune/clear":
+                    global _last_tune_data, _auto_saved_sig
                     allov = load_overrides()
                     allov[preset] = {k: v for k, v in allov.get(preset, {}).items()
                                      if not (k == "lqr_weights" or k.startswith(("kp_", "ki_", "kd_")))}
                     save_overrides(allov)
-                    return self._json({"ok": True})
+                    if (STATE_DIR / f"overrides_{preset}.json").exists():
+                        (STATE_DIR / f"overrides_{preset}.json").write_text(json.dumps(allov[preset], indent=1))
+                    if tune_proc is None or tune_proc.poll() is not None:
+                        _last_tune_data = {"status": "idle"}
+                        _auto_saved_sig = None
+                        if TUNE_PROGRESS.exists():
+                            TUNE_PROGRESS.unlink()
+                    return self._json({"ok": True, "stored": stored_controller_values(preset)})
             except Exception as e:                                  # report, do not kill the launcher
                 return self._json({"error": f"{type(e).__name__}: {e}"}, 500)
             return self._json({"error": "not found"}, 404)

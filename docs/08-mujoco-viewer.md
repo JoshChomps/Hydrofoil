@@ -19,7 +19,7 @@ physics authority.
   Kp/Ki/Kd, pitch Kp/Kd, roll Kp/Kd; written straight into the running PIDs, so no restart is needed), and the drive's gear ratio and bus voltage.
   Changing Ki mid-run rescales the stored integral (the PID stores ∫e, not Ki∫e), so expect a small bump.
 - **Keys** (`Pilot`) write into the same slider values, so keys and sliders are one source of truth: Up/Down height ±0.02 m,
-  Left/Right bank ±1° (±8°, springs back at 10°/s; a bank set with the slider holds), `[` `]` speed ∓0.25 m/s, `R` reset.
+  Left/Right bank ±1° (±15°, springs back at 10°/s; a bank set with the slider holds), `Space` level wings immediately, `[` `]` (or `-` `+`) speed ∓0.25 m/s, `F` foil/land toggle, `R` reset, `C` cycle `Auto Combined -> LQR -> PID`, `U` cycle `m/s -> km/h -> mph`, `D` open/launch web dashboard (`http://127.0.0.1:8765`).
 - **Plots** (`Plots`, `MjvFigure` through `viewer.set_figures`): left edge, rolling 15 s at 30 Hz. Height vs target, roll/pitch,
   the three physical surface angles, and the three drive currents.
 - **Drive read-out** (`DriveMonitor`, doc 17): per step, the hinge moment, motor current and bus power for left flap, right flap and
@@ -31,10 +31,10 @@ physics authority.
 
 ## Run
 ```bash
-python -m hydrofoil.viewer [--waves] [--wave-dir 90] [--speed 1.0] [--duration 600]
+python -m hydrofoil.sim_server                     # web dashboard + boat editor + autotuner + viewer launcher (http://127.0.0.1:8765)
+python -m hydrofoil.viewer [--preset manned --controller auto --supervisor] [--waves] [--wave-dir 90] [--speed 1.0] [--duration 600]
 ```
-Click the window for keyboard focus; open the right panel (Tab or the arrow) → **Control** for sliders. Needs a desktop with OpenGL
-(runs natively on Windows). It is not a web server, so it has no `.claude/launch.json` entry.
+Click the window for keyboard focus; open the right panel (Tab or the arrow) → **Control** for sliders. Needs a desktop with OpenGL (runs natively on Windows/Linux, and via `mjpython` on macOS — handled automatically by `run_sim.sh` and `sim_server.py`).
 
 ## Tested
 Model compiles with 15 slider actuators; the slider/key/spring-back logic, the drive monitor and the figure builder were exercised

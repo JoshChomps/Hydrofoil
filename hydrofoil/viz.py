@@ -145,8 +145,9 @@ def animation_2d(
     ELEV_Z = 0.4
 
     def body_to_world(bx, bz, zi, thi):
+        # Match R_body_to_ned(0, theta, 0): positive pitch theta lifts bow (+bx -> smaller NED z)
         c, s = np.cos(thi), np.sin(thi)
-        return bx * c - bz * s, bx * s + bz * c + zi
+        return bx * c + bz * s, -bx * s + bz * c + zi
 
     def make_vehicle_traces(zi, thi, dmi, dei):
         """Return list of Plotly traces for one frame."""
@@ -234,7 +235,7 @@ def animation_2d(
             name=str(i),
             layout=go.Layout(
                 annotations=[dict(
-                    x=vehicle_length * 0.85, y=-water_depth * 0.85,
+                    x=vehicle_length * 0.85, y=water_depth * 0.85,
                     text=annotation_text, showarrow=False,
                     align="left", bgcolor="rgba(255,255,255,0.85)",
                     bordercolor="#ccc", borderwidth=1,
@@ -251,7 +252,7 @@ def animation_2d(
         xaxis=dict(title="Surge x [m]", range=[-vehicle_length * 1.6, vehicle_length * 1.6],
                    scaleanchor="y", scaleratio=1, zeroline=False),
         yaxis=dict(title="Depth z [m NED]  (down = deeper)",
-                   range=[-0.4, water_depth],
+                   range=[water_depth, -0.4],
                    autorange=False),
         height=620,
         plot_bgcolor="#f0f8ff",

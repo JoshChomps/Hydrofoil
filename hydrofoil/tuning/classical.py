@@ -53,7 +53,7 @@ def relay_test(params: dict, loop: str, d: float | None = None, T: float = 16.0)
     hyst = {"heave": 0.002, "pitch": 0.05, "roll": 0.05}[loop]
     st = {"u": d}
 
-    def relay(error, meas):                                    # replaces this loop's PID output
+    def relay(error, meas, integrate: bool = True):            # replaces this loop's PID output
         if error > hyst:
             st["u"] = d
         elif error < -hyst:
@@ -107,12 +107,17 @@ LQR_TARGETS = {"z_rms": 0.03, "pitch_peak": 1.5, "roll_peak": 1.5, "flap_rate_rm
 
 def bryson_update(mult: dict, metrics: dict, scale: float) -> dict:
     """One step of the iterative Bryson re-weighting (multipliers on the acceptable excursions)."""
-    ok = [m for m in metrics.values() if not m.get("failed")]
-    if not ok:
+    live = [(k, m) for k, m in metrics.items()
+            if k not in ("takeoff", "supervised", "landing") and not m.get("failed")]
+    if not live:
+        live = [(k, m) for k, m in metrics.items() if not m.get("failed")]
+    if not live:
         return {k: v * 0.8 for k, v in mult.items()}
+    ok = [m for _, m in live]
     z = np.mean([m["z_rms"] for m in ok]) / (LQR_TARGETS["z_rms"] * scale)
     th = np.mean([m["pitch_peak"] for m in ok]) / LQR_TARGETS["pitch_peak"]
-    ph = max(m["roll_peak"] for m in ok) / LQR_TARGETS["roll_peak"]
+    ph = max((m.get("roll_rms_err", 0.0) + m.get("roll_overshoot", 0.0)) if k == "turn" else m["roll_peak"]
+             for k, m in live) / LQR_TARGETS["roll_peak"]
     rate = np.mean([m["flap_rate_rms"] for m in ok]) / LQR_TARGETS["flap_rate_rms"]
     lim = max(m["limited_frac"] for m in ok) / LQR_TARGETS["limited_frac"]
     new = dict(mult)

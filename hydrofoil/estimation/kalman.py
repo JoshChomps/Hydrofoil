@@ -63,6 +63,8 @@ class KalmanEstimator:
         self.x = np.zeros(8)
 
     def _interp(self, arr, u):
+        if len(self.speeds) == 1:
+            return arr[0]
         u = float(np.clip(u, self.speeds[0], self.speeds[-1]))
         j = int(np.clip(np.searchsorted(self.speeds, u) - 1, 0, len(self.speeds) - 2))
         f = (u - self.speeds[j]) / (self.speeds[j + 1] - self.speeds[j])
@@ -121,6 +123,7 @@ class HeaveFilter:
     def __init__(self, dt: float, sigma_h: float = 0.01, sigma_a: float = 0.05, bias_walk: float = 0.02,
                  latency: float = 0.05, wave: dict | None = None, gate: float = 5.0, max_reject: int = 4):
         w = dict({"w0": 4.0, "zeta": 1.0, "sigma": 0.10}, **(wave or {}))
+        w["w0"] = max(float(w["w0"]), 1e-3)
         self.dt, self.gate, self.wave, self.max_reject = dt, gate, w, max_reject
         Aw = np.array([[0.0, 1.0], [-w["w0"] ** 2, -2.0 * w["zeta"] * w["w0"]]])
         F = np.eye(5)
@@ -147,7 +150,7 @@ class HeaveFilter:
         self.last_rejected = False
 
     def init(self, h: float):
-        s, w0 = max(self.wave["sigma"], 1e-3), self.wave["w0"]
+        s, w0 = max(self.wave["sigma"], 1e-3), max(self.wave["w0"], 1e-3)
         self.x = np.array([h, 0.0, 0.0, 0.0, 0.0])
         self.P = np.diag([0.05 ** 2, 0.5 ** 2, 0.1 ** 2, (s / w0) ** 2, s ** 2])
         self.ready = True

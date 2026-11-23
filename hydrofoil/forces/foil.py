@@ -35,10 +35,14 @@ def main_flap_effectiveness(flap_frac: float, span_frac: float) -> float:
     a part-span flap changes the lift of its own strip). The 0.21 / (tau * span) ratio, about 0.55, stands
     for hinge-gap leakage, boundary-layer and 3-D part-span losses and is kept constant across geometries.
     Returns REF exactly at the reference geometry, so default behaviour is unchanged."""
+    ff = float(np.clip(flap_frac, 0.0, 0.95))
+    sf = float(np.clip(span_frac, 0.0, 1.0))
+    if ff <= 0.0 or sf <= 0.0:
+        return 0.0
     from hydrofoil.actuation.hinge import thin_airfoil_coeffs
-    tau = thin_airfoil_coeffs(float(flap_frac))["tau"] if flap_frac > 0 else 0.0
+    tau = thin_airfoil_coeffs(ff)["tau"]
     tau0 = thin_airfoil_coeffs(REF_FLAP_FRAC)["tau"]
-    return MAIN_FOIL_FLAP_EFFECTIVENESS * (tau * span_frac) / (tau0 * REF_FLAP_SPAN_FRAC)
+    return MAIN_FOIL_FLAP_EFFECTIVENESS * (tau * sf) / (tau0 * REF_FLAP_SPAN_FRAC)
 ELEVATOR_FLAP_EFFECTIVENESS = 1.0     # all-moving surface (whole elevator rotates)
 
 # Oswald span-efficiency factor e, used in the induced-drag term CL^2/(pi*AR*e).
@@ -199,10 +203,17 @@ class Foil:
         # strut's AoA is the side-slip angle and it develops a side force. lift_axis = -normal.
         if normal_axis is not None:
             n = np.asarray(normal_axis, dtype=float)
-            self.normal = n / np.linalg.norm(n)
+            nn = float(np.linalg.norm(n))
+            if nn <= 1e-9:
+                raise ValueError("normal_axis must be a non-zero 3-vector")
+            self.normal = n / nn
             self.lift_axis = -self.normal
         else:
-            self.lift_axis = np.asarray(lift_axis, dtype=float) / np.linalg.norm(lift_axis)
+            la = np.asarray(lift_axis, dtype=float)
+            ln = float(np.linalg.norm(la))
+            if ln <= 1e-9:
+                raise ValueError("lift_axis must be a non-zero 3-vector")
+            self.lift_axis = la / ln
             self.normal = -self.lift_axis
         self.rho = rho
         # Default (1.0) is a no-penalty, all-moving-surface assumption, so
@@ -210,7 +221,7 @@ class Foil:
         # prior behavior unchanged. See MAIN_FOIL_FLAP_EFFECTIVENESS /
         # ELEVATOR_FLAP_EFFECTIVENESS above for this vehicle's real values.
         self.flap_effectiveness = flap_effectiveness
-        self.oswald_efficiency = oswald_efficiency
+        self.oswald_efficiency = max(float(oswald_efficiency), 1e-4)
         # Section pitching-moment slope of the flap about the quarter chord [per rad of REAL flap
         # deflection, nose-up positive, already scaled by flap span fraction]. A flap-down force
         # increment acts aft of c/4, so it also adds a nose-down couple. 0 = none (all-moving foil).
@@ -221,7 +232,8 @@ class Foil:
         # planform assumed). Each main-foil half is modeled as its own Foil
         # at its own half-span, so this is that half-panel's local AR, not
         # the un-split wing's.
-        self.aspect_ratio = geometry.span / geometry.chord
+        self.aspect_ratio = (float(geometry.span) / max(float(geometry.chord), 1e-4)
+                             if geometry.chord > 0 and geometry.span > 0 else 0.0)
         self._a2d = tables.cl_slope_per_deg * 180.0 / np.pi   # section slope, per rad
         # Finite-wing lift-curve correction, Prandtl/Helmbold form with the SAME
         # Oswald efficiency used for induced drag:
@@ -232,6 +244,8 @@ class Foil:
         self.lift_slope_factor = self._lift_slope_factor(self.aspect_ratio)
 
     def _lift_slope_factor(self, ar: float) -> float:
+        if ar <= 1e-6:
+            return 0.0
         return 1.0 / (1.0 + self._a2d / (np.pi * self.oswald_efficiency * ar))
 
     def flow(self, nu: np.ndarray, r_attach: np.ndarray | None = None) -> tuple[float, float]:
@@ -278,7 +292,8 @@ class Foil:
         """
         span = self.geometry.span if span is None else span
         r_attach = self.r_attach if r_attach is None else np.asarray(r_attach, dtype=float)
-        if span <= 1e-3:
+        if span <= 1e-3 or self.geometry.chord <= 1e-4:
+            self.last_CL = 0.0
             return np.zeros(6)
         ar = span / self.geometry.chord
         V_body = nu[:3]   # translational velocity at body origin
@@ -295,6 +310,7 @@ class Foil:
         speed = np.linalg.norm(V_plane)
 
         if speed < 0.01:
+            self.last_CL = 0.0
             return np.zeros(6)
 
         # flow direction (opposing velocity = drag direction), in the x-z plane
@@ -342,8 +358,15 @@ class Foil:
         # strip per foil, so the 2D section CL overestimates real 3D lift.
         CL = CL_2d * self._lift_slope_factor(ar)
 
-        # 3. Free-surface lift loss & breach ventilation hysteresis.
+        # 3. Free-surface lift loss, emergence wetting, and breach ventilation hysteresis.
+        wet = 1.0
         if submergence_over_chord is not None:
+            if submergence_over_chord <= 0.0:
+                self.last_CL = 0.0
+                return np.zeros(6)
+            if submergence_over_chord < 0.25:
+                t_w = submergence_over_chord / 0.25
+                wet = t_w * t_w * (3.0 - 2.0 * t_w)
             CL *= free_surface_lift_factor(submergence_over_chord)
         vent = min(1.0, max(0.0, float(ventilation)))
         if vent > 0.0:
@@ -352,9 +375,9 @@ class Foil:
         self.last_CL = float(CL)
 
         # 4. Induced drag from the corrected (3D, free-surface-adjusted) CL,
-        # added on top of 2D profile drag + any ventilated cavity drag.
-        CD_induced = CL**2 / (np.pi * ar * self.oswald_efficiency)
-        CD = CD_2d + CD_induced + (0.08 * vent if vent > 0.0 else 0.0)
+        # added on top of wetted 2D profile drag + any ventilated cavity drag.
+        CD_induced = CL**2 / max(np.pi * ar * self.oswald_efficiency, 1e-6)
+        CD = (CD_2d + (0.08 * vent if vent > 0.0 else 0.0)) * wet + CD_induced
 
         L_mag = q * CL * A
         D_mag = q * CD * A
@@ -374,5 +397,5 @@ class Foil:
         tau[:3] = force
         tau[3:] = moment
         if self.flap_cm_delta:
-            tau[4] += q * A * self.geometry.chord * self.flap_cm_delta * np.radians(delta)
+            tau[4] += q * A * self.geometry.chord * self.flap_cm_delta * np.radians(delta) * wet * (1.0 - 0.55 * vent)
         return tau

@@ -11,6 +11,10 @@ the hull length), so the same suite works for the 25 kg model and the manned pre
     shift      flying start, CG jumps forward and to the side (a rider moving): height and roll peaks
     noisy      head sea with the noisy sensors and estimators (what the boat would really measure), so a tune
                cannot win by amplifying sensor noise into the flaps
+    turn       flying start, 12 deg banked 3D turn via split front flaps and back down: roll tracking, overshoot,
+               height holding, and sideslip
+    landing    flying start on foil, descends back onto the hull and slows down: touchdown sink rate, attitude,
+               post-landing bobbing, and clean LQR -> PID handback
     supervised the takeoff as the boat really flies it: through the flight-mode supervisor (control/supervisor.py),
                displacement at 3 m/s, foil request at 3 s, until FOILING and 10 s beyond. Fails if the first
                takeoff does not reach FOILING (an abort and retry is a failure: e.g. the takeoff timeout when a stiff
@@ -18,7 +22,10 @@ the hull length), so the same suite works for the 25 kg model and the manned pre
                after liftoff. Only for presets with `supervisor_tuning` (the
                supervisor's speed envelope is sized for the manned boat); see `scenarios_for`.
 
-Hard failures (hull touches down after liftoff, |roll| > 30 deg, non-finite state) set `failed`.
+Scenarios are also grouped by flight phase in `PHASE_SCENARIOS` (`rising`, `cruising`, `falling`) so phase-aware
+autotuning can optimise PID loops on rising/falling and LQR weights on foilborne cruising and 3D turning.
+
+Hard failures (hull touches down after liftoff in non-landing runs, excessive roll/pitch, non-finite state) set `failed`.
 """
 
 from __future__ import annotations
@@ -28,6 +35,11 @@ import warnings
 import numpy as np
 
 SCENARIOS = ("takeoff", "head", "following", "shift", "noisy")
+PHASE_SCENARIOS = {
+    "rising": ("takeoff", "supervised"),
+    "cruising": ("head", "following", "shift", "noisy", "turn"),
+    "falling": ("landing",),
+}
 SUPERVISED_PLAN = ((0.0, {"speed": 3.0}), (3.0, {"foil": True, "speed": 7.0}))
 SUPERVISED_T = 45.0                                  # s: 25 s takeoff timeout after the request, plus margin
 
@@ -35,6 +47,19 @@ SUPERVISED_T = 45.0                                  # s: 25 s takeoff timeout a
 def scenarios_for(params: dict) -> tuple:
     """The scenario list for a preset: SCENARIOS, plus the supervised takeoff where the supervisor applies."""
     return SCENARIOS + (("supervised",) if params.get("supervisor_tuning") else ())
+
+
+def phase_scenarios(params: dict, phase: str | None = None) -> tuple[str, ...]:
+    """Scenarios grouped by flight phase ('rising', 'cruising', 'falling', or all combined when phase is None)."""
+    sup = bool(params.get("supervisor_tuning"))
+    phases = ("rising", "cruising", "falling") if phase is None else (phase,)
+    out = []
+    for ph in phases:
+        for name in PHASE_SCENARIOS[ph]:
+            if name == "supervised" and not sup:
+                continue
+            out.append(name)
+    return tuple(out)
 
 
 def _run_supervised(params: dict) -> dict:
@@ -95,9 +120,14 @@ def _flying_state(vp):
     from hydrofoil.linearize import trim
     p = vp.params
     try:
-        x, _ = trim(vp, p["target_speed"])
+        x, u0 = trim(vp, p["target_speed"])
     except Exception:                                    # no trim at this speed: start at rest instead
         return vp.rest_state()
+    if vp.lqr is not None and p.get("controller") in ("lqr", "auto"):
+        vp.lqr.engaged = True
+        vp.lqr.since_engage = vp.lqr.blend_s + 1.0
+        vp.lqr.last[:] = u0[:3]
+        vp.lqr.hist[:] = u0[:3]
     return x
 
 
@@ -106,6 +136,7 @@ def run_scenario(params: dict, name: str) -> dict:
     warnings.simplefilter("ignore")
     if name == "supervised":
         return _run_supervised(params)
+    from hydrofoil.dynamics.kinematics import J
     from hydrofoil.vehicle import VehiclePhysics
     from hydrofoil.waves.airy import AiryWave, CalmWater
     p = dict(params)
@@ -113,6 +144,8 @@ def run_scenario(params: dict, name: str) -> dict:
     L = p["hull_length"]
     amp = 0.3 * p["flying_height"]
     lam = 3.0 * L
+    h0_init = float(p["flying_height"])
+    v0_init = float(p["target_speed"])
     if name == "takeoff":
         T, wave, start, settle_from = 22.0, CalmWater(), "rest", 0.0
     elif name in ("head", "following", "noisy"):
@@ -122,6 +155,10 @@ def run_scenario(params: dict, name: str) -> dict:
             p["sensors"] = "noisy"
     elif name == "shift":
         T, wave, start, settle_from = 14.0, CalmWater(), "flying", 3.0
+    elif name == "turn":
+        T, wave, start, settle_from = 10.0, CalmWater(), "flying", 0.5
+    elif name == "landing":
+        T, wave, start, settle_from = 8.0, CalmWater(), "flying", 0.5
     else:
         raise ValueError(name)
     try:
@@ -132,20 +169,44 @@ def run_scenario(params: dict, name: str) -> dict:
     zref = p["hull_offset"] - p["flying_height"]
     t, rec = 0.0, []
     shift_at = 5.0
-    lifted = False
+    touch = None
     for i in range(int(T / dt)):
         if name == "shift" and abs(t - shift_at) < dt / 2:
             vp.set_cg_offset((0.05 * L, 0.03 * L))
+        elif name == "turn":
+            if 1.0 <= t < 2.0:
+                phi_cmd = min(12.0, (t - 1.0) * 12.0)
+            elif 2.0 <= t < 7.0:
+                phi_cmd = 12.0
+            elif 7.0 <= t < 8.0:
+                phi_cmd = max(0.0, 12.0 - (t - 7.0) * 12.0)
+            else:
+                phi_cmd = 0.0
+            vp.params["phi_ref"] = phi_cmd
+            if vp.supervisor is not None:
+                vp.supervisor.pilot["bank"] = phi_cmd
+        elif name == "landing" and t >= 1.0:
+            vp.params["flying_height"] = max(-0.10, h0_init - 0.25 * (t - 1.0))
+            vp.params["target_speed"] = max(2.0, 0.40 * v0_init)
+            if vp.supervisor is not None:
+                vp.supervisor.pilot["foil"] = False
         s, c, th, draft, _ = vp.step(s, t, wave)
         t += dt
         if not np.all(np.isfinite(s)):
             return {"failed": True, "why": "non-finite state"}
-        lifted = lifted or draft <= 1e-6
         lim = any(v.get("limited") for v in c.get("drive", {}).values())
-        rec.append((t, s[2] - zref, np.degrees(s[3]), np.degrees(s[4]), draft, c["delta_main"], c["delta_elev"],
-                    c["delta_roll"], lim))
-        if abs(np.degrees(s[3])) > 30.0:
+        phi_ref_now = float(vp.params["phi_ref"])
+        beta_deg = abs(float(np.degrees(np.arctan2(s[7], max(abs(s[6]), 0.1)))))
+        if name == "landing":
+            vz_ned = float((J(s[:6]) @ s[6:])[2])
+            if t >= 1.0 and touch is None and draft > 0.005:
+                touch = (max(0.0, vz_ned), abs(float(np.degrees(s[4]))), abs(float(np.degrees(s[3]))), float(t))
+            if abs(np.degrees(s[3])) > 45.0 or abs(np.degrees(s[4])) > 35.0:
+                return {"failed": True, "why": "landing crash (attitude exceeded limit)"}
+        elif abs(np.degrees(s[3])) > 30.0:
             return {"failed": True, "why": "capsize (|roll| > 30 deg)"}
+        rec.append((t, s[2] - zref, np.degrees(s[3]), np.degrees(s[4]), draft, c["delta_main"], c["delta_elev"],
+                    c["delta_roll"], lim, phi_ref_now, beta_deg, s[2]))
     r = np.array(rec, dtype=float)
     tt, dz, roll, pitch, draft, fm = r[:, 0], r[:, 1], r[:, 2], r[:, 3], r[:, 4], r[:, 5]
     out = {"failed": False}
@@ -163,14 +224,39 @@ def run_scenario(params: dict, name: str) -> dict:
         out["overshoot"] = float(max(0.0, -dz[i0:].min()))           # dz < 0: above the target
         out["steady_err"] = float(abs(dz[tt > T - 4].mean()))
     m = tt > settle_from
-    out["z_rms"] = float(dz[m].std() if name != "takeoff" else dz[tt > T - 6].std())
-    out["z_peak"] = float(np.abs(dz[m]).max())
+    if name == "landing":
+        if touch is None:
+            vz_touch, touch_pitch, touch_roll, t_touch = 0.8, float(abs(pitch[-1])), float(abs(roll[-1])), T
+        else:
+            vz_touch, touch_pitch, touch_roll, t_touch = touch
+        if vz_touch > 1.2:
+            return {"failed": True, "why": f"hard landing slam (vz={vz_touch:.2f} m/s)"}
+        out["vz_touch"] = float(vz_touch)
+        out["touch_pitch"] = float(touch_pitch)
+        out["touch_roll"] = float(touch_roll)
+        out["t_touch"] = float(t_touch)
+        out["handback_ok"] = bool(not vp.lqr.engaged) if (p.get("controller") == "auto" and vp.lqr is not None) else True
+        late = tt > max(T - 2.5, t_touch if touch is not None else T - 2.5)
+        if not late.any():
+            late = m
+        z_late = r[late, 11] - r[late, 11].mean()
+        out["z_rms"] = float(z_late.std())
+        out["z_peak"] = float(np.abs(z_late).max())
+    else:
+        out["z_rms"] = float(dz[m].std() if name != "takeoff" else dz[tt > T - 6].std())
+        out["z_peak"] = float(np.abs(dz[m]).max())
+    if name == "turn":
+        bank_win = (tt >= 1.0) & (tt < 7.0)
+        hold_win = (tt >= 2.5) & (tt < 7.0)
+        out["roll_overshoot"] = float(max(0.0, float(roll[bank_win].max()) - 12.0))
+        out["roll_rms_err"] = float(np.sqrt(np.mean((roll[hold_win] - r[hold_win, 9]) ** 2)))
+        out["sideslip_peak"] = float(r[m, 10].max())
     out["roll_peak"] = float(np.abs(roll[m]).max())
     out["pitch_peak"] = float(np.abs(pitch[m] - pitch[m].mean()).max())
     out["flap_rate_rms"] = float(np.gradient(fm[m], dt).std())
     out["sat_frac"] = float(np.mean(np.abs(fm[m]) > 19.0))
     out["limited_frac"] = float(r[m, 8].mean())
-    if name != "takeoff" and draft[m].max() > 0:
+    if name not in ("takeoff", "landing") and draft[m].max() > 0:
         out.update(failed=True, why="hull touched the water")
     return out
 
@@ -182,6 +268,13 @@ def cost(metrics: dict, scale: float) -> float:
         if m.get("failed"):
             c += 100.0
             continue
+        if name == "landing":
+            c += 2.5 * (m.get("vz_touch", 0.3) / 0.25) ** 2 + 0.35 * m.get("touch_pitch", 0.0) + 0.35 * m.get("touch_roll", 0.0)
+            c += 1.5 * m["z_rms"] / (0.05 * scale)
+            c += 0.01 * m["flap_rate_rms"] + 5.0 * m["sat_frac"] + 20.0 * m["limited_frac"] + 60.0 * max(0.0, m["limited_frac"] - 0.1)
+            if not m.get("handback_ok", True):
+                c += 2.5
+            continue
         c += 2.0 * m["z_rms"] / (0.05 * scale) + 0.5 * m["z_peak"] / (0.2 * scale)
         # drive effort: torque/voltage limiting means heat, wear and no authority left for the next gust, so it is
         # charged steeply (the first PID tune held the drives at their limit 63 % of the time on noisy sensors)
@@ -190,9 +283,23 @@ def cost(metrics: dict, scale: float) -> float:
             c += 0.08 * m["t_settle"] + 1.0 * m["overshoot"] / (0.1 * scale) + 4.0 * m["steady_err"] / (0.05 * scale)
         if name == "shift":
             c += 0.5 * m["roll_peak"]
+        if name == "turn":
+            c += 0.8 * m.get("roll_rms_err", 0.0) + 1.0 * m.get("roll_overshoot", 0.0) + 0.4 * m.get("sideslip_peak", 0.0)
         if name == "supervised":
             c += 0.08 * m["t_foiling"]
     return float(c)
+
+
+def phase_costs(metrics: dict, scale: float) -> dict[str, float]:
+    """Per-flight-phase cost breakdown ('rising', 'cruising', 'falling', plus 'total')."""
+    out = {}
+    for ph, names in PHASE_SCENARIOS.items():
+        sub = {n: metrics[n] for n in names if n in metrics}
+        if sub:
+            out[ph] = cost(sub, scale)
+    known = {n for names in PHASE_SCENARIOS.values() for n in names}
+    out["total"] = float(sum(out.values())) if out and set(metrics).issubset(known) else cost(metrics, scale)
+    return out
 
 
 def score(params: dict, scenarios=None, pool=None) -> tuple[float, dict]:

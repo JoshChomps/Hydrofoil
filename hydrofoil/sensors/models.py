@@ -49,7 +49,9 @@ class Channel:
     def step(self, state, t: float, dt: float, rng):
         self._bias += self.bias_walk * np.sqrt(dt) * rng.standard_normal(len(self._bias))
         if t + 1e-12 >= self._next:
-            self._next += 1.0 / self.rate_hz
+            period = 1.0 / self.rate_hz
+            while self._next <= t + 1e-12:
+                self._next += period
             if rng.random() >= self.dropout:
                 z = np.asarray(state)[list(self.index)] + self._bias + self._sig * rng.standard_normal(len(self._sig))
                 self._queue.append((t + self.latency_s, z))
