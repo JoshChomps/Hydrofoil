@@ -1,6 +1,8 @@
-# 11 — Known Issues, Inconsistencies, Stale Docs
+# 11 — Known Issues, Inconsistencies, and Resolved Items
 
-Found by reading the code on 2026-11-04. Severity: **H** affects results/safety, **M** confusing/wrong in an edge case, **L** cosmetic.
+> **Current Audit Status (2026-11):** Major baseline items (`C2`, `C4`, `C5`, `C6`, `C7`, `C8`, `C10`, `C11`, `C17`–`C24`) and the subsequent dual-flap Red-Team findings (noisy-mode allocator separation, collinear T-foil yaw push, zero-lift reverse-drive gating, hardcoded `eta_turn`, LQR anti-windup `(ch, j)` rollback, active sideslip CBF unwinding, 3D `cg_z`/`prop_pos_z`, active $C^1$ cavitation, `legacy` `sigma_min`, UI `stops`/`yaw_rate_cmd`/`sup.log`/`drives.cap`/`solve_ms`, and `_CONTROL_KEYS` cache) are now resolved. Open placeholder CFD/hardware parameters are cataloged with swap instructions in [22-assumptions-and-provenance.md §13](22-assumptions-and-provenance.md).
+
+Found by reading the code on 2026-11-04 (original register preserved below). Severity: **H** affects results/safety, **M** confusing/wrong in an edge case, **L** cosmetic.
 
 ## Stale or contradictory documentation
 | # | Sev | Issue |
@@ -45,6 +47,8 @@ Found by reading the code on 2026-11-04. Severity: **H** affects results/safety,
 - Heave added mass (≈24 kg) is about equal to the vehicle mass, so the heave dynamics are roughly twice as heavy as the rigid body alone; combined with 0.21 flap effectiveness this reduces heave authority — likely the reason behind the README's "under-authoritative" warning.
 - `heave_damping = 50 N·s/m` is the dominant non-foil damping and is a tuning knob, not physics.
 - Lateral offset 0.35 m with a 0.6 m half-span means the two "halves" overlap geometrically if they are meant to be adjacent panels from the centreline (centres at ±0.3 m). It is a lever-arm choice, not a layout check.
+- Surface tension ($\gamma \approx 0.073\text{ N/m}$, capillary wavelength $\lambda_c \approx 1.7\text{ cm}$) is omitted from bulk hydrofoil/wave equations ($\text{We} \sim 3.4\times 10^4\text{–}2.5\times 10^5$ across operational speeds).
+- Ventilation currently triggers on fixed geometric submergence (`vent_breach_hc = 0.25`) and isolated strut sideslip (`strut_vent_deg = 8.5°`), without pressure-driven $\text{Fr}_h$-scaled sub-surface seal rupture or strut-to-foil T-junction air propagation yet.
 
 ## Unity issues (obsolete — Unity removed on branch `mujoco-viewer`; kept as a record)
 | # | Sev | Issue |

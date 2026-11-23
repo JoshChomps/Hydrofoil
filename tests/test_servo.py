@@ -55,7 +55,7 @@ def test_hydrodynamic_load_droops_flap_more_at_high_speed():
 
 
 def test_mixer_limits_are_per_physical_surface():
-    vp = _vp()
+    vp = _vp(allocator="legacy")
     raw = {"delta_main": 20.0, "delta_roll": 20.0, "delta_elev": 0.0}
     st = vp.rest_state(); st[6] = 4.0
     env = vp.calm_sample()

@@ -16,8 +16,8 @@ DEFAULT_PARAMS: dict[str, Any] = {
     # clipped in 10 cm waves). 2.5 deg puts the trim flap at about +12 deg at 3 m/s and -7 deg at 7 m/s.
     "main_incidence_deg": 2.5,
     # Centre-of-gravity shift from the nominal layout (dx forward, dy to starboard) [m], e.g. a rider's position.
-    # VehiclePhysics.set_cg_offset() changes it mid-flight.
-    "cg_offset": (0.0, 0.0),
+    # Vertical CG shift cg_z [m, +ve UP] shifts vertical foil/strut/hull/prop lever arms; VehiclePhysics.set_cg_offset() updates mid-flight.
+    "cg_offset": (0.0, 0.0), "cg_z": 0.0, "prop_pos_z": 0.0,
     "elev_pos_x": -1.2, "elev_pos_z": 0.4,
     # Vertical struts: give the side force that makes bank turn the boat instead of letting it
     # skid (without them a banked boat slides sideways and yaw has the wrong sign). Chord is a
@@ -86,6 +86,13 @@ DEFAULT_PARAMS: dict[str, Any] = {
     "actuator_model": "servo",
     "servo_params": None,                # overrides of actuation.servo.DEFAULT_SERVO_PARAMS (kp, kd, torque_cap, delay_s, ...)
     "flap_stop_deg": 30.0, "elev_stop_deg": 20.0,   # mechanical stops of the PHYSICAL surfaces, PLACEHOLDER
+    "flap_cmd_max_deg": 20.0,                        # control-surface aerodynamic command ceiling [deg] (reversible/gated inside stop)
+    "allocator": "jacobian",                         # "jacobian" (physics-constrained 3-var QP) or "legacy" (fixed angle mixer)
+    "safety_margin": "standard",                     # "conservative" | "standard" | "sport" (scales Layer 2/3 reserves)
+    "reverse_drive_enabled": True,                   # allow stability-gated opposing front flap deflections for roll/turn moment
+    "split_flap_cross_coupling": 0.08,               # centerline root-vortex wash factor when left != right flap [0 = independent]
+    "cavitation_model": True,                        # enable physical cavity lift loss + drag when -Cp_min > sigma
+    "wave_type": "regular",                          # "regular" (monochromatic Airy) or "irregular" (JONSWAP directional sea)
     "q_schedule_speed": 0.0,             # >0: scale flap commands by (v/u)^2 above this speed (gain scheduling on q); 0 = off
     "prop_tau_s": 0.08,                  # motor/ESC/prop spool lag [s]
     "prop_power_max": 300.0,             # shaft thrust power limit [W] (caps thrust at high speed)

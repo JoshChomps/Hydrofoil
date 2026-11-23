@@ -39,7 +39,7 @@ def level_state(vp: VehiclePhysics, speed: float, theta: float = 0.0, flying_hei
     p = vp.params
     h = p["flying_height"] if flying_height is None else flying_height
     x = np.zeros(12)
-    x[2] = p["hull_offset"] - h
+    x[2] = float(getattr(vp, "hull_offset", p["hull_offset"])) - h
     x[4] = theta
     x[6] = speed
     x[8] = speed * np.tan(theta)      # level flight path: z-dot = -u sin(theta) + w cos(theta) = 0
@@ -56,22 +56,29 @@ def trim(vp: VehiclePhysics, speed: float, theta: float = 0.0, flying_height: fl
     x = level_state(vp, speed, theta, flying_height)
     free = [0, 1, 3]                      # delta_main, delta_elev, thrust
     rows = [6, 8, 10]                     # du, dw, dq
-    u = np.array(u0, dtype=float)
 
     def res(uu):
         return _rhs(vp, x, uu)[rows]
 
-    for _ in range(max_iter):
-        r = res(u)
-        if np.max(np.abs(r)) < tol:
-            return x, u
-        J = np.zeros((3, 3))
-        for j, k in enumerate(free):
-            e = np.zeros(4); e[k] = 1e-4
-            J[:, j] = (res(u + e) - res(u - e)) / 2e-4
-        step = np.linalg.solve(J, -r)
-        u[free] += np.clip(step, [-5.0, -5.0, -200.0], [5.0, 5.0, 200.0])   # deg, deg, N
-    raise RuntimeError(f"trim did not converge at {speed} m/s (residual {np.max(np.abs(res(u))):.3g})")
+    starts = [u0, (0.0, 0.0, 0.0, 150.0), (-3.0, 0.0, 0.0, 250.0)]
+    best_residual = float("inf")
+    for s_init in starts:
+        u = np.array(s_init, dtype=float)
+        for _ in range(max_iter):
+            r = res(u)
+            if np.max(np.abs(r)) < tol:
+                return x, u
+            J = np.zeros((3, 3))
+            for j, k in enumerate(free):
+                e = np.zeros(4); e[k] = 1e-4
+                J[:, j] = (res(u + e) - res(u - e)) / 2e-4
+            try:
+                step = np.linalg.solve(J, -r)
+            except np.linalg.LinAlgError:
+                step = np.linalg.lstsq(J.T @ J + 1e-4 * np.eye(J.shape[1]), -J.T @ r, rcond=None)[0]
+            u[free] += np.clip(step, [-5.0, -5.0, -200.0], [5.0, 5.0, 200.0])   # deg, deg, N
+        best_residual = min(best_residual, float(np.max(np.abs(res(u)))))
+    raise RuntimeError(f"trim did not converge at {speed} m/s (residual {best_residual:.3g})")
 
 
 def linearize(vp: VehiclePhysics, x0, u0, dx: float = 1e-6, du: float = 1e-4):

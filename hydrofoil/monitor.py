@@ -72,7 +72,8 @@ class FlightMonitor:
         out = []
         vz = (-state[6] * np.sin(state[4]) + state[7] * np.cos(state[4]) * np.sin(state[3])
               + state[8] * np.cos(state[4]) * np.cos(state[3]))
-        zref = p["hull_offset"] - p["flying_height"]
+        hull_off = float(vp.hull_offset) if hasattr(vp, "hull_offset") else (float(p["hull_offset"]) - float(p.get("cg_z", 0.0)))
+        zref = hull_off - p["flying_height"]
         lim = any(v.get("limited") for v in (drives or {}).values())
         for k, v in (("t", t), ("dz", state[2] - zref), ("roll", np.degrees(state[3])), ("vz", vz), ("lim", lim)):
             self.buf[k].append(v)
@@ -88,7 +89,7 @@ class FlightMonitor:
 
         # hull clearance over the local wave surface, and shallowest main-foil depth (center & outer wingtip)
         env = vp.wave_sample(eta, t, wave)
-        clearance = -state[2] + p["hull_offset"] + env.hull_surface_z          # surface z is NED (up = negative)
+        clearance = -state[2] + hull_off + env.hull_surface_z          # surface z is NED (up = negative)
         foil_hc = min(
             min(vp._submergence_over_chord(f, eta, env.foil_surface_z[n]),
                 vp._foil_tip_submergence_over_chord(f, eta, env.foil_surface_z[n]))
@@ -112,14 +113,26 @@ class FlightMonitor:
             elif a > 0.6 * L:
                 self._set(out, key, "caution", f"{key.capitalize()} {ang:+.1f}° (limit {L:.0f}°)", ang)
 
-        # control authority: a physical flap near its command limit
-        ang = {"left": cmds["delta_main"] - cmds["delta_roll"], "right": cmds["delta_main"] + cmds["delta_roll"],
-               "elevator": cmds["delta_elev"]}
-        worst = max(ang, key=lambda k: abs(ang[k]))
-        if foilborne and abs(ang[worst]) > 19.0:
-            self._set(out, "authority", "danger", f"{worst.capitalize()} at its limit ({ang[worst]:+.0f}°): no control left", ang[worst])
-        elif foilborne and abs(ang[worst]) > 15.0:
-            self._set(out, "authority", "caution", f"{worst.capitalize()} at {ang[worst]:+.0f}°, little margin left", ang[worst])
+        # control authority: live physical flap against its dynamic safe envelope
+        from hydrofoil.actuation.loads import drive_angles
+        da = drive_angles(cmds)
+        ang = {"left": da["left"], "right": da["right"], "elev": da["elev"]}
+        alloc = getattr(vp, "_last_alloc_status", None) or {}
+        bnds = alloc.get("bounds") or {}
+        cmd_def = float(p.get("flap_cmd_max_deg", 20.0))
+        def _margin_frac(key: str) -> tuple[float, float, float]:
+            a_val = float(ang[key])
+            lo, hi = bnds.get(key, (-cmd_def, cmd_def))
+            lim_mag = abs(hi) if a_val >= 0.0 else abs(lo)
+            lim_mag = max(lim_mag, 1.0)
+            return abs(a_val) / lim_mag, a_val, lim_mag
+        worst_k = max(ang, key=lambda k: _margin_frac(k)[0])
+        frac_w, val_w, lim_w = _margin_frac(worst_k)
+        label_w = "Elevator" if worst_k == "elev" else f"{worst_k.capitalize()} flap"
+        if foilborne and frac_w > 0.95:
+            self._set(out, "authority", "danger", f"{label_w} at {val_w:+.1f}° (limit ±{lim_w:.0f}°): no control left", val_w)
+        elif foilborne and frac_w > 0.78:
+            self._set(out, "authority", "caution", f"{label_w} at {val_w:+.1f}° ({frac_w:.0%} of safe limit)", val_w)
 
         # drives
         recent = np.asarray(self.buf["lim"])[tt > t - 1.0]
@@ -140,10 +153,13 @@ class FlightMonitor:
         # sideslip (strut ventilation / skid risk in banked turns)
         if flying and u > 2.0:
             beta_deg = float(np.degrees(np.arctan2(state[7], u)))
-            if abs(beta_deg) > 8.0:
-                self._set(out, "sideslip", "danger", f"Sideslip {beta_deg:+.1f}°: strut ventilation risk", beta_deg)
-            elif abs(beta_deg) > 5.0:
-                self._set(out, "sideslip", "caution", f"Sideslip {beta_deg:+.1f}° in turn/waves", beta_deg)
+            te = getattr(vp, "_last_turn_envelope", None) or {}
+            b_safe = float(te.get("sideslip_max_deg") or min(float(p.get("strut_vent_deg", 8.5)) - 1.5, 7.0))
+            b_vent = float(p.get("strut_vent_deg", 8.5))
+            if abs(beta_deg) >= b_vent - 0.5:
+                self._set(out, "sideslip", "danger", f"Sideslip {beta_deg:+.1f}° (vent onset {b_vent:.1f}°): strut ventilation risk", beta_deg)
+            elif abs(beta_deg) > 0.85 * b_safe:
+                self._set(out, "sideslip", "caution", f"Sideslip {beta_deg:+.1f}° (safe limit {b_safe:.1f}°)", beta_deg)
 
         # growing oscillation (height, heel): rms of the last 3 s against the 3 s before
         if tt[-1] - tt[0] > 5.5 and flying and t - self.air_since > 8.0:

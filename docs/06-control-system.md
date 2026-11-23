@@ -1,5 +1,7 @@
 # 06 — Control System
 
+> **Update Notice:** The current flight control stack combines takeoff/landing SISO PIDs (`control/pid.py`) with speed-scheduled delay-augmented MIMO LQR (`control/lqr.py`), `auto` handover blending, `Supervisor` flight modes and active sideslip CBF unwinding (`control/supervisor.py`), and a physics-constrained 3-layer Jacobian QP `ControlAllocator` (`control/allocator.py`) with LQR anti-windup rollback (`sync_sent(..., sat_flags=...)`). See [00-master-system-architecture.md](00-master-system-architecture.md), [19-linearisation-lqr-estimation.md](19-linearisation-lqr-estimation.md), and [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md). The sections below preserve the baseline SISO PID specification and sign conventions (which still run during displacement/takeoff).
+
 ## Architecture
 
 ```

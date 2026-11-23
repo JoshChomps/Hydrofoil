@@ -1,4 +1,6 @@
-# 02 — Code Reference (every script)
+# 02 — Code Reference (historical 2026-11-05 baseline)
+
+> **Note:** For the current full architecture (state estimation, scheduled LQR, servo drives, Boat Editor, Supervisor/FDI, Jacobian QP dual-flap allocator, and directional/irregular waves), see [00-master-system-architecture.md](00-master-system-architecture.md), [22-assumptions-and-provenance.md](22-assumptions-and-provenance.md), and [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md). The snapshot below preserves the initial `vehicle.py` extraction baseline.
 
 Repo layout (excluding Unity assets/settings):
 

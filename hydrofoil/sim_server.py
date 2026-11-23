@@ -41,8 +41,11 @@ FIELDS = {   # name: (choices or None for free numeric, default)
     "preset": (("model", "manned"), "manned"),
     "supervisor": (("off", "on"), "on"),
     "controller": (("auto", "lqr", "pid"), "auto"),
+    "allocator": (("jacobian", "legacy"), "jacobian"),
+    "safety_margin": (("conservative", "standard", "sport"), "standard"),
     "sensors": (("ideal", "noisy"), "ideal"),
     "waves": (("off", "on"), "off"),
+    "wave_type": (("regular", "irregular"), "regular"),
     "wave_dir": (None, "0"),
     "speed": (None, "1.0"),
 }
@@ -51,8 +54,11 @@ LABELS = {
     "preset": "Boat",
     "supervisor": "Supervisor",
     "controller": "Flight controller",
+    "allocator": "Flap allocator",
+    "safety_margin": "Safety margin",
     "sensors": "Sensors",
     "waves": "Waves",
+    "wave_type": "Wave spectrum",
     "wave_dir": "Wave direction (deg)",
     "speed": "Sim speed",
 }
@@ -96,7 +102,9 @@ def start(form: dict) -> None:
             except ValueError:
                 v[k] = d
     cmd = [_viewer_python(), "-m", "hydrofoil.viewer", "--preset", v["preset"], "--controller", v["controller"],
-           "--sensors", v["sensors"], "--speed", v["speed"], "--wave-dir", v["wave_dir"]]
+           "--allocator", v["allocator"], "--safety-margin", v["safety_margin"],
+           "--sensors", v["sensors"], "--speed", v["speed"], "--wave-dir", v["wave_dir"],
+           "--wave-type", v["wave_type"]]
     if v["supervisor"] == "on":
         cmd.append("--supervisor")
     if v["waves"] == "on":

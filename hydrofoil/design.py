@@ -33,7 +33,7 @@ from hydrofoil.forces.foil import main_flap_effectiveness, MAIN_FOIL_FLAP_EFFECT
 
 TRIM_EDIT_KEYS = {"payloads", "mass", "empty_mass", "strut_length", "main_span", "main_chord", "main_incidence_deg", "main_flap_frac",
                   "main_flap_span_frac", "main_flap_setback", "main_flap_effectiveness",
-                  "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset",
+                  "elev_chord", "elev_span", "elev_pos_x", "main_pos_x", "flying_height", "hull_offset", "cg_offset", "cg_z",
                   "hull_length", "hull_beam"}
 FLAP_TRIM_LIMIT = 15.0                                    # deg of +-20: margin kept for waves and control
 
@@ -290,7 +290,8 @@ def _trim_flap(p: dict, speed: float):
 _CURVES: dict = {}
 _CONTROL_KEYS = ("lqr_", "est_", "trim_ff", "kp_", "ki_", "kd_", "controller", "sensors", "supervisor", "kf_",
                  "servo_params", "default_payloads", "target_speed", "max_thrust", "phi_ref", "theta_ref",
-                 "_base_", "mass_empty", "cg_z")
+                 "_base_", "mass_empty", "allocator", "safety_margin", "reverse_drive_enabled",
+                 "flap_cmd_max_deg", "wave_type")
 
 
 def trim_curve(p: dict, speeds=None) -> list[dict]:
@@ -344,8 +345,9 @@ def design_summary(base_d: dict | None, edit_d: dict, p: dict) -> dict:
     if v_min is None or cf is None or margin is None:
         issues.append("the boat cannot find a level trim at cruise speed with these weights/foils")
     else:
+        lim_d = float(p.get("flap_cmd_max_deg", 20.0))
         if margin < 5.0:
-            issues.append(f"only {margin:.1f}° of flap travel remains at cruise before hitting ±20° stops")
+            issues.append(f"only {margin:.1f}° of flap travel remains at cruise before hitting ±{lim_d:.0f}° limits")
         elif margin < 8.0:
             cautions.append(f"flap headroom is modest ({margin:.1f}°) in steep turns or waves")
         if v_min > float(edit_d["cruise_speed"]) * 0.9:
@@ -380,7 +382,7 @@ def design_summary(base_d: dict | None, edit_d: dict, p: dict) -> dict:
     lat_txt = ("symmetrical left/right" if abs(cgy) <= 0.015 else
                f"pulled {abs(cgy) * 100:.0f} cm to {'starboard' if cgy > 0 else 'port'} (front split flaps trim asymmetrically in straight flight)")
     if abs(cgz) > 0.02:
-        z_txt = f" Vertical CG shifted {cgz:+.2f} m (updates pitch/roll inertias Ixx/Iyy; reported info-only)."
+        z_txt = f" Vertical CG shifted {cgz:+.2f} m (updates pitch/roll inertias Ixx/Iyy and vertical foil/hull/prop lever arms)."
     else:
         z_txt = ""
     inertia_txt = ""
@@ -430,7 +432,7 @@ def derived(p: dict, include_summary: bool = True) -> dict:
         "cruise_speed": p["target_speed"],
         "cruise_flap": cruise and cruise[0], "cruise_elev": cruise and cruise[1],
         "cruise_thrust": cruise and cruise[2], "cruise_power_kw": cruise and cruise[2] * p["target_speed"] / 1000,
-        "flap_margin": cruise and 20.0 - abs(cruise[0]),
+        "flap_margin": cruise and float(p.get("flap_cmd_max_deg", 20.0)) - abs(cruise[0]),
         "cavitation_number": (101325 + RHO_WATER * G * depth - 2340) / q,
         "reynolds": p["target_speed"] * p["main_chord"] / 1.05e-6,
         "curve": curve,

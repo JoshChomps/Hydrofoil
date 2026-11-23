@@ -82,6 +82,38 @@ button:disabled { opacity:.4; cursor:default; }
 .ctrlcard b { color:var(--spray); display:block; margin-bottom:3px; font-size:14px; }
 .ctrlcard.rec b { color:var(--signal); }
 
+/* dual flaps, turning envelope, & system health deck */
+.tdeck { display:grid; grid-template-columns: repeat(auto-fit, minmax(310px, 1fr)); gap:12px; padding:14px 24px; background:var(--trench); border-bottom:1px solid var(--rule); }
+.tcard { background:var(--deep); border:1px solid var(--rule); border-radius:4px; padding:12px 14px; min-width:0; display:flex; flex-direction:column; gap:8px; }
+.tcard h3 { margin:0; font:600 14.5px/1.2 "Saira Semi Condensed", sans-serif; color:var(--spray); display:flex; justify-content:space-between; align-items:center; gap:8px; flex-wrap:wrap; }
+.tcard .subbar { display:flex; flex-wrap:wrap; gap:6px; align-items:center; font-size:12px; color:var(--mist); }
+.seg { display:inline-flex; border:1px solid var(--rule); border-radius:3px; overflow:hidden; }
+.seg button { background:var(--trench); color:var(--mist); border:0; border-right:1px solid var(--rule); padding:4px 8px; font-size:12px; font-weight:500; border-radius:0; }
+.seg button:last-child { border-right:0; }
+.seg button.on { background:var(--signal); color:#0A2C37; font-weight:600; }
+.fbar-row { display:grid; grid-template-columns: 76px 1fr 64px; gap:8px; align-items:center; font-size:12.5px; }
+.fbar-track { position:relative; height:14px; background:var(--trench); border:1px solid var(--rule); border-radius:3px; overflow:hidden; }
+.fbar-safe { position:absolute; top:1px; bottom:1px; background:var(--aqua); opacity:.32; border-left:1px solid var(--aqua); border-right:1px solid var(--aqua); }
+.fbar-zero { position:absolute; top:0; bottom:0; left:50%; width:1px; background:var(--rule); }
+.fbar-needle { position:absolute; top:0; bottom:0; width:3px; background:var(--signal); transform:translateX(-1.5px); }
+.fbar-needle.hot { background:var(--flag); }
+.fbar-val { text-align:right; color:var(--spray); white-space:nowrap; overflow:hidden; text-overflow:ellipsis; }
+.fbar-bind { grid-column: 2 / -1; font-size:11.5px; color:var(--mist); margin-top:-4px; display:flex; justify-content:space-between; gap:6px; flex-wrap:wrap; }
+.spill { display:inline-block; padding:2px 7px; border-radius:3px; font-size:11.5px; font-weight:600; background:var(--trench); border:1px solid var(--rule); color:var(--mist); }
+.spill.ok { color:var(--aqua); border-color:var(--aqua); }
+.spill.act { color:#0A2C37; background:var(--signal); border-color:var(--signal); }
+.spill.warn { color:var(--signal); border-color:var(--signal); }
+.spill.bad { color:#fff; background:var(--flag); border-color:var(--flag); }
+.kvgrid { display:grid; grid-template-columns: repeat(auto-fit, minmax(126px, 1fr)); gap:6px; }
+.kv { background:var(--trench); border:1px solid var(--rule); border-radius:3px; padding:5px 8px; min-width:0; }
+.kv span { display:block; font-size:11px; color:var(--mist); }
+.kv b { font-size:13.5px; color:var(--spray); font-weight:600; word-break:break-word; overflow-wrap:anywhere; }
+.turnwrap svg { width:100%; height:146px; display:block; background:var(--trench); border:1px solid var(--rule); border-radius:3px; }
+.dtable { width:100%; border-collapse:collapse; font-size:12px; }
+.dtable th, .dtable td { padding:3px 4px; border-bottom:1px solid var(--rule); text-align:right; }
+.dtable th:first-child, .dtable td:first-child { text-align:left; color:var(--mist); }
+@media (max-width: 640px) { .fbar-row { grid-template-columns: 64px 1fr 56px; font-size:12px; } }
+
 /* lower deck */
 .deck { display:grid; grid-template-columns: minmax(260px, 340px) 1fr; gap:0; }
 @media (max-width: 860px) { .deck { grid-template-columns: 1fr; } }
@@ -245,6 +277,73 @@ details summary { cursor:pointer; color:var(--mist); padding:6px 0; }
   </div>
 </details>
 
+<div class="tdeck" id="tdeck">
+  <div class="tcard">
+    <h3><span>Independent Front Flaps &amp; Safe Envelope</span><span style="display:flex;gap:6px;align-items:center"><span class="num" id="kvSolveMs" style="font-size:11px;color:var(--mist)"></span><span class="spill" id="revPill">SYMMETRIC</span></span></h3>
+    <div class="subbar">
+      <span>Safety:</span>
+      <div class="seg" id="segMargin">
+        <button type="button" data-margin="conservative">Conservative</button>
+        <button type="button" data-margin="standard" class="on">Standard</button>
+        <button type="button" data-margin="sport">Sport</button>
+      </div>
+      <span>Allocator:</span>
+      <div class="seg" id="segAlloc">
+        <button type="button" data-alloc="jacobian" class="on">Jacobian QP</button>
+        <button type="button" data-alloc="legacy">Legacy</button>
+      </div>
+      <span>Reverse:</span>
+      <div class="seg" id="segRev">
+        <button type="button" data-rev="1" class="on">On</button>
+        <button type="button" data-rev="0">Off</button>
+      </div>
+    </div>
+    <div id="flapBars">
+      <div class="fbar-row"><span>Left flap</span><div class="fbar-track"><div class="fbar-zero"></div><div class="fbar-safe" id="fs_left" style="left:16.7%;width:66.6%"></div><div class="fbar-needle" id="fn_left" style="left:50%"></div></div><span class="fbar-val num" id="fv_left">–</span><div class="fbar-bind" id="fb_left"><span>Window: –</span><span>Waiting…</span></div></div>
+      <div class="fbar-row"><span>Right flap</span><div class="fbar-track"><div class="fbar-zero"></div><div class="fbar-safe" id="fs_right" style="left:16.7%;width:66.6%"></div><div class="fbar-needle" id="fn_right" style="left:50%"></div></div><span class="fbar-val num" id="fv_right">–</span><div class="fbar-bind" id="fb_right"><span>Window: –</span><span>Waiting…</span></div></div>
+      <div class="fbar-row"><span>Elevator</span><div class="fbar-track"><div class="fbar-zero"></div><div class="fbar-safe" id="fs_elev" style="left:0%;width:100%"></div><div class="fbar-needle" id="fn_elev" style="left:50%"></div></div><span class="fbar-val num" id="fv_elev">–</span><div class="fbar-bind" id="fb_elev"><span>Window: –</span><span>Waiting…</span></div></div>
+    </div>
+    <div class="kvgrid">
+      <div class="kv"><span>Flap Split Δδ (R−L)</span><b class="num" id="kvSplit">–</b></div>
+      <div class="kv"><span>Lift Margin (L/W)</span><b class="num" id="kvLiftM">–</b></div>
+      <div class="kv"><span>Pitch Reserve</span><b class="num" id="kvElevR">–</b></div>
+      <div class="kv"><span>Reverse Status</span><b id="kvRevWhy">–</b></div>
+    </div>
+  </div>
+
+  <div class="tcard">
+    <h3><span>Top-Down Turn Safety Envelope</span><span style="display:flex;gap:6px;align-items:center"><span class="num" id="kvYawHead" style="font-size:11px;color:var(--mist)">ψ –</span><span class="spill ok" id="turnBindPill">—</span></span></h3>
+    <div class="turnwrap"><svg id="turnSvg" viewBox="-140 -115 280 145" role="img" aria-label="Top-down safe turn radius envelope"></svg></div>
+    <div class="kvgrid">
+      <div class="kv"><span>Yaw Rate / Max</span><b class="num" id="kvYawRate">–</b></div>
+      <div class="kv"><span>Min Safe Turn Radius</span><b class="num" id="kvRmin">–</b></div>
+      <div class="kv"><span>Sideslip β / Safe</span><b class="num" id="kvSlip">–</b></div>
+      <div class="kv"><span>Lateral g / Cap</span><b class="num" id="kvLatG">–</b></div>
+    </div>
+  </div>
+
+  <div class="tcard">
+    <h3><span>Supervisor, Drives &amp; Hydrodynamics</span><span class="spill" id="supModePill">—</span></h3>
+    <div class="kvgrid">
+      <div class="kv"><span>Wave Est. A_w / Jam</span><b id="kvSupEnv">–</b></div>
+      <div class="kv"><span>Faults / Warnings</span><b id="kvSupFault">None</b></div>
+      <div class="kv"><span>Cavitation σ / Height Ch.</span><b id="kvHydro">–</b></div>
+      <div class="kv"><span>Ventilation (L/R/E/Strut)</span><b id="kvVent">–</b></div>
+    </div>
+    <div style="overflow-x:auto">
+      <table class="dtable">
+        <thead><tr><th>Drive</th><th>M / Cap</th><th>I</th><th>P</th><th>Load</th></tr></thead>
+        <tbody id="drvRows">
+          <tr><td>Left flap</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>
+          <tr><td>Right flap</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>
+          <tr><td>Elevator</td><td>–</td><td>–</td><td>–</td><td>–</td></tr>
+        </tbody>
+      </table>
+    </div>
+    <div id="supLog" style="font-size:11.5px;color:var(--mist);max-height:74px;overflow-y:auto;border-top:1px solid var(--rule);padding-top:6px">No supervisor transitions yet.</div>
+  </div>
+</div>
+
 <div class="observer">
   <div><h2>Flight observer</h2><ul class="alerts" id="alerts"><li class="quiet">Watching for trouble once the boat is flying.</li></ul></div>
   <div><h2>Log</h2><ul class="logbook" id="logbook"></ul></div>
@@ -254,7 +353,21 @@ details summary { cursor:pointer; color:var(--mist); padding:6px 0; }
   <div class="levers">
     <h2>Helm</h2>
     <div id="helm"><p class="s" style="color:var(--mist)">Levers appear once the viewer is running.</p></div>
-    <details><summary>Sea state</summary><div id="sea"></div></details>
+    <div class="lever" id="yawRateWrap">
+      <span>Turn yaw rate <button type="button" class="unit" id="yawRateClr" style="font-size:11px;padding:1px 6px;margin-left:4px" title="Clear yaw-rate hold and follow Bank slider">Follow bank</button></span>
+      <output class="num" id="o_yaw_rate_cmd">off</output>
+      <input type="range" min="-20" max="20" step="0.5" value="0" id="l_yaw_rate_cmd" aria-label="Turn yaw rate" disabled>
+    </div>
+    <details><summary>Sea state</summary>
+      <div class="lever" style="margin-bottom:10px">
+        <span>Wave spectrum</span>
+        <select id="waveTypeSel" aria-label="Wave spectrum" style="font:inherit;font-size:13px;color:var(--spray);background:var(--trench);border:1px solid var(--rule);border-radius:3px;padding:3px 6px" disabled>
+          <option value="regular">Regular Airy</option>
+          <option value="irregular">Irregular JONSWAP</option>
+        </select>
+      </div>
+      <div id="sea"></div>
+    </details>
     <details><summary>Drives and PID gains</summary><div id="tune"></div></details>
     <div class="row">
       <button class="quiet" id="foilBtn" disabled title="F key: toggle Foil / Land">Foil / Land (F)</button>
@@ -433,7 +546,7 @@ function buildLevers(list) {
       const inp = Object.assign(document.createElement("input"), {type:"range", min:s.lo, max:s.hi, step:(s.hi - s.lo) / 400, value:s.value, id:"l_" + n});
       inp.setAttribute("aria-label", label);
       inp.addEventListener("pointerdown", () => dragging = n); inp.addEventListener("pointerup", () => dragging = null);
-      inp.addEventListener("input", () => { show(n, +inp.value, u); post({[n]: +inp.value}); });
+      inp.addEventListener("input", () => { if (n === "bank_ref") { yrInp.value = 0; yrOut.textContent = "off"; } show(n, +inp.value, u); post({[n]: +inp.value}); });
       wrap.append(inp); root.append(wrap); show(n, s.value, u); }
   }
   built = true;
@@ -465,10 +578,26 @@ $("foilBtn").onclick = () => post({action:"toggle_foil"});
 $("reset").onclick = () => { post({action:"reset"}); hist.length = 0; };
 $("toggle").onclick = () => { post({action:"toggle_ctrl"}); };
 $("focus").onclick = () => post({action:"focus"});
+document.querySelectorAll("#segMargin button").forEach(b => b.onclick = () => post({safety_margin: b.dataset.margin}));
+document.querySelectorAll("#segAlloc button").forEach(b => b.onclick = () => post({allocator: b.dataset.alloc}));
+document.querySelectorAll("#segRev button").forEach(b => b.onclick = () => post({reverse_drive: b.dataset.rev === "1"}));
+const yrInp = $("l_yaw_rate_cmd"), yrOut = $("o_yaw_rate_cmd");
+yrInp.addEventListener("pointerdown", () => dragging = "yaw_rate_cmd");
+yrInp.addEventListener("pointerup", () => dragging = null);
+yrInp.addEventListener("input", () => {
+  const v = +yrInp.value;
+  yrOut.textContent = Math.abs(v) < 1e-3 ? "off" : `${v >= 0 ? "+" : ""}${v.toFixed(1)} °/s`;
+  post({yaw_rate_cmd: Math.abs(v) < 1e-3 ? null : v});
+});
+$("yawRateClr").onclick = () => { yrInp.value = 0; yrOut.textContent = "off"; post({yaw_rate_cmd: null}); };
+const waveSel = $("waveTypeSel");
+waveSel.addEventListener("change", () => post({wave_type: waveSel.value}));
 
 // ---------- live loop
 function live(on) {
   $("empty").hidden = on; ["foilBtn", "reset", "toggle", "focus"].forEach(id => $(id).disabled = !on);
+  yrInp.disabled = !on;
+  waveSel.disabled = !on;
   if (!on) {
     $("side").innerHTML = ""; $("caption").textContent = ""; built = false; lastViewerUnit = null;
     ["gs", "gh", "gr", "gt"].forEach(id => $(id).textContent = "–");
@@ -476,7 +605,145 @@ function live(on) {
     $("clock").textContent = ""; $("ctrlMode").textContent = "—"; $("ctrlActive").textContent = "—";
     $("ctrlBlend").style.width = "0%";
     $("ctrlReason").innerHTML = "Launch with <b>auto</b> (recommended) so PID handles takeoff/landing in the water and smoothly blends into LQR once foilborne.";
+    $("revPill").textContent = "SYMMETRIC"; $("revPill").className = "spill";
+    $("kvSolveMs").textContent = ""; $("kvYawHead").textContent = "ψ –";
+    $("supLog").textContent = "No supervisor transitions yet.";
+    yrInp.value = 0; yrOut.textContent = "off";
+    ["kvSplit", "kvLiftM", "kvElevR", "kvRevWhy", "kvYawRate", "kvRmin", "kvSlip", "kvLatG", "kvSupEnv", "kvHydro", "kvVent"].forEach(id => $(id).textContent = "–");
+    $("kvSupFault").textContent = "None"; $("supModePill").textContent = "—"; $("turnBindPill").textContent = "—";
+    $("turnSvg").innerHTML = "";
   }
+}
+function drawTurnEnvelope(s) {
+  const svg = $("turnSvg"); svg.innerHTML = "";
+  const te = s.turn_envelope || {};
+  const rMin = te.turn_radius_min_m;
+  const rNow = te.turn_radius_now_m;
+  const yRate = te.yaw_rate_now_deg_s ?? s.yaw_rate ?? 0;
+  const slip = te.sideslip_deg ?? s.sideslip ?? 0;
+  // Scale so 120 m R_min radius fits cleanly inside half-width (~115 px -> ~1.6 m/px)
+  const refR = Math.max(30, Math.min(220, rMin || 80));
+  const sc = 95 / refR;
+  // Port (-x) and Starboard (+x) min safe turning circles tangent to boat heading (+y = up)
+  if (rMin && rMin > 0 && Number.isFinite(rMin)) {
+    const pxR = Math.min(260, Math.max(12, rMin * sc));
+    node("circle", {cx:pxR, cy:0, r:pxR, fill:"none", stroke:css("--aqua"), "stroke-width":1.2, "stroke-dasharray":"5 4", opacity:0.65}, svg);
+    node("circle", {cx:-pxR, cy:0, r:pxR, fill:"none", stroke:css("--aqua"), "stroke-width":1.2, "stroke-dasharray":"5 4", opacity:0.65}, svg);
+  }
+  node("line", {x1:0, x2:0, y1:20, y2:-106, stroke:css("--rule"), "stroke-dasharray":"2 4"}, svg);
+  // Realized turn arc
+  if (rNow && rNow > 0 && Math.abs(yRate) > 0.25 && Number.isFinite(rNow)) {
+    const sgn = yRate >= 0 ? 1 : -1;
+    const rr = Math.min(340, Math.max(10, rNow * sc));
+    const cx = sgn * rr;
+    const sweep = 0.85;
+    const ex = cx - sgn * rr * Math.cos(sweep);
+    const ey = -rr * Math.sin(sweep);
+    node("path", {d:`M0 0 A${rr} ${rr} 0 0 ${sgn > 0 ? 1 : 0} ${ex.toFixed(1)} ${ey.toFixed(1)}`,
+                  fill:"none", stroke:css("--signal"), "stroke-width":2.5}, svg);
+  } else {
+    node("line", {x1:0, x2:0, y1:0, y2:-85, stroke:css("--signal"), "stroke-width":2}, svg);
+  }
+  // Sideslip vector arrow from CG
+  const sa = Math.max(-25, Math.min(25, slip)) * Math.PI / 180;
+  node("line", {x1:0, y1:0, x2:(Math.sin(sa) * 34).toFixed(1), y2:(-Math.cos(sa) * 34).toFixed(1), stroke:css("--foam"), "stroke-width":1.6, opacity:0.85}, svg);
+  // Boat silhouette pointing UP
+  node("path", {d:"M-6 14 L-6 -4 L0 -15 L6 -4 L6 14 Z", fill:css("--hull"), stroke:css("--strut"), "stroke-width":1}, svg);
+  node("rect", {x:-16, y:-2, width:32, height:3.5, rx:1, fill:css("--signal")}, svg);
+  const txt = node("text", {x:-134, y:24, fill:css("--mist"), "font-size":10.5}, svg);
+  txt.textContent = rMin ? `Dashed cyan = R_min (${rMin.toFixed(0)} m)   Yellow = live arc` : "Accelerate past minimum foil speed to unlock safe turn arc";
+}
+function renderFlightSystems(s) {
+  const mActive = s.safety_margin || "standard";
+  const aActive = s.allocator_mode || "jacobian";
+  const rOn = s.reverse_drive_enabled !== false;
+  document.querySelectorAll("#segMargin button").forEach(b => b.classList.toggle("on", b.dataset.margin === mActive));
+  document.querySelectorAll("#segAlloc button").forEach(b => b.classList.toggle("on", b.dataset.alloc === aActive));
+  document.querySelectorAll("#segRev button").forEach(b => b.classList.toggle("on", (b.dataset.rev === "1") === rOn));
+
+  const al = s.alloc || {};
+  const bnds = al.bounds || {};
+  const bind = al.binding || {};
+  const surf = s.surfaces || {left:0, right:0, elev:0};
+  const stopMap = s.stops || {left:30, right:30, elev:20};
+  $("kvSolveMs").textContent = al.solve_ms != null ? `${al.solve_ms.toFixed(2)} ms` : "";
+  for (const n of ["left", "right", "elev"]) {
+    const stp = Math.max(1, stopMap[n] || 30), span = 2 * stp;
+    const ang = Number.isFinite(surf[n]) ? surf[n] : 0;
+    const [lo, hi] = bnds[n] || [-stp, stp];
+    const pLo = Math.max(0, Math.min(100, (lo + stp) / span * 100));
+    const pHi = Math.max(pLo, Math.min(100, (hi + stp) / span * 100));
+    const pN = Math.max(0, Math.min(100, (ang + stp) / span * 100));
+    $("fs_" + n).style.left = `${pLo.toFixed(1)}%`;
+    $("fs_" + n).style.width = `${Math.max(1, pHi - pLo).toFixed(1)}%`;
+    const nd = $("fn_" + n);
+    nd.style.left = `${pN.toFixed(1)}%`;
+    const nearEdge = ang < lo + 1.0 || ang > hi - 1.0;
+    nd.className = "fbar-needle" + (nearEdge ? " hot" : "");
+    $("fv_" + n).textContent = `${ang >= 0 ? "+" : ""}${ang.toFixed(1)}°`;
+    $("fb_" + n).innerHTML = `<span>Safe [${lo.toFixed(1)}°, ${hi.toFixed(1)}°]</span><span>${bind[n] || "—"}</span>`;
+  }
+  const rp = $("revPill");
+  if (al.reverse_drive_active) { rp.textContent = "REVERSE DRIVE ACTIVE"; rp.className = "spill act"; }
+  else if (al.reverse_drive_gated) { rp.textContent = "GATED (RESERVE SHED)"; rp.className = "spill warn"; }
+  else { rp.textContent = "SYMMETRIC"; rp.className = "spill ok"; }
+  $("kvSplit").textContent = `${(al.split_deg ?? (surf.right - surf.left)) >= 0 ? "+" : ""}${(al.split_deg ?? (surf.right - surf.left)).toFixed(1)}°`;
+  $("kvLiftM").textContent = al.lift_margin != null ? `${(al.lift_margin * 100).toFixed(0)}%` : "–";
+  $("kvElevR").textContent = al.elev_reserve != null ? `${(al.elev_reserve * 100).toFixed(0)}%` : "–";
+  $("kvRevWhy").textContent = al.reverse_drive_reason || "—";
+
+  const te = s.turn_envelope || {};
+  $("kvYawHead").textContent = `ψ ${(s.yaw ?? 0).toFixed(0)}°`;
+  $("turnBindPill").textContent = te.binding_constraint || "—";
+  const yNow = te.yaw_rate_now_deg_s ?? s.yaw_rate ?? 0;
+  const yMax = te.yaw_rate_max_deg_s ?? 0;
+  $("kvYawRate").textContent = `${yNow >= 0 ? "+" : ""}${yNow.toFixed(1)} / ±${yMax.toFixed(1)} °/s`;
+  const rMinTxt = te.turn_radius_min_m ? `${te.turn_radius_min_m.toFixed(0)} m` : "—";
+  const rNowTxt = te.turn_radius_now_m ? `now ${te.turn_radius_now_m.toFixed(0)} m` : "straight";
+  $("kvRmin").textContent = `${rMinTxt} (${rNowTxt})`;
+  $("kvSlip").textContent = `${(te.sideslip_deg ?? s.sideslip ?? 0).toFixed(1)}° / ±${(te.sideslip_max_deg ?? 6.5).toFixed(1)}°`;
+  $("kvLatG").textContent = `${(te.lat_g_now ?? 0).toFixed(2)}g / ${(te.lat_g_max ?? 0.3).toFixed(2)}g`;
+
+  const sup = s.supervisor;
+  waveSel.disabled = false;
+  if (s.wave && s.wave.type && waveSel.value !== s.wave.type) waveSel.value = s.wave.type;
+  yrInp.disabled = !sup;
+  if (!sup) {
+    yrOut.textContent = "sup off";
+  } else if (dragging !== "yaw_rate_cmd") {
+    const yc = s.yaw_rate_cmd || 0;
+    if (Math.abs(+yrInp.value - yc) > 1e-3) yrInp.value = yc;
+    yrOut.textContent = Math.abs(yc) < 1e-3 ? "off" : `${yc >= 0 ? "+" : ""}${yc.toFixed(1)} °/s`;
+  }
+  const sp = $("supModePill");
+  sp.textContent = sup ? `SUP: ${sup.mode}` : `UNSUP: ${s.mode}`;
+  sp.className = "spill " + (sup && sup.faults && sup.faults.length ? "bad" : (s.mode.includes("FOIL") ? "ok" : ""));
+  const jamTxt = sup && sup.jam ? `${sup.jam[0]} @ ${sup.jam[1].toFixed(1)}°` : "no jam";
+  const wvTxt = sup ? `${(sup.wave_amp * 100).toFixed(0)} cm` : "n/a";
+  $("kvSupEnv").textContent = `A_w ${wvTxt} / ${jamTxt}`;
+  const fList = sup ? [...(sup.faults || []), ...(sup.warnings || [])] : [];
+  $("kvSupFault").textContent = fList.length ? fList.join(", ") : "None (healthy)";
+  const hs = s.height_status || {};
+  const chTxt = hs.using_gnss ? "GNSS vz" : (hs.active && hs.active.length ? hs.active.join("+") : s.sensors);
+  const sig = s.cavitation_sigma ?? 99;
+  $("kvHydro").textContent = `σ=${sig > 50 ? ">50" : sig.toFixed(2)} | ${chTxt}`;
+  const vn = s.ventilation || {};
+  $("kvVent").textContent = `${Math.round(100 * (vn.left || 0))}% / ${Math.round(100 * (vn.right || 0))}% / ${Math.round(100 * (vn.elev || 0))}% / ${Math.round(100 * (vn.main_strut || 0))}%`;
+
+  const drv = s.drives || {};
+  $("drvRows").innerHTML = [["left", "Left flap"], ["right", "Right flap"], ["elev", "Elevator"]].map(([k, lab]) => {
+    const d = drv[k] || {};
+    const cap = d.cap || 0;
+    const pct = cap > 0 ? Math.min(999, Math.round(100 * Math.abs(d.M || 0) / cap)) : null;
+    const st = d.limited ? `<span class="spill bad">LIMITED</span>` : `<span style="color:var(--aqua)">${pct != null ? pct + "%" : "OK"}</span>`;
+    return `<tr><td>${lab}</td><td class="num">${(d.M || 0).toFixed(1)} / ${cap > 0 ? cap.toFixed(0) : "–"}</td><td class="num">${(d.I || 0).toFixed(1)} A</td><td class="num">${(d.P || 0).toFixed(0)} W</td><td>${st}</td></tr>`;
+  }).join("");
+  const slog = (sup && Array.isArray(sup.log)) ? sup.log : [];
+  $("supLog").innerHTML = slog.length
+    ? slog.slice().reverse().map(e => Array.isArray(e)
+        ? `<div><b>${(+e[0]).toFixed(1)}s</b> ${e[1]} → ${e[2]} (${e[3]})</div>`
+        : `<div>${e}</div>`).join("")
+    : "No supervisor transitions yet.";
 }
 function render(s) {
   const d = unit === "m/s" ? 2 : 1;
@@ -512,7 +779,7 @@ async function poll() {
     const lvl = renderObserver(s);
     hist.push({t:s.t, height:s.height, height_ref:s.height_ref, roll:s.roll, pitch:s.pitch, sl:s.surfaces.left, sr:s.surfaces.right, se:s.surfaces.elev, lvl:LV[lvl]});
     while (hist.length && hist[0].t < s.t - 21) hist.shift();
-    live(true); if (currentTab === "fly") { drawSide(s); drawHeel(s.roll, s.bank_ref); drawTraces(); } syncLevers(s.sliders);
+    live(true); if (currentTab === "fly") { drawSide(s); drawHeel(s.roll, s.bank_ref); drawTurnEnvelope(s); renderFlightSystems(s); drawTraces(); } syncLevers(s.sliders);
     render(s); renderCtrlBar(s);
     $("gh").innerHTML = `${s.height.toFixed(2)}<small>m</small>`; $("gh2").textContent = `target ${s.height_ref.toFixed(2)} m`;
     $("gr").innerHTML = `${s.roll.toFixed(1)}° <small>/ ${s.pitch.toFixed(1)}°</small>`; $("gr2").textContent = `bank target ${s.bank_ref.toFixed(0)}° (safe max ±${(s.bank_max ?? 15).toFixed(1)}°)`;
@@ -533,7 +800,7 @@ document.querySelectorAll(".tabs button[data-tab]").forEach(b => b.onclick = () 
   for (const t of ["fly", "boat", "tune"]) $("tab-" + t).hidden = t !== currentTab;
   if (currentTab === "boat") loadBoat();
   if (currentTab === "tune") pollTune(true);
-  if (currentTab === "fly" && last) { drawSide(last); drawTraces(); }
+  if (currentTab === "fly" && last) { drawSide(last); drawTurnEnvelope(last); renderFlightSystems(last); drawTraces(); }
 });
 
 // ---------- observer
@@ -900,7 +1167,7 @@ $("tuneClear").onclick = async () => {
   $("tuneMsg").textContent = "Cleared saved tuned gains; preset defaults are active again.";
   pollTune(true);
 };
-addEventListener("resize", () => { if (last && currentTab === "fly") { drawSide(last); drawTraces(); } });
+addEventListener("resize", () => { if (last && currentTab === "fly") { drawSide(last); drawTurnEnvelope(last); drawTraces(); } });
 poll();
 pollTune(false);
 $("units").textContent = unit;

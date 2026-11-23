@@ -42,6 +42,9 @@ from __future__ import annotations
 
 import numpy as np
 
+from hydrofoil.constants import G
+from hydrofoil.control.allocator import safety_preset_config
+
 DEFAULT_SUPERVISOR = {
     "v_disp_max": 4.0,          # m/s: displacement speed cap (the hull hump makes faster displacement running wasteful)
     "v_liftoff": 5.5,           # m/s: start raising the height ref (trim flap about +13 deg at 5 m/s, 275 kg)
@@ -59,6 +62,7 @@ DEFAULT_SUPERVISOR = {
     "disp_flap_deg": 0.0,       # flap angle held in displacement mode
     "roll_limit": 20.0,         # deg: attitude fault while foiling (5 deg margin above bank_max; inside ~25-30 deg tip breach)
     "bank_max": 15.0,           # deg: calm-water turning bank ceiling (further narrowed by safe_bank_limit)
+    "bank_v_min_deg": 12.0,     # deg: low-speed steady bank floor near v_min_foil before speed taper opens to bank_max
     "bank_rate": 12.0,          # deg/s: bank-reference ramp rate (prevents adverse-yaw & sideslip spikes on turn entry/reversals)
     "tip_hc_min": 1.25,         # chords: minimum high-side outer wingtip submergence kept in a banked turn
     "chine_clear_min": 0.10,    # m: minimum low-side hull chine clearance above waves in a banked turn
@@ -87,7 +91,7 @@ class Supervisor:
         p = vp.params
         # pilot requests (the UI / tests write these)
         self.pilot = {"foil": False, "speed": float(p.get("target_speed", 0.0)),
-                      "height": float(self.c["h_default"]), "bank": 0.0}
+                      "height": float(self.c["h_default"]), "bank": 0.0, "yaw_rate": None}
         self._lqr_engage = vp.lqr.engage_speed if vp.lqr is not None else None
         self._kp0 = {n: vp.drives[n].kp for n in ("left", "right", "elev")}   # configured servo gains
         self._kd0 = {n: vp.drives[n].kd for n in ("left", "right", "elev")}
@@ -112,6 +116,7 @@ class Supervisor:
         self.height_ref = None
         self.bank_ref = 0.0
         self.bank_limit = float(self.c["bank_max"])
+        self.turn_envelope: dict = {}
         self.jam = None                              # ("left"|"right", angle deg) when a main-flap drive is lost
         self.wave_amp = 0.0
         self._wave_hist = []
@@ -131,6 +136,7 @@ class Supervisor:
         hs = getattr(self.vp, "height_status", None) or {}
         return {"mode": self.mode, "speed_ref": self.speed_ref, "height_ref": self.height_ref,
                 "bank_ref": self.bank_ref, "bank_max": self.bank_limit,
+                "turn_envelope": dict(self.turn_envelope),
                 "v_min": self.c["v_min_foil"], "v_max": self.c["v_max"], "h_min": self._h_min(),
                 "h_max": self.c["h_max"], "faults": sorted(self.faults),
                 "warnings": sorted(self.warnings), "using_gnss": bool(hs.get("using_gnss", False)),
@@ -139,53 +145,25 @@ class Supervisor:
     # -------------------------------------------------------------- helpers
     def _hull_clearance(self, cstate) -> float:
         """Hull bottom above the mean surface [m] from the controllers' height estimate."""
-        return float(self.vp.params["hull_offset"] - cstate[2])
+        hull_off = float(getattr(self.vp, "hull_offset", self.vp.params["hull_offset"]))
+        return float(hull_off - cstate[2])
+
+    def compute_turn_envelope(self, cstate=None, alloc_status: dict | None = None) -> dict:
+        """Instance wrapper delegating to standalone `compute_turn_envelope` using supervisor state."""
+        return compute_turn_envelope(
+            self.vp,
+            cstate=cstate,
+            wave_amp=float(self.wave_amp),
+            height_ref=self.height_ref,
+            cfg=self.c,
+            alloc_status=alloc_status if alloc_status is not None else getattr(self.vp, "_last_alloc_status", None),
+        )
 
     def safe_bank_limit(self, cstate=None) -> float:
-        """
-        Physics-derived maximum safe steady bank angle [deg] balancing four constraints:
-          1. Attitude fault margin (roll_limit - 5 deg) and configured bank_max.
-          2. Simultaneous high-side wingtip submergence (>= tip_hc_min * main_chord) and
-             low-side chine clearance (>= chine_clear_min) across wave crests/troughs.
-          3. High-side wingtip submergence at the active target ride height.
-          4. Low-speed split-flap stall/authority taper near v_min_foil.
-        """
-        c, p = self.c, self.vp.params
-        b_cap = min(float(c["bank_max"]), max(0.0, float(c["roll_limit"]) - 5.0))
-        u = float(cstate[6]) if cstate is not None else float(self.speed_ref or c["v_min_foil"])
-        # Low-speed flap authority taper: 12 deg at v_min_foil, full bank_max by v_min_foil + 1.5 m/s
-        v_lo = float(c["v_min_foil"])
-        if u < v_lo + 1.5:
-            frac = float(np.clip((u - v_lo) / 1.5, -1.0, 1.0))
-            b_speed = 12.0 + (b_cap - 12.0) * max(0.0, frac) + 4.0 * min(0.0, frac)
-        else:
-            b_speed = b_cap
-
-        wm_a = float(c["wave_margin"]) * float(self.wave_amp)
-        z_main = float(p["main_pos_z"])
-        y_tip = float(p["main_lateral_offset"]) + 0.5 * float(p["main_span"])
-        half_b = 0.5 * float(p["hull_beam"])
-        tip_req = float(c["tip_hc_min"]) * float(p["main_chord"])
-
-        def _solve_cos_sin(a_cos: float, b_sin: float, rhs: float) -> float:
-            r = float(np.hypot(a_cos, b_sin))
-            if r <= 1e-9 or rhs >= r:
-                return 0.0
-            if rhs <= -r:
-                return 90.0
-            alpha = float(np.arctan2(b_sin, a_cos))
-            return max(0.0, float(np.degrees(np.arccos(rhs / r) - alpha)))
-
-        # Simultaneous chine-clearance + wingtip-submergence geometric lens (eliminates ride height h)
-        rhs_lens = tip_req + float(c["chine_clear_min"]) + 2.0 * wm_a - float(p["hull_offset"])
-        b_lens = _solve_cos_sin(z_main, y_tip + half_b, rhs_lens)
-
-        # High-side wingtip submergence at the active ride height target
-        h_ref = float(self.height_ref if self.height_ref is not None else c["h_default"])
-        z_cg = float(p["hull_offset"]) - max(h_ref, float(c["h_min"]) + wm_a)
-        b_tip = _solve_cos_sin(z_main, y_tip, tip_req + wm_a - z_cg)
-
-        return float(np.clip(min(b_cap, b_speed, b_lens, b_tip), 0.0, b_cap))
+        """Physics & control-stability capped maximum steady bank angle [deg]."""
+        env = self.compute_turn_envelope(cstate=cstate)
+        self.turn_envelope = env
+        return float(env["bank_max_deg"])
 
     def _h_min(self, phi_rad: float = 0.0) -> float:
         cmd_phi = min(self.bank_limit, abs(float(self.pilot["bank"]))) if self.mode == "FOILING" else abs(float(self.bank_ref))
@@ -380,9 +358,32 @@ class Supervisor:
 
         self.speed_ref = self._ramp(self.speed_ref, spd, c["speed_rate"], dt) if self.mode != "EMERGENCY_LANDING" \
             else spd
-        self.bank_limit = self.safe_bank_limit(cstate)
-        bank_tgt = float(np.clip(pv["bank"], -self.bank_limit, self.bank_limit)) if self.mode == "FOILING" else 0.0
+        env_turn = self.compute_turn_envelope(cstate)
+        self.turn_envelope = env_turn
+        vp._last_turn_envelope = env_turn
+        self.bank_limit = float(env_turn["bank_max_deg"])
+        bank_req = float(pv["bank"])
+        if pv.get("yaw_rate") is not None and abs(float(pv["yaw_rate"])) > 1e-6:
+            # Convert top-down yaw-rate request [deg/s] into coordinated equivalent bank [deg]
+            r_req = float(np.radians(np.clip(float(pv["yaw_rate"]), -env_turn["yaw_rate_max_deg_s"], env_turn["yaw_rate_max_deg_s"])))
+            eta_t = max(float(env_turn["eta_turn"]), 0.05)
+            bank_req = float(np.degrees(np.arctan(r_req * max(u, 1.0) / (eta_t * G))))
+        bank_tgt = float(np.clip(bank_req, -self.bank_limit, self.bank_limit)) if self.mode == "FOILING" else 0.0
         bank_rate = float(c["bank_rate"]) * (2.0 if self.mode == "EMERGENCY_LANDING" else 1.0)
+        # Sideslip CBF barrier: pull bank_tgt down when |beta| > 80% of ventilation cap even at steady bank,
+        # and slow turn-in rate whenever |beta| enters the top 25% margin.
+        beta_abs = abs(float(env_turn["sideslip_deg"]))
+        beta_lim = max(float(env_turn["sideslip_max_deg"]), 1.0)
+        if self.mode == "FOILING" and beta_abs > 0.80 * beta_lim:
+            excess_frac = min(1.0, (beta_abs - 0.80 * beta_lim) / max(0.20 * beta_lim, 0.1))
+            cbf_cap = self.bank_limit * max(0.35, 1.0 - 0.65 * excess_frac)
+            if abs(bank_tgt) > cbf_cap:
+                bank_tgt = float(np.sign(bank_tgt) * cbf_cap)
+            if abs(self.bank_ref) > cbf_cap:
+                bank_rate *= 1.0 + excess_frac
+        elif beta_abs > 0.75 * beta_lim and abs(bank_tgt) >= abs(self.bank_ref):
+            cbf_scale = float(np.clip((beta_lim - beta_abs) / (0.25 * beta_lim), 0.15, 1.0))
+            bank_rate *= cbf_scale
         self.bank_ref = self._ramp(self.bank_ref, bank_tgt, bank_rate, dt)
         p["target_speed"] = self.speed_ref
         p["flying_height"] = float(self.height_ref)
@@ -458,3 +459,130 @@ class Supervisor:
         if vp.lqr is not None:
             vp.lqr.reset()
         vp.controller.reset()
+
+
+def compute_turn_envelope(
+    vp,
+    cstate=None,
+    wave_amp: float = 0.0,
+    height_ref: float | None = None,
+    cfg: dict | None = None,
+    alloc_status: dict | None = None,
+) -> dict:
+    """
+    Compute the live Physics x Control-Stability top-down boat turning envelope:
+      - safe steady bank ceiling `bank_max_deg`
+      - maximum safe top-down yaw rate `yaw_rate_max_deg_s`
+      - minimum safe top-down turning radius `turn_radius_min_m`
+      - current realized turn rate, turn radius, sideslip vs cap, lateral g, and binding constraint.
+    Works with or without an active Supervisor.
+    """
+    p = vp.params
+    c = cfg if cfg is not None else DEFAULT_SUPERVISOR
+    preset_name, preset_cfg = safety_preset_config(p.get("safety_margin", "standard"))
+
+    b_att = min(float(c["bank_max"]), max(0.0, float(c["roll_limit"]) - 5.0))
+    b_cap = b_att * float(preset_cfg["bank_scale"])
+    # Never allow bank_scale > 1.0 to violate attitude margin
+    b_cap = min(b_cap, max(0.0, float(c["roll_limit"]) - (3.5 if preset_name == "sport" else 5.0)))
+
+    u = float(cstate[6]) if cstate is not None else float(p.get("target_speed", c["v_min_foil"]))
+    v_lat = float(cstate[7]) if cstate is not None else 0.0
+    r_now_rad = float(cstate[11]) if cstate is not None else 0.0
+    v_lo = float(c["v_min_foil"]) if p.get("mass", 0.0) > 100.0 else float(p.get("v_min_foil", 0.75 * max(float(p.get("target_speed", 4.0)), 1.0)))
+    b_vmin = min(b_cap, float(c.get("bank_v_min_deg", 12.0)) * float(preset_cfg["bank_scale"]))
+    if u < v_lo + 1.5:
+        frac = float(np.clip((u - v_lo) / 1.5, -1.0, 1.0))
+        b_speed = max(0.0, b_vmin + (b_cap - b_vmin) * max(0.0, frac) + 4.0 * min(0.0, frac))
+    else:
+        b_speed = b_cap
+
+    wm_a = float(c["wave_margin"]) * float(wave_amp)
+    hull_off = float(getattr(vp, "hull_offset", p["hull_offset"]))
+    z_main = float(vp.left_foil.r_attach[2]) if hasattr(vp, "left_foil") else float(p["main_pos_z"])
+    y_tip = float(p["main_lateral_offset"]) + 0.5 * float(p["main_span"])
+    half_b = 0.5 * float(p["hull_beam"])
+    tip_req = float(c["tip_hc_min"]) * float(p["main_chord"])
+
+    def _solve_cos_sin(a_cos: float, b_sin: float, rhs: float) -> float:
+        r = float(np.hypot(a_cos, b_sin))
+        if r <= 1e-9 or rhs >= r:
+            return 0.0
+        if rhs <= -r:
+            return 90.0
+        ratio = float(np.clip(rhs / r, -1.0, 1.0))
+        alpha = float(np.arctan2(b_sin, a_cos))
+        return max(0.0, float(np.degrees(np.arccos(ratio) - alpha)))
+
+    rhs_lens = tip_req + float(c["chine_clear_min"]) + 2.0 * wm_a - hull_off
+    b_lens = _solve_cos_sin(z_main, y_tip + half_b, rhs_lens)
+
+    h_tgt = float(height_ref if height_ref is not None else p.get("flying_height", c["h_default"]))
+    z_cg = hull_off - max(h_tgt, float(c["h_min"]) + wm_a)
+    b_tip = _solve_cos_sin(z_main, y_tip, tip_req + wm_a - z_cg)
+
+    b_alloc = b_cap
+    if alloc_status and u >= v_lo:
+        lm = float(alloc_status.get("lift_margin", 1.0))
+        lf_floor = float(preset_cfg["lift_floor_frac"])
+        if lm < lf_floor and lf_floor > 1e-3:
+            b_alloc = max(4.0, b_cap * (lm / lf_floor) ** 2)
+
+    bank_cands = [
+        ("safety preset cap" if preset_name == "conservative" else "attitude margin", b_cap),
+        ("low-speed lift", b_speed),
+        ("chine clearance", b_lens),
+        ("wingtip/wave clearance", b_tip),
+        ("flap reserve", b_alloc),
+    ]
+    binding_name, bank_max_deg = min(bank_cands, key=lambda kv: kv[1])
+    bank_max_deg = float(np.clip(bank_max_deg, 0.0, b_cap))
+
+    # Plant-derived steady-turn efficiency eta_turn = r_turn * u / G (zero hardcoded guesses)
+    u_safe = max(u, 1.0)
+    eta_turn = float(vp.turning_efficiency(u_safe)) if hasattr(vp, "turning_efficiency") else 0.30
+    r_bank_rad = eta_turn * (G / u_safe) * float(np.tan(np.radians(bank_max_deg)))
+
+    # Top-down lateral-g cap & sideslip barrier
+    lat_g_max = float(preset_cfg["lat_g_max"])
+    r_latg_rad = (lat_g_max * G) / u_safe
+    beta_deg = float(np.degrees(np.arctan2(v_lat, max(u, 0.1)))) if u > 0.2 else 0.0
+    beta_max = float(preset_cfg["sideslip_max_deg"])
+
+    if abs(beta_deg) > 0.75 * beta_max:
+        slip_scale = float(np.clip((beta_max - abs(beta_deg)) / max(0.25 * beta_max, 0.1), 0.15, 1.0))
+        r_slip_rad = r_bank_rad * slip_scale
+    else:
+        r_slip_rad = np.inf
+
+    yaw_cands = [
+        (binding_name, r_bank_rad),
+        ("lateral-g safety", r_latg_rad),
+        ("strut sideslip", r_slip_rad),
+    ]
+    bind_fin, r_max_rad = min(yaw_cands, key=lambda kv: kv[1])
+    # If r_latg_rad governed below r_bank_rad, also tighten bank_max_deg correspondingly for top-down consistency
+    if r_latg_rad < r_bank_rad - 1e-6 and eta_turn > 1e-6:
+        b_latg = float(np.degrees(np.arctan(r_latg_rad * u_safe / (eta_turn * G))))
+        bank_max_deg = float(min(bank_max_deg, b_latg))
+
+    yaw_rate_max_deg_s = float(np.degrees(r_max_rad))
+    yaw_rate_now_deg_s = float(np.degrees(r_now_rad))
+    turn_radius_min_m = (float(u / r_max_rad) if (u >= 2.0 and r_max_rad > np.radians(0.25)) else None)
+    turn_radius_now_m = (float(u / abs(r_now_rad)) if (u >= 2.0 and abs(r_now_rad) > np.radians(0.25)) else None)
+    lat_g_now = abs(u * r_now_rad) / G
+
+    return {
+        "bank_max_deg": bank_max_deg,
+        "yaw_rate_max_deg_s": yaw_rate_max_deg_s,
+        "turn_radius_min_m": turn_radius_min_m,
+        "yaw_rate_now_deg_s": yaw_rate_now_deg_s,
+        "turn_radius_now_m": turn_radius_now_m,
+        "sideslip_deg": beta_deg,
+        "sideslip_max_deg": beta_max,
+        "lat_g_now": float(lat_g_now),
+        "lat_g_max": lat_g_max,
+        "eta_turn": eta_turn,
+        "binding_constraint": bind_fin,
+        "safety_margin": preset_name,
+    }

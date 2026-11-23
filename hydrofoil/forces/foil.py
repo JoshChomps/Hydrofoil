@@ -10,11 +10,13 @@ Load from XFLR5/XFOIL polar files, OpenFOAM, or experimental tow-tank data.
 """
 
 from __future__ import annotations
+import bisect
+import math
 from pathlib import Path
 import numpy as np
 from dataclasses import dataclass, field
 
-from hydrofoil.constants import RHO_WATER
+from hydrofoil.constants import G, RHO_WATER
 
 # Default polar: NACA 0009 from XFLR5 at Re=2.70e6, Mach=0, Ncrit=9
 # Stored in data/foil_tables/naca0009_xflr5_re2700000.dat
@@ -92,16 +94,55 @@ class FoilTables:
         self.CL = np.asarray(CL, dtype=float)
         self.CD = np.asarray(CD, dtype=float)
         self.source = source
-        self.aoa_min = self.aoa_deg[0]
-        self.aoa_max = self.aoa_deg[-1]
+        self.aoa_min = float(self.aoa_deg[0])
+        self.aoa_max = float(self.aoa_deg[-1])
+        self.aoa_peak_deg = float(self.aoa_deg[int(np.argmax(self.CL))]) if len(self.CL) else 14.4
+        self._aoa_l = self.aoa_deg.tolist()
+        self._cl_l = self.CL.tolist()
+        self._cd_l = self.CD.tolist()
+        self._n = len(self._aoa_l)
+        self._dcl = [
+            (self._cl_l[i + 1] - self._cl_l[i]) / max(self._aoa_l[i + 1] - self._aoa_l[i], 1e-12)
+            for i in range(max(0, self._n - 1))
+        ]
+        self._dcd = [
+            (self._cd_l[i + 1] - self._cd_l[i]) / max(self._aoa_l[i + 1] - self._aoa_l[i], 1e-12)
+            for i in range(max(0, self._n - 1))
+        ]
 
     def cl(self, aoa_deg: float) -> float:
-        a = self.aoa_min if aoa_deg < self.aoa_min else (self.aoa_max if aoa_deg > self.aoa_max else float(aoa_deg))
-        return float(np.interp(a, self.aoa_deg, self.CL))
+        a = float(aoa_deg)
+        if a <= self.aoa_min:
+            return float(self._cl_l[0])
+        if a >= self.aoa_max:
+            return float(self._cl_l[-1])
+        i = bisect.bisect_right(self._aoa_l, a) - 1
+        i = 0 if i < 0 else (self._n - 2 if i >= self._n - 1 else i)
+        return float(self._cl_l[i] + self._dcl[i] * (a - self._aoa_l[i]))
 
     def cd(self, aoa_deg: float) -> float:
-        a = self.aoa_min if aoa_deg < self.aoa_min else (self.aoa_max if aoa_deg > self.aoa_max else float(aoa_deg))
-        return float(np.interp(a, self.aoa_deg, self.CD))
+        a = float(aoa_deg)
+        if a <= self.aoa_min:
+            return float(self._cd_l[0])
+        if a >= self.aoa_max:
+            return float(self._cd_l[-1])
+        i = bisect.bisect_right(self._aoa_l, a) - 1
+        i = 0 if i < 0 else (self._n - 2 if i >= self._n - 1 else i)
+        return float(self._cd_l[i] + self._dcd[i] * (a - self._aoa_l[i]))
+
+    def cl_cd_slopes(self, aoa_deg: float) -> tuple[float, float, float, float]:
+        """Fast scalar piecewise linear (CL, CD, dCL/daoa, dCD/daoa) within table bounds."""
+        a = float(aoa_deg)
+        if a <= self.aoa_min:
+            return float(self._cl_l[0]), float(self._cd_l[0]), 0.0, 0.0
+        if a >= self.aoa_max:
+            return float(self._cl_l[-1]), float(self._cd_l[-1]), 0.0, 0.0
+        i = bisect.bisect_right(self._aoa_l, a) - 1
+        i = 0 if i < 0 else (self._n - 2 if i >= self._n - 1 else i)
+        dx = a - self._aoa_l[i]
+        dcl = self._dcl[i]
+        dcd = self._dcd[i]
+        return float(self._cl_l[i] + dcl * dx), float(self._cd_l[i] + dcd * dx), float(dcl), float(dcd)
 
     @property
     def cl_slope_per_deg(self) -> float:
@@ -160,6 +201,60 @@ def _cross(a, b):
     return np.array([a[1] * b[2] - a[2] * b[1], a[2] * b[0] - a[0] * b[2], a[0] * b[1] - a[1] * b[0]])
 
 
+def cavitation_number(
+    speed: float,
+    depth_m: float,
+    p_atm: float = 101325.0,
+    p_vap: float = 2340.0,
+    rho: float = RHO_WATER,
+) -> float:
+    """Local cavitation number sigma = (p_atm + rho*g*depth - p_vap) / (0.5*rho*V^2)."""
+    d = max(float(depth_m), 0.0)
+    q = max(0.5 * float(rho) * float(speed) ** 2, 1e-6)
+    return float((p_atm + float(rho) * G * d - p_vap) / q)
+
+
+def cp_min_estimate(aoa_eff_deg: float, delta_deg: float = 0.0, is_flap: bool = True) -> float:
+    """Estimated attached-flow suction peak magnitude (-Cp_min >= 0) for cavitation checks."""
+    a = min(abs(float(aoa_eff_deg)), 18.0)
+    d = min(abs(float(delta_deg)), 30.0) if is_flap else 0.0
+    return float(0.35 + 0.12 * a + 0.012 * a * a + 0.03 * d)
+
+
+def cp_min_and_slope(
+    aoa_eff_deg: float, delta_deg: float = 0.0, is_flap: bool = True, daoa_ddelta: float = 0.0
+) -> tuple[float, float]:
+    """Suction peak magnitude (-Cp_min >= 0) and chain-rule derivative wrt delta [per deg]."""
+    a_raw = abs(float(aoa_eff_deg))
+    a = min(a_raw, 18.0)
+    d_raw = abs(float(delta_deg)) if is_flap else 0.0
+    d = min(d_raw, 30.0)
+    cp = 0.35 + 0.12 * a + 0.012 * a * a + 0.03 * d
+    sgn_a = (1.0 if aoa_eff_deg > 0.0 else (-1.0 if aoa_eff_deg < 0.0 else 0.0)) if a_raw < 18.0 else 0.0
+    sgn_d = ((1.0 if delta_deg > 0.0 else (-1.0 if delta_deg < 0.0 else 0.0)) if d_raw < 30.0 else 0.0) if is_flap else 0.0
+    dcp_dd = sgn_a * (0.12 + 0.024 * a) * daoa_ddelta + 0.03 * sgn_d
+    return float(cp), float(dcp_dd)
+
+
+def effective_flap_and_slope(delta_deg: float, flap_stall_deg: float | None) -> tuple[float, float, float, float]:
+    """
+    Effective flap angle after trailing-edge separation above `flap_stall_deg`,
+    matching derivative d(eff_delta)/d(delta), separation CD increment, and d(cd_sep)/d(delta).
+    """
+    d = float(delta_deg)
+    if flap_stall_deg is None or abs(d) <= flap_stall_deg:
+        return d, 1.0, 0.0, 0.0
+    d0 = float(flap_stall_deg)
+    sgn = 1.0 if d >= 0.0 else -1.0
+    exc = abs(d) - d0
+    denom = exc + 4.0
+    eff = sgn * (d0 + exc - 0.55 * (exc * exc) / denom)
+    deff = 1.0 - 0.55 * (exc * (exc + 8.0)) / (denom * denom)
+    cd_sep = 0.00025 * exc * exc
+    dcd_sep = sgn * 0.0005 * exc
+    return float(eff), float(deff), float(cd_sep), float(dcd_sep)
+
+
 class Foil:
     """
     A single lifting surface attached to the vehicle.
@@ -193,6 +288,7 @@ class Foil:
         normal_axis: np.ndarray | None = None,
         flap_cm_delta: float = 0.0,
         flap_stall_deg: float | None = None,
+        cavitation_model: bool = False,
     ):
         self.geometry = geometry
         self.tables = tables
@@ -227,6 +323,7 @@ class Foil:
         # increment acts aft of c/4, so it also adds a nose-down couple. 0 = none (all-moving foil).
         self.flap_cm_delta = flap_cm_delta
         self.flap_stall_deg = flap_stall_deg
+        self.cavitation_model = bool(cavitation_model)
         self.last_CL = 0.0   # corrected CL of the latest generalized_force call (read by the tail downwash)
         # Aspect ratio of this panel from its own span/chord (rectangular
         # planform assumed). Each main-foil half is modeled as its own Foil
@@ -256,6 +353,210 @@ class Foil:
         V_n = float(V_foil @ self.normal)
         return float(np.hypot(V_foil[0], V_n)), float(np.arctan2(V_n, V_foil[0]) + np.radians(self.geometry.aoa_offset))
 
+    def _polar_2d(self, aoa_deg: float) -> tuple[float, float]:
+        """2D section CL and CD with smooth post-stall continuation outside polar table."""
+        if self.tables.aoa_min <= aoa_deg <= self.tables.aoa_max:
+            return self.tables.cl(aoa_deg), self.tables.cd(aoa_deg)
+        edge = self.tables.aoa_max if aoa_deg > 0.0 else self.tables.aoa_min
+        cl_edge = self.tables.cl(edge)
+        cd_edge = self.tables.cd(edge)
+        excess = abs(aoa_deg - edge)
+        blend = min(1.0, excess / 7.0)
+        blend = blend * blend * (3.0 - 2.0 * blend)
+        a_rad = np.radians(aoa_deg)
+        cl_post = 1.15 * abs(np.sin(2.0 * a_rad)) * (1.0 if a_rad >= 0.0 else -1.0)
+        cd_post = 2.0 * np.sin(a_rad) ** 2 + 0.02
+        return float((1.0 - blend) * cl_edge + blend * cl_post), float((1.0 - blend) * cd_edge + blend * cd_post)
+
+    def _polar_2d_and_slopes(self, aoa_deg: float) -> tuple[float, float, float, float]:
+        """2D section CL, CD and analytical/post-stall slopes [per deg]."""
+        t = self.tables
+        if t.aoa_min <= aoa_deg <= t.aoa_max:
+            return t.cl_cd_slopes(aoa_deg)
+        cl0, cd0 = self._polar_2d(aoa_deg)
+        eps = 1e-2
+        clp, cdp = self._polar_2d(aoa_deg + eps)
+        clm, cdm = self._polar_2d(aoa_deg - eps)
+        return cl0, cd0, (clp - clm) / (2.0 * eps), (cdp - cdm) / (2.0 * eps)
+
+    def _eval_force_and_deriv(
+        self,
+        nu: np.ndarray,
+        delta: float = 0.0,
+        submergence_over_chord: float | None = None,
+        span: float | None = None,
+        r_attach: np.ndarray | None = None,
+        downwash_rad: float = 0.0,
+        ventilation: float = 0.0,
+        with_deriv: bool = False,
+    ) -> dict:
+        """Shared evaluation of 6-DOF generalized force and analytical delta derivative."""
+        span_use = self.geometry.span if span is None else float(span)
+        r_use = self.r_attach if r_attach is None else r_attach
+        chord = float(self.geometry.chord)
+        if span_use <= 1e-3 or chord <= 1e-4:
+            return {"tau": np.zeros(6), "dtau_ddelta": np.zeros(6), "CL": 0.0, "CD": 0.0,
+                    "speed": 0.0, "aoa_flow_deg": 0.0, "aoa_eff_deg": 0.0,
+                    "submergence_hc": 0.0 if submergence_over_chord is None else float(submergence_over_chord),
+                    "sigma": 99.0, "cp_min": 0.35}
+        ar = span_use / chord
+        rx, ry, rz = float(r_use[0]), float(r_use[1]), float(r_use[2])
+        p_, q_, r_ = float(nu[3]), float(nu[4]), float(nu[5])
+        vx = float(nu[0]) + q_ * rz - r_ * ry
+        vy = float(nu[1]) + r_ * rx - p_ * rz
+        vz = float(nu[2]) + p_ * ry - q_ * rx
+
+        nx, ny, nz = float(self.normal[0]), float(self.normal[1]), float(self.normal[2])
+        lx, ly, lz = float(self.lift_axis[0]), float(self.lift_axis[1]), float(self.lift_axis[2])
+        V_n = vx * nx + vy * ny + vz * nz
+        vpx = vx + V_n * nx
+        vpy = V_n * ny
+        vpz = V_n * nz
+        speed = math.sqrt(vpx * vpx + vpy * vpy + vpz * vpz)
+
+        if speed < 0.01:
+            return {"tau": np.zeros(6), "dtau_ddelta": np.zeros(6), "CL": 0.0, "CD": 0.0,
+                    "speed": speed, "aoa_flow_deg": 0.0, "aoa_eff_deg": 0.0,
+                    "submergence_hc": 0.0 if submergence_over_chord is None else float(submergence_over_chord),
+                    "sigma": 99.0, "cp_min": 0.35}
+
+        inv_s = 1.0 / speed
+        hx, hy, hz = vpx * inv_s, vpy * inv_s, vpz * inv_s
+        eff_delta, deff_ddelta, cd_flap_sep, dcd_sep_ddelta = effective_flap_and_slope(delta, self.flap_stall_deg)
+        aoa_flow_deg = math.degrees(math.atan2(V_n, vx) - downwash_rad) + float(self.geometry.aoa_offset)
+        aoa_deg = ((aoa_flow_deg + self.flap_effectiveness * eff_delta + 180.0) % 360.0) - 180.0
+        is_flap = self.flap_effectiveness < 0.99
+
+        q = 0.5 * self.rho * speed * speed
+        A = chord * span_use
+
+        if with_deriv:
+            CL_2d, CD_2d_base, dcl2d_da, dcd2d_da = self._polar_2d_and_slopes(aoa_deg)
+        else:
+            if self.tables.aoa_min <= aoa_deg <= self.tables.aoa_max:
+                CL_2d, CD_2d_base, _, _ = self.tables.cl_cd_slopes(aoa_deg)
+            else:
+                CL_2d, CD_2d_base = self._polar_2d(aoa_deg)
+            dcl2d_da = dcd2d_da = 0.0
+        CD_2d = CD_2d_base + cd_flap_sep
+        ls = self._lift_slope_factor(ar)
+
+        wet = 1.0
+        fs = 1.0
+        if submergence_over_chord is not None:
+            hc = float(submergence_over_chord)
+            if hc <= 0.0:
+                return {"tau": np.zeros(6), "dtau_ddelta": np.zeros(6), "CL": 0.0, "CD": 0.0,
+                        "speed": speed, "aoa_flow_deg": aoa_flow_deg, "aoa_eff_deg": aoa_deg,
+                        "submergence_hc": hc, "sigma": 99.0,
+                        "cp_min": cp_min_estimate(aoa_deg, delta, is_flap=is_flap), "cav_factor": 1.0}
+            if hc < 0.25:
+                t_w = hc * 4.0
+                wet = t_w * t_w * (3.0 - 2.0 * t_w)
+            fs = 1.0 if hc > 10.0 else (1.0 - math.exp(-hc / 1.58))
+
+        depth_m = max(float(submergence_over_chord), 0.0) * chord if submergence_over_chord is not None else 1.0
+        sigma = cavitation_number(speed, depth_m, rho=self.rho)
+        daoa_dd = self.flap_effectiveness * deff_ddelta
+        if with_deriv:
+            cp_peak, dcp_dd = cp_min_and_slope(aoa_deg, delta, is_flap=is_flap, daoa_ddelta=daoa_dd)
+        else:
+            cp_peak = cp_min_estimate(aoa_deg, delta, is_flap=is_flap)
+            dcp_dd = 0.0
+
+        cav_fac = 1.0
+        cd_cav = 0.0
+        dcav_dd = 0.0
+        dcd_cav_dd = 0.0
+        if self.cavitation_model and cp_peak > sigma:
+            cav_exc = cp_peak - sigma
+            den = cav_exc * cav_exc + 2.5
+            cav_fac = 1.0 - 0.50 * (cav_exc * cav_exc) / den
+            cd_cav = 0.025 * (cav_exc * cav_exc) / (cav_exc + 0.5)
+            if with_deriv:
+                dcav_dd = (-2.50 * cav_exc / (den * den)) * dcp_dd
+                dcd_cav_dd = (0.025 * cav_exc * (cav_exc + 1.0) / ((cav_exc + 0.5) ** 2)) * dcp_dd
+
+        vent = min(1.0, max(0.0, float(ventilation)))
+        vent_fac = 1.0 - 0.55 * vent
+        lift_gain = ls * fs * vent_fac
+        cl_pre_cav = CL_2d * lift_gain
+        CL = cl_pre_cav * cav_fac
+
+        k_ind = max(math.pi * ar * self.oswald_efficiency, 1e-6)
+        CD_induced = CL * CL / k_ind
+        CD = (CD_2d + (0.08 * vent if vent > 0.0 else 0.0) + cd_cav) * wet + CD_induced
+
+        L_mag = q * CL * A
+        D_mag = q * CD * A
+
+        dot = lx * hx + ly * hy + lz * hz
+        ldx, ldy, ldz = lx - dot * hx, ly - dot * hy, lz - dot * hz
+        ln = math.sqrt(ldx * ldx + ldy * ldy + ldz * ldz)
+        if ln > 1e-9:
+            inv_l = 1.0 / ln
+            ldx *= inv_l
+            ldy *= inv_l
+            ldz *= inv_l
+
+        fx = L_mag * ldx - D_mag * hx
+        fy = L_mag * ldy - D_mag * hy
+        fz = L_mag * ldz - D_mag * hz
+        cm_fac = wet * vent_fac * cav_fac
+        tau = np.array([
+            fx, fy, fz,
+            ry * fz - rz * fy,
+            rz * fx - rx * fz + (q * A * chord * self.flap_cm_delta * math.radians(delta) * cm_fac if self.flap_cm_delta else 0.0),
+            rx * fy - ry * fx,
+        ], dtype=float)
+
+        if with_deriv:
+            dCL_dd = dcl2d_da * daoa_dd * lift_gain * cav_fac + cl_pre_cav * dcav_dd
+            dCD_dd = (dcd2d_da * daoa_dd + dcd_sep_ddelta + dcd_cav_dd) * wet + (2.0 * CL * dCL_dd) / k_ind
+            qA = q * A
+            dfx = qA * (dCL_dd * ldx - dCD_dd * hx)
+            dfy = qA * (dCL_dd * ldy - dCD_dd * hy)
+            dfz = qA * (dCL_dd * ldz - dCD_dd * hz)
+            dtau_ddelta = np.array([
+                dfx, dfy, dfz,
+                ry * dfz - rz * dfy,
+                rz * dfx - rx * dfz + (qA * chord * self.flap_cm_delta * ((math.pi / 180.0) * cm_fac + math.radians(delta) * wet * vent_fac * dcav_dd) if self.flap_cm_delta else 0.0),
+                rx * dfy - ry * dfx,
+            ], dtype=float)
+        else:
+            dtau_ddelta = None
+
+        return {
+            "tau": tau,
+            "dtau_ddelta": dtau_ddelta if dtau_ddelta is not None else np.zeros(6),
+            "CL": float(CL),
+            "CD": float(CD),
+            "speed": speed,
+            "aoa_flow_deg": aoa_flow_deg,
+            "aoa_eff_deg": aoa_deg,
+            "submergence_hc": 10.0 if submergence_over_chord is None else float(submergence_over_chord),
+            "sigma": sigma,
+            "cp_min": cp_peak,
+            "cav_factor": float(cav_fac),
+        }
+
+    def local_derivatives(
+        self,
+        nu: np.ndarray,
+        delta: float = 0.0,
+        submergence_over_chord: float | None = None,
+        span: float | None = None,
+        r_attach: np.ndarray | None = None,
+        downwash_rad: float = 0.0,
+        ventilation: float = 0.0,
+    ) -> dict:
+        """Compute local 6-DOF force/moment, analytical delta derivative, flow, and cavitation state."""
+        return self._eval_force_and_deriv(
+            nu, delta=delta, submergence_over_chord=submergence_over_chord,
+            span=span, r_attach=r_attach, downwash_rad=downwash_rad,
+            ventilation=ventilation, with_deriv=True,
+        )
+
     def generalized_force(
         self,
         nu: np.ndarray,
@@ -266,136 +567,11 @@ class Foil:
         downwash_rad: float = 0.0,
         ventilation: float = 0.0,
     ) -> np.ndarray:
-        """
-        Compute 6-DOF generalized force contribution of this foil.
-
-        Parameters
-        ----------
-        nu    : (6,) body-frame velocity [u, v, w, p, q, r] [m/s, rad/s]
-        delta : flap/servo deflection angle commanded, BEFORE flap
-                effectiveness is applied [deg]
-        submergence_over_chord : this foil's depth below the free surface
-                divided by its chord (h/c). None (default) skips the
-                free-surface correction entirely (factor == 1.0) — callers
-                that don't track submergence (e.g. sim.py) get unchanged
-                behavior.
-
-        downwash_rad : downwash angle at this foil from an upstream wing [rad]; reduces the AoA.
-
-        span, r_attach : optional per-call overrides of the geometric span and the
-                aerodynamic-centre position (used for struts whose wetted length
-                changes with depth). Defaults: the constructor values.
-
-        Returns
-        -------
-        tau : (6,) [X, Y, Z, K, M, N] in body frame [N, N, N, Nm, Nm, Nm]
-        """
-        span = self.geometry.span if span is None else span
-        r_attach = self.r_attach if r_attach is None else np.asarray(r_attach, dtype=float)
-        if span <= 1e-3 or self.geometry.chord <= 1e-4:
-            self.last_CL = 0.0
-            return np.zeros(6)
-        ar = span / self.geometry.chord
-        V_body = nu[:3]   # translational velocity at body origin
-        omega = nu[3:]    # angular velocity
-
-        # velocity at foil attachment point (body frame)
-        V_foil = V_body + _cross(omega, r_attach)
-        # Only the chordwise (x) and normal (z) velocity components load a
-        # horizontal foil. Spanwise (y) flow produces neither lift nor dynamic
-        # pressure on it, so it is excluded (previously |V| included it, which
-        # over-predicted force in side-slip).
-        V_n = float(V_foil @ self.normal)
-        V_plane = np.array([V_foil[0], 0.0, 0.0]) + V_n * self.normal
-        speed = np.linalg.norm(V_plane)
-
-        if speed < 0.01:
-            self.last_CL = 0.0
-            return np.zeros(6)
-
-        # flow direction (opposing velocity = drag direction), in the x-z plane
-        V_hat = V_plane / speed
-
-        # AoA = arctan(w / u) in NED body frame.
-        # Plain flaps begin trailing-edge separation above flap_stall_deg (~15 deg): roll off
-        # incremental lift effectiveness smoothly and add separation drag while leaving normal
-        # trim deflections completely linear.
-        eff_delta = delta
-        cd_flap_sep = 0.0
-        if self.flap_stall_deg is not None and abs(delta) > self.flap_stall_deg:
-            d0 = self.flap_stall_deg
-            exc = abs(delta) - d0
-            eff_delta = (d0 + exc - 0.55 * (exc * exc) / (exc + 4.0)) * (1.0 if delta >= 0.0 else -1.0)
-            cd_flap_sep = 0.00025 * exc * exc
-
-        aoa_rad = np.arctan2(V_n, V_foil[0])
-        aoa_deg = np.degrees(aoa_rad) + self.geometry.aoa_offset + self.flap_effectiveness * eff_delta - np.degrees(downwash_rad)
-        aoa_deg = ((aoa_deg + 180.0) % 360.0) - 180.0
-
-        q = 0.5 * self.rho * speed**2
-        A = self.geometry.chord * span
-
-        # 1. 2D section polar (XFLR5) within table bounds; smooth flat-plate post-stall beyond
-        # so high-AoA and reverse flow (V_foil[0] < 0) go continuously to CL = 0 at +-180 deg.
-        if self.tables.aoa_min <= aoa_deg <= self.tables.aoa_max:
-            CL_2d = self.tables.cl(aoa_deg)
-            CD_2d = self.tables.cd(aoa_deg)
-        else:
-            edge = self.tables.aoa_max if aoa_deg > 0.0 else self.tables.aoa_min
-            cl_edge = self.tables.cl(edge)
-            cd_edge = self.tables.cd(edge)
-            excess = abs(aoa_deg - edge)
-            blend = min(1.0, excess / 7.0)
-            blend = blend * blend * (3.0 - 2.0 * blend)
-            a_rad = np.radians(aoa_deg)
-            cl_post = 1.15 * abs(np.sin(2.0 * a_rad)) * (1.0 if a_rad >= 0.0 else -1.0)
-            cd_post = 2.0 * np.sin(a_rad) ** 2 + 0.02
-            CL_2d = (1.0 - blend) * cl_edge + blend * cl_post
-            CD_2d = (1.0 - blend) * cd_edge + blend * cd_post
-        CD_2d += cd_flap_sep
-
-        # 2. Finite-span correction (see __init__): strip theory here uses ONE
-        # strip per foil, so the 2D section CL overestimates real 3D lift.
-        CL = CL_2d * self._lift_slope_factor(ar)
-
-        # 3. Free-surface lift loss, emergence wetting, and breach ventilation hysteresis.
-        wet = 1.0
-        if submergence_over_chord is not None:
-            if submergence_over_chord <= 0.0:
-                self.last_CL = 0.0
-                return np.zeros(6)
-            if submergence_over_chord < 0.25:
-                t_w = submergence_over_chord / 0.25
-                wet = t_w * t_w * (3.0 - 2.0 * t_w)
-            CL *= free_surface_lift_factor(submergence_over_chord)
-        vent = min(1.0, max(0.0, float(ventilation)))
-        if vent > 0.0:
-            CL *= (1.0 - 0.55 * vent)
-
-        self.last_CL = float(CL)
-
-        # 4. Induced drag from the corrected (3D, free-surface-adjusted) CL,
-        # added on top of wetted 2D profile drag + any ventilated cavity drag.
-        CD_induced = CL**2 / max(np.pi * ar * self.oswald_efficiency, 1e-6)
-        CD = (CD_2d + (0.08 * vent if vent > 0.0 else 0.0)) * wet + CD_induced
-
-        L_mag = q * CL * A
-        D_mag = q * CD * A
-
-        # lift perpendicular to flow in the lift plane
-        # V_hat x (a x V_hat) = a - (a.V_hat) V_hat for unit V_hat: the part of the lift axis
-        # perpendicular to the flow.
-        lift_dir = self.lift_axis - (self.lift_axis @ V_hat) * V_hat
-        ln = np.linalg.norm(lift_dir)
-        if ln > 1e-9:
-            lift_dir = lift_dir / ln
-
-        force = L_mag * lift_dir - D_mag * V_hat   # [N] in body frame
-        moment = _cross(r_attach, force)     # [Nm] about body origin
-
-        tau = np.zeros(6)
-        tau[:3] = force
-        tau[3:] = moment
-        if self.flap_cm_delta:
-            tau[4] += q * A * self.geometry.chord * self.flap_cm_delta * np.radians(delta) * wet * (1.0 - 0.55 * vent)
-        return tau
+        """Compute 6-DOF generalized force [X, Y, Z, K, M, N] in the vehicle body frame."""
+        res = self._eval_force_and_deriv(
+            nu, delta=delta, submergence_over_chord=submergence_over_chord,
+            span=span, r_attach=r_attach, downwash_rad=downwash_rad,
+            ventilation=ventilation, with_deriv=False,
+        )
+        self.last_CL = float(res["CL"])
+        return res["tau"]

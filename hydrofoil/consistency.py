@@ -167,8 +167,16 @@ def check(params: dict) -> list[dict]:
         rows.append(_row("elevator pivot ahead of its aerodynamic centre (weathervane-stable)", p["elev_pivot_frac"],
                          round(x_ac, 3), p["elev_pivot_frac"] < x_ac))
 
-    # 6. commands vs stops
-    rows.append(_row("flap command limit (20 deg) <= flap stop", 20.0, p["flap_stop_deg"], 20.0 <= p["flap_stop_deg"]))
+    # 6. commands, allocator, and split-flap parameters vs stops
+    cmd_max = float(p.get("flap_cmd_max_deg", 20.0))
+    rows.append(_row("flap command limit <= flap stop", cmd_max, p["flap_stop_deg"], cmd_max <= p["flap_stop_deg"]))
+    from hydrofoil.control.allocator import SAFETY_PRESETS
+    sm = str(p.get("safety_margin", "standard")).lower()
+    rows.append(_row("safety_margin preset valid", sm, tuple(SAFETY_PRESETS), sm in SAFETY_PRESETS))
+    al = str(p.get("allocator", "jacobian")).lower()
+    rows.append(_row("allocator mode valid", al, ("jacobian", "legacy"), al in ("jacobian", "legacy")))
+    k_cc = float(p.get("split_flap_cross_coupling", 0.08))
+    rows.append(_row("split_flap_cross_coupling in [0, 0.35]", k_cc, "0..0.35", 0.0 <= k_cc <= 0.35))
     if p.get("cmd_slew_deg_s"):
         v_rate = np.degrees(c.k_mod * c.v_bus / kt / N)
         rows.append(_row("command slew <= drive no-load rate", p["cmd_slew_deg_s"], round(v_rate, 0),

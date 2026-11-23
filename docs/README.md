@@ -7,6 +7,7 @@ Docs 01–12 were written by reading; doc 13 and the updates it triggered were p
 
 | Doc | What's in it |
 |-----|--------------|
+| [00-master-system-architecture.md](00-master-system-architecture.md) | **Master System Architecture:** Mermaid & ASCII closed-loop block diagrams, module map, coordinate frames/sign conventions, singularity hardening, and telemetry contract |
 | [01-overview-and-status.md](01-overview-and-status.md) | What the project is, what exists, progress, what's stub/missing |
 | [02-code-reference.md](02-code-reference.md) | Every file and class/function, one by one |
 | [03-math-and-physics.md](03-math-and-physics.md) | Equations of motion, foil model, hull, waves, integration |
@@ -29,6 +30,8 @@ Docs 01–12 were written by reading; doc 13 and the updates it triggered were p
 | [21-per-phase-controller-trials.md](21-per-phase-controller-trials.md) | 108-run sweep of controller choice per supervisor phase (`DISPLACEMENT`, `TAKEOFF`, `FOILING`, `LANDING`) across calm, head, and following seas |
 | [22-assumptions-and-provenance.md](22-assumptions-and-provenance.md) | **Master ledger of all assumed, placeholder, derived, tuned, and physical values** across every module, with origin, risk, and hardware replacement plan |
 | [23-code-audit-and-3d-turning.md](23-code-audit-and-3d-turning.md) | **Three-tier adversarial code/logic audit and 3D split-front-flap turning analysis**: module/subgroup/project break tests, sideways forces, adverse yaw, spiral overbanking, safe bank envelope, and coordinated-turn LQR/supervisor design |
+| [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md) | **Dual Front Flaps, Jacobian QP Control Allocation & Top-Down Turn Envelope**: $4\times 3$ Jacobian + exact 3-var QP, 3-layer Physics × Control-Stability bounds, stability-gated reverse drive, top-down turn safety envelope, audit fixes, and verification |
+| [25-wave-direction-and-irregular-sea-impact.md](25-wave-direction-and-irregular-sea-impact.md) | **Wave Direction & Irregular JONSWAP Sea Impact**: encounter-frequency physics ($\omega_e(\mu)$), directional load mechanisms, quantitative `0°–180°` regular vs. directional JONSWAP sweep results, and control/supervisor guidance |
 | [14-error-register-and-fixes.md](14-error-register-and-fixes.md) | **Every error expanded: cause, evidence, fix, test; retuned gains; unit/conversion map; still-open items** |
 
 Conventions used across the code (and these docs): Fossen (2011) notation,

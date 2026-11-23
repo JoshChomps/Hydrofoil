@@ -1,5 +1,7 @@
 # 07 — Interfaces
 
+> **Current Viewer & Web UI Interfaces:** The active application serves `hydrofoil/assets/launcher/page.html` via `hydrofoil/sim_server.py` (launcher, Boat Editor, Phase-Aware Autotuner, and live telemetry cards) backed by the MuJoCo 3D viewer's HTTP `ControlAPI` in `hydrofoil/viewer.py` (`/state` and `/sliders` GET, `/set` POST accepting `safety_margin`, `allocator`, `reverse_drive`, `yaw_rate_cmd`, `controller_mode`, `unit`, slider setpoints, and `action` commands). CLI flags include `--preset`, `--controller`, `--sensors`, `--supervisor`, `--allocator`, `--safety-margin`, `--wave-type`, `--waves`, and `--speed`. Removed 2026-11-05 Unity UDP/FastAPI specs remain archived below.
+
 ## 1. (Removed) UDP bridge to Unity
 
 > Removed on branch `mujoco-viewer`: `stream.py`, `control_uplink.py`, `sim_realtime.py`. The formats below are kept for history (git commit `841d501`).

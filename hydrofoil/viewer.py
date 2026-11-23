@@ -62,7 +62,7 @@ import mujoco.viewer
 from hydrofoil.params import DEFAULT_PARAMS, MANNED_PARAMS
 from hydrofoil.vehicle import VehiclePhysics
 from hydrofoil.dynamics.kinematics import R_body_to_ned
-from hydrofoil.waves.airy import AiryWave, CalmWater
+from hydrofoil.waves.airy import AiryWave, CalmWater, IrregularWave
 from hydrofoil.actuation.drive import DriveSpec, electrical_demand
 from hydrofoil.actuation.loads import DRIVES, surface_models, drive_angles, steady_moments
 
@@ -300,6 +300,11 @@ class Pilot:
         self.bank_spring = False   # True after a key bank input; a slider-set bank holds
         self.key_bank_value = None
         self.gain_updates: dict = {}
+        self.safety_margin_req: str | None = None
+        self.allocator_req: str | None = None
+        self.reverse_drive_req: bool | None = None
+        self.yaw_rate_cmd: float | None = None
+        self.wave_type_req: str | None = None
 
     @property
     def kmh(self) -> bool:
@@ -720,12 +725,26 @@ class ControlAPI:
                     if "controller_mode" in body:
                         pilot.next_ctrl_mode = str(body.pop("controller_mode")).lower()
                         pilot.toggle_ctrl = True
+                    if "safety_margin" in body:
+                        pilot.safety_margin_req = str(body.pop("safety_margin")).lower()
+                    if "allocator" in body:
+                        pilot.allocator_req = str(body.pop("allocator")).lower()
+                    if "reverse_drive" in body:
+                        pilot.reverse_drive_req = bool(body.pop("reverse_drive"))
+                    if "yaw_rate_cmd" in body:
+                        v = body.pop("yaw_rate_cmd")
+                        pilot.yaw_rate_cmd = None if (v is None or abs(float(v)) < 1e-6) else float(v)
+                    if "wave_type" in body:
+                        wt = str(body.pop("wave_type")).lower()
+                        if wt in ("regular", "irregular"):
+                            pilot.wave_type_req = wt
                     for name, val in body.items():
                         if name in IDX:
                             _n, _k, lo, hi = SLIDERS[IDX[name]]
                             ctrl[IDX[name]] = float(np.clip(float(val), lo, hi))
                             if name == "bank_ref":
                                 pilot.bank_spring = False          # a set bank holds
+                                pilot.yaw_rate_cmd = None          # manual bank clears yaw-rate hold
                         elif name == "ki_pitch":
                             pilot.gain_updates["ki_pitch"] = float(val)
                 self._json({"ok": True})
@@ -748,6 +767,12 @@ class ControlAPI:
 def _wave_from(p: dict):
     if p["wave_amplitude"] <= 1e-4:
         return CalmWater()
+    if str(p.get("wave_type", "regular")).lower() == "irregular":
+        return IrregularWave(
+            significant_height=2.0 * float(p["wave_amplitude"]),
+            peak_wavelength=float(p["wave_wavelength"]),
+            direction=float(np.radians(p["wave_direction"])),
+        )
     return AiryWave(amplitude=p["wave_amplitude"], wavelength=p["wave_wavelength"],
                     direction=np.radians(p["wave_direction"]))
 
@@ -805,7 +830,8 @@ def _ensure_dashboard(api_port: int = 8766, port: int = 8765, open_browser: bool
 
 def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.0,
         controller: str | None = None, sensors: str | None = None, preset: str = "model", api_port: int = 8766, maximize: bool = True,
-        overrides: dict | None = None, supervisor: bool = False):
+        overrides: dict | None = None, supervisor: bool = False,
+        safety_margin: str | None = None, allocator: str | None = None, wave_type: str | None = None):
     from hydrofoil.design import apply_design
     from hydrofoil.monitor import FlightMonitor
     params = apply_design(dict(MANNED_PARAMS if preset == "manned" else DEFAULT_PARAMS), overrides or {})
@@ -816,6 +842,12 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
         params["sensors"] = sensors
     if supervisor:
         params["supervisor"] = True
+    if safety_margin:
+        params["safety_margin"] = str(safety_margin).lower()
+    if allocator:
+        params["allocator"] = str(allocator).lower()
+    if wave_type:
+        params["wave_type"] = str(wave_type).lower()
     if wave_cfg:
         params.update(wave_cfg)
     else:
@@ -838,7 +870,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
     plots = Plots(ranges=[(min(-0.1, fh - 0.6), fh + 0.4), (-6.0, 6.0), (-25.0, 25.0), (-40.0, 40.0)])
 
     wave = _wave_from(params)
-    wave_key = (params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
+    wave_key = (params.get("wave_type", "regular"), params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
     state = vp.rest_state()
     t = 0.0
     cmds = {"delta_main": 0.0, "delta_elev": 0.0, "delta_roll": 0.0}
@@ -887,6 +919,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                     vp.supervisor.pilot["height"] = float(ctrl[IDX["height_ref"]])
                     vp.supervisor.pilot["bank"] = float(ctrl[IDX["bank_ref"]])
                     vp.supervisor.pilot["speed"] = float(ctrl[IDX["speed_ref"]])
+                    vp.supervisor.pilot["yaw_rate"] = pilot.yaw_rate_cmd
                     if pilot.toggle_foil:
                         pilot.toggle_foil = False
                         vp.supervisor.pilot["foil"] = not vp.supervisor.pilot["foil"]
@@ -897,7 +930,10 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                         params["flying_height"] = float(ctrl[IDX["height_ref"]])
             last_wall = now
             _apply_gains(vp, params)
-            wk = (params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
+            if pilot.wave_type_req is not None:
+                params["wave_type"] = pilot.wave_type_req
+                pilot.wave_type_req = None
+            wk = (params.get("wave_type", "regular"), params["wave_amplitude"], params["wave_wavelength"], params["wave_direction"])
             if wk != wave_key:
                 wave, wave_key = _wave_from(params), wk
 
@@ -912,8 +948,21 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                 pilot.next_ctrl_mode = None
                 vp.set_controller_mode(target_mode)
                 params["controller"] = vp.params["controller"]
+            if pilot.safety_margin_req is not None:
+                params["safety_margin"] = vp.set_safety_margin(pilot.safety_margin_req)
+                pilot.safety_margin_req = None
+            if pilot.allocator_req is not None:
+                try:
+                    params["allocator"] = vp.set_allocator_mode(pilot.allocator_req)
+                except ValueError:
+                    pass
+                pilot.allocator_req = None
+            if pilot.reverse_drive_req is not None:
+                params["reverse_drive_enabled"] = bool(pilot.reverse_drive_req)
+                pilot.reverse_drive_req = None
             if pilot.reset_flag:
                 pilot.reset_flag = False
+                pilot.yaw_rate_cmd = None
                 vp.reset(); drives.reset(); plots.clear(); monitor.reset()
                 state, t = vp.rest_state(), 0.0
                 wall0 = now
@@ -931,7 +980,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                     dm = drives.update(vp, state, cmds, env, dt, params["gear_ratio"], params["v_bus"])
                 ang = drive_angles(cmds)
                 plots.push(t, {
-                    "height": -state[2] + params["hull_offset"], "target": params["flying_height"],
+                    "height": -state[2] + vp.hull_offset, "target": params["flying_height"],
                     "roll": np.degrees(state[3]), "pitch": np.degrees(state[4]),
                     "left": ang["left"], "right": ang["right"], "elev": ang["elev"],
                     "I_left": dm["left"]["I"], "I_right": dm["right"]["I"], "I_elev": dm["elev"]["I"],
@@ -958,7 +1007,7 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
                                  + (" (GNSS vz)" if sup_stat["using_gnss"] else ""))
                 elif sup_stat["warnings"] and hud_alert is None:
                     hud_alert = ("caution", "SUP WARN: " + ", ".join(sup_stat["warnings"]))
-            height = -state[2] + params["hull_offset"]
+            height = -state[2] + vp.hull_offset
             limits = drives.flags()
             ctrl_str = _ctrl_label(vp, float(state[6]))
             if pilot.focus:
@@ -1001,23 +1050,41 @@ def run(speed: float = 1.0, wave_cfg: dict | None = None, duration: float = 600.
             v.set_texts([])
             v.set_figures(plots.figures(v.viewport))
             v.sync()
+            te = dict(getattr(vp, "_last_turn_envelope", None) or {})
             api.telemetry = {
                 "t": t, "mode": mode, "preset": preset, "mass": params["mass"], "x": float(state[0]),
                 "supervisor": sup_stat,
                 "geom": {k: params[k] for k in ("hull_length", "hull_x", "hull_offset", "main_pos_x", "main_pos_z",
-                                                "main_chord", "elev_pos_x", "elev_pos_z", "elev_chord")},
-                "wave": {"amp": params["wave_amplitude"], "len": params["wave_wavelength"], "dir": params["wave_direction"]},
+                                                "main_chord", "elev_pos_x", "elev_pos_z", "elev_chord")}
+                        | {"hull_offset": float(vp.hull_offset), "main_pos_z": float(vp.left_foil.r_attach[2])},
+                "wave": {"type": str(params.get("wave_type", "regular")), "amp": params["wave_amplitude"], "len": params["wave_wavelength"], "dir": params["wave_direction"]},
                 "speed": float(state[6]), "speed_ref": params["target_speed"], "unit": su,
                 "height": float(height), "height_ref": params["flying_height"],
                 "roll": float(np.degrees(state[3])), "pitch": float(np.degrees(state[4])), "bank_ref": params["phi_ref"],
                 "yaw": float(np.degrees(state[5])), "yaw_rate": float(np.degrees(state[11])),
+                "yaw_rate_cmd": pilot.yaw_rate_cmd,
                 "sideslip": float(np.degrees(np.arctan2(state[7], max(float(state[6]), 0.1)))),
-                "bank_max": float(sup_stat["bank_max"]) if sup_stat is not None else BANK_MAX,
+                "bank_max": float(sup_stat["bank_max"]) if sup_stat is not None else float(te.get("bank_max_deg", BANK_MAX)),
                 "thrust": float(thrust), "draft": float(draft), "controller": ctrl_str,
                 "controller_detail": vp.controller_status(float(state[6])),
                 "sensors": "noisy" if vp.sensors is not None else "ideal", "limits": limits,
                 "surfaces": {k: float(a) for k, a in drive_angles(cmds).items()},
-                "drives": {d: {k: float(dm[d].get(k, 0.0)) for k in ("M", "I", "P")} for d in DRIVES},
+                "stops": {"left": float(params["flap_stop_deg"]), "right": float(params["flap_stop_deg"]),
+                          "elev": float(params["elev_stop_deg"])},
+                "drives": {
+                    d: {k: float(dm[d].get(k, 0.0)) for k in ("M", "I", "P")}
+                       | {"limited": bool(dm[d].get("limited", False)),
+                          "cap": float(vp.drives[d].cap) if d in vp.drives else 0.0}
+                    for d in DRIVES
+                },
+                "alloc": dict(getattr(vp, "_last_alloc_status", None) or {}),
+                "turn_envelope": te,
+                "ventilation": {k: float(v) for k, v in vp._vent.items()},
+                "cavitation_sigma": float(getattr(vp, "_last_sigma", 99.0)),
+                "height_status": dict(getattr(vp, "height_status", None) or {}),
+                "safety_margin": str(params.get("safety_margin", "standard")),
+                "allocator_mode": str(params.get("allocator", "jacobian")),
+                "reverse_drive_enabled": bool(params.get("reverse_drive_enabled", True)),
                 "sliders": {n: float(ctrl[i]) for i, (n, *_r) in enumerate(SLIDERS)},
                 "alerts": alerts, "alert_log": monitor.log[-40:],
                 "design": {k: params[k] for k in ("main_chord", "main_span", "main_incidence_deg", "elev_chord", "elev_span",
@@ -1034,7 +1101,8 @@ def main():
     ap = argparse.ArgumentParser(description="Hydrofoil simulator (native MuJoCo window)")
     ap.add_argument("--speed", type=float, default=1.0, help="sim speed multiplier")
     ap.add_argument("--duration", type=float, default=600.0, help="run length [sim s]")
-    ap.add_argument("--waves", action="store_true", help="start with an Airy wave (amp/len/dir also on sliders)")
+    ap.add_argument("--waves", action="store_true", help="start with waves enabled (amp/len/dir also on sliders)")
+    ap.add_argument("--wave-type", choices=("regular", "irregular"), help="wave spectrum model (default: params)")
     ap.add_argument("--wave-dir", type=float, default=0.0, help="wave travel direction [deg from +x]; try 90 for beam seas")
     ap.add_argument("--controller", choices=("auto", "lqr", "pid"), help="flight controller (default: params)")
     ap.add_argument("--sensors", choices=("ideal", "noisy"), help="ideal truth, or noisy sensors + Kalman")
@@ -1045,11 +1113,16 @@ def main():
                     help="model = 25 kg DEFAULT_PARAMS, manned = 250-300 kg MANNED_PARAMS (docs/19)")
     ap.add_argument("--supervisor", action="store_true",
                     help="enable flight-mode supervisor (takeoff/landing envelope & fault protection; press F to foil/land)")
+    ap.add_argument("--safety-margin", choices=("conservative", "standard", "sport"),
+                    help="Physics x Control safety envelope preset (default: standard)")
+    ap.add_argument("--allocator", choices=("jacobian", "legacy"),
+                    help="control surface allocator (default: jacobian)")
     a = ap.parse_args()
     wave_cfg = (dict(wave_amplitude=0.15, wave_wavelength=10.0, wave_direction=a.wave_dir) if a.preset == "manned"
                 else dict(wave_amplitude=0.05, wave_wavelength=5.0, wave_direction=a.wave_dir)) if a.waves else None
     run(speed=a.speed, wave_cfg=wave_cfg, duration=a.duration, controller=a.controller, sensors=a.sensors,
         preset=a.preset, api_port=a.api_port, maximize=not a.windowed, supervisor=a.supervisor,
+        safety_margin=a.safety_margin, allocator=a.allocator, wave_type=a.wave_type,
         overrides=json.loads(Path(a.overrides).read_text()) if a.overrides and Path(a.overrides).exists() else None)
 
 

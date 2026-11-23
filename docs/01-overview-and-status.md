@@ -1,5 +1,7 @@
 # 01 — Overview and Status
 
+> **Current Status Summary (Updated 2026-11):** This project has evolved far beyond the initial 2026-11-04 3-PID snapshot below. It now implements delayed/noisy `SensorSuite`, speed-scheduled `KalmanEstimator` + wave-decoupled `HeaveFilter`, delay-augmented MIMO `LQRController` with smooth `auto` PID↔LQR handover, closed-loop `ServoDrive` actuation with hinge moments, compliance, and twist, Boat Editor (`design.py`) + Phase-Aware Autotuner (`tuning/`), `Supervisor` FDI, independent dual front flaps with a `< 0.4 ms` 3-layer Jacobian QP `ControlAllocator`, top-down turn safety envelope, 3D vertical `cg_z` / `prop_pos_z`, active $C^1$ cavitation, and directional/irregular JONSWAP waves. See [00-master-system-architecture.md](00-master-system-architecture.md), [22-assumptions-and-provenance.md](22-assumptions-and-provenance.md), [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md), and [25-wave-direction-and-irregular-sea-impact.md](25-wave-direction-and-irregular-sea-impact.md) for current specifications.
+
 ## What this is
 
 A Python 6-DOF physics simulation (Fossen notation) of a **fully submerged

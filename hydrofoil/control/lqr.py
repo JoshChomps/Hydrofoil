@@ -132,7 +132,10 @@ def steady_turn_sensitivity(As: np.ndarray, Bs: np.ndarray) -> tuple[np.ndarray,
     try:
         sol = np.linalg.solve(M_eq, -As[:, 1])
     except np.linalg.LinAlgError:
-        sol = np.zeros(8)
+        try:
+            sol = np.linalg.lstsq(M_eq, -As[:, 1], rcond=None)[0]
+        except np.linalg.LinAlgError:
+            sol = np.zeros(8)
     turn_nu = sol[:5].copy()
     turn_u = sol[5:8].copy()
     A_lon = As[np.ix_([4, 6], [4, 6])].copy()
@@ -140,7 +143,10 @@ def steady_turn_sensitivity(As: np.ndarray, Bs: np.ndarray) -> tuple[np.ndarray,
     try:
         B_lon_inv = np.linalg.inv(B_lon)
     except np.linalg.LinAlgError:
-        B_lon_inv = np.zeros((2, 2))
+        try:
+            B_lon_inv = np.linalg.pinv(B_lon, rcond=1e-6)
+        except np.linalg.LinAlgError:
+            B_lon_inv = np.zeros((2, 2))
     return turn_nu, turn_u, A_lon, B_lon_inv
 
 
@@ -218,6 +224,7 @@ _NON_PLANT_KEYS = frozenset({
     "kp_pitch", "ki_pitch", "kd_pitch", "kp_roll", "ki_roll", "kd_roll",
     "kp_speed", "ki_speed", "kd_speed", "t_end", "tuned_for", "phase_controllers",
     "default_payloads", "lqr_speeds", "lqr_engage_speed", "lqr_delay_s",
+    "allocator", "safety_margin", "reverse_drive_enabled", "flap_cmd_max_deg",
 })
 _PLANT_LIN_CACHE: dict[tuple, list] = {}
 
@@ -309,6 +316,10 @@ class LQRController:
         self.integ = np.zeros(3)
         self.last = np.zeros(3)
         self.hist = np.zeros((self.delay_steps, 3))              # commands already sent, newest first [deg]
+        self._last_err = np.zeros(3)
+        self._last_Ki = None
+        self._last_cmd_nom = np.zeros(3)
+        self._last_integ_step = np.zeros(3)
 
     def status_dict(self, u: float) -> dict:
         """Human-readable controller handover state and reason for telemetry and UI presentation."""
@@ -340,11 +351,26 @@ class LQRController:
                 "blend": 0.0,
                 "reason": "Hull in water or below LQR handover speed — PID handles displacement and takeoff"}
 
-    def sync_sent(self, sent_vec):
-        """Overwrite the most recently recorded command with what was actually sent after shaping/slew limits."""
+    def sync_sent(self, sent_vec, sat_flags=None):
+        """Overwrite the most recently recorded command with what was actually sent after shaping/slew limits,
+        and roll back the outer integral step on channels saturated by the downstream allocator."""
         v = np.asarray(sent_vec, float)
         self.last = v
         self.hist[0] = v
+        if sat_flags is not None and self.engaged and self._last_Ki is not None:
+            Ki = self._last_Ki
+            err = self._last_err
+            cmd_nom = self._last_cmd_nom
+            for ch, j in ((0, 0), (1, 2), (2, 1)):  # cmd/sat [main, elev, roll] <-> err/integ [z, phi, theta]
+                if not sat_flags[ch] or abs(self._last_integ_step[j]) <= 0.0:
+                    continue
+                if abs(cmd_nom[ch] - v[ch]) <= 0.15:
+                    continue
+                sat_hi = (cmd_nom[ch] > v[ch]) and (Ki[ch, j] * err[j] < 0.0)
+                sat_lo = (cmd_nom[ch] < v[ch]) and (Ki[ch, j] * err[j] > 0.0)
+                if sat_hi or sat_lo:
+                    self.integ[j] = float(np.clip(self.integ[j] - self._last_integ_step[j], -self.int_limit[j], self.int_limit[j]))
+            self._last_integ_step[:] = 0.0
 
     def _sched_weights(self, u: float):
         if len(self.speeds) == 1:
@@ -464,14 +490,21 @@ class LQRController:
         cmd = np.array([m_alloc, e_alloc, r_alloc])
         # conditional integration: hold an integrator while its channel is saturated (including physical
         # split-flap diamond saturation on main) and the error pushes deeper
-        for i in range(3):
-            if i == 0 and self.hold_heave:
+        self._last_integ_step[:] = 0.0
+        for ch, j in ((0, 0), (1, 2), (2, 1)):
+            if j == 0 and self.hold_heave:
                 continue
-            clipped = m_clip if i == 0 else (abs(cmd_nom[1]) > self.limit + 1e-12 if i == 1 else r_clip)
-            sat_hi = clipped and (cmd_nom[i] > cmd[i]) and K[i, 8 + i] * err[i] < 0
-            sat_lo = clipped and (cmd_nom[i] < cmd[i]) and K[i, 8 + i] * err[i] > 0
+            clipped = m_clip if ch == 0 else (abs(cmd_nom[1]) > self.limit + 1e-12 if ch == 1 else r_clip)
+            sat_hi = clipped and (cmd_nom[ch] > cmd[ch]) and K[ch, 8 + j] * err[j] < 0
+            sat_lo = clipped and (cmd_nom[ch] < cmd[ch]) and K[ch, 8 + j] * err[j] > 0
             if not (sat_hi or sat_lo):
-                self.integ[i] = np.clip(self.integ[i] + err[i] * self.dt, -self.int_limit[i], self.int_limit[i])
+                prev_i = float(self.integ[j])
+                new_i = float(np.clip(prev_i + err[j] * self.dt, -self.int_limit[j], self.int_limit[j]))
+                self.integ[j] = new_i
+                self._last_integ_step[j] = new_i - prev_i
+        self._last_err = err.copy()
+        self._last_Ki = Ki
+        self._last_cmd_nom = cmd_nom.copy()
         self.last = cmd
         self._push(cmd)
         return {"delta_main": float(cmd[0]), "delta_elev": float(cmd[1]), "delta_roll": float(cmd[2])}

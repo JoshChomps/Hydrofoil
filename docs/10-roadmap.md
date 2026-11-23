@@ -1,4 +1,6 @@
-# 10 — Roadmap and Future Development
+# 10 — Roadmap and Future Development (Historical Archive)
+
+> **Status note:** Phases 0, 1, 2, and 3 (LQR/Kalman, servo/compliance/twist drives, Boat Editor + Phase-Aware Autotuner, Supervisor/FDI, Independent Dual Front Flaps + Jacobian QP Allocator, Top-Down Turn Envelope, 3D CG/cavitation, and Directional/Irregular JONSWAP waves) have been implemented and are documented in [00-master-system-architecture.md](00-master-system-architecture.md), [12-progress-log.md](12-progress-log.md), [22-assumptions-and-provenance.md](22-assumptions-and-provenance.md), and [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md). Items below reflect the early planning checklist plus remaining hardware/CFD swaps.
 
 Source tags: **[stated]** = in upstream README / `PROJECT_STATE.md`; **[suggested]** = my recommendation from reading the code.
 

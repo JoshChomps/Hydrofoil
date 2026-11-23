@@ -28,10 +28,10 @@ def surface_models(p: dict) -> dict[str, HingeMoment]:
 
 
 def drive_angles(cmds: dict) -> dict[str, float]:
-    """Physical surface angles [deg] from the controller's virtual channels."""
-    return {"left": cmds["delta_main"] - cmds["delta_roll"],
-            "right": cmds["delta_main"] + cmds["delta_roll"],
-            "elev": cmds["delta_elev"]}
+    """Physical surface angles [deg] from explicit flap commands or virtual channels."""
+    left = float(cmds["delta_left"]) if "delta_left" in cmds else float(cmds["delta_main"] - cmds["delta_roll"])
+    right = float(cmds["delta_right"]) if "delta_right" in cmds else float(cmds["delta_main"] + cmds["delta_roll"])
+    return {"left": left, "right": right, "elev": float(cmds["delta_elev"])}
 
 
 class _Flow:
@@ -49,18 +49,22 @@ class _Flow:
         return hm.steady(self.V, self.alpha, delta_rad, cl=cl)
 
 
-def flow_models(vp, state, env, hinges) -> dict[str, _Flow]:
+def flow_models(vp, state, env, hinges, r_overrides: dict | None = None) -> dict[str, _Flow]:
     """Per drive: the flow seen by its surface (relative velocity incl. waves, free-surface and 3-D factors)."""
     eta, nu = state[:6], state[6:]
     foils = {"left": vp.left_foil, "right": vp.right_foil, "elev": vp.elev_foil}
     out = {}
     for name, foil in foils.items():
+        r_use = None if r_overrides is None else r_overrides.get(name)
         nu_rel = nu.copy()
         nu_rel[:3] -= env.foil_vel_body[name]
-        V, alpha = foil.flow(nu_rel)
+        V, alpha = foil.flow(nu_rel, r_attach=r_use)
         if name == "elev":
             alpha -= vp._eps_used                      # the tail flies in the wing's downwash
-        h_c = vp._submergence_over_chord(foil, eta, env.foil_surface_z[name])
+        try:
+            h_c = vp._submergence_over_chord(foil, eta, env.foil_surface_z[name], r_attach=r_use)
+        except TypeError:
+            h_c = vp._submergence_over_chord(foil, eta, env.foil_surface_z[name])
         lf = foil.lift_slope_factor * free_surface_lift_factor(h_c)
         out[name] = _Flow(hinges[name], foil, V, alpha, lf)
     return out

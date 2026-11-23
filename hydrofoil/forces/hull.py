@@ -145,16 +145,18 @@ class HullHydrostatics:
         self.bottom0 = self.bottom.copy()
         self.dA = length * beam / (nx * ny)
         self.waterplane_area = length * beam
-        self.hull_offset = hull_offset
+        self.hull_offset = float(hull_offset)
+        self.hull_offset0 = float(hull_offset)
         self.max_draft = max_draft
         self.rho, self.g = rho, g
         self.n = len(self.xy)
 
-    def set_cg_offset(self, dx: float = 0.0, dy: float = 0.0) -> None:
-        """Shift hull footprint coordinates relative to body origin when CG moves by (dx, dy)."""
-        off = np.array([float(dx), float(dy)])
-        self.xy = self.xy0 - off
-        self.bottom[:, :2] = self.xy
+    def set_cg_offset(self, dx: float = 0.0, dy: float = 0.0, dz: float = 0.0) -> None:
+        """Shift hull footprint coordinates relative to body origin when CG moves by body-NED (dx, dy, dz)."""
+        off = np.array([float(dx), float(dy), float(dz)])
+        self.bottom = self.bottom0 - off
+        self.xy = self.bottom[:, :2]
+        self.hull_offset = self.hull_offset0 + float(dz)
 
     def cell_world_xy(self, eta):
         """NED (x, y, z) of every cell's hull-bottom point (for sampling the wave field)."""

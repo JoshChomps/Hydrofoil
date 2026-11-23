@@ -14,16 +14,17 @@ checks; this module is for anything that needs the full picture.
 from __future__ import annotations
 
 from dataclasses import dataclass, field
+import math
 
 import numpy as np
 
-from hydrofoil.constants import RHO_WATER
+from hydrofoil.constants import G, RHO_WATER
 from hydrofoil.dynamics.rigid_body import (
     RigidBody, strip_added_mass_heave_pitch, strip_added_mass_roll, strip_added_mass_sway_yaw,
 )
 from hydrofoil.dynamics.kinematics import J, R_body_to_ned
 from hydrofoil.forces.foil import (
-    Foil, FoilGeometry, FoilTables, free_surface_lift_factor,
+    Foil, FoilGeometry, FoilTables, free_surface_lift_factor, cavitation_number,
     MAIN_FOIL_FLAP_EFFECTIVENESS, ELEVATOR_FLAP_EFFECTIVENESS, main_flap_effectiveness, MAIN_FOIL_OSWALD_EFFICIENCY,
 )
 from hydrofoil.forces.buoyancy import gravity_force
@@ -35,6 +36,8 @@ from hydrofoil.control.actuator import DEFAULT_ACTUATOR_PARAMS
 from hydrofoil.actuation.drive import DriveSpec
 from hydrofoil.actuation.loads import surface_models, flow_models
 from hydrofoil.actuation.servo import ServoDrive, DEFAULT_SERVO_PARAMS
+from hydrofoil.control.allocator import ControlAllocator, safety_preset_config
+from hydrofoil.control.supervisor import compute_turn_envelope
 
 
 # Safety bounds for VehiclePhysics.step() — this drives a real-time interactive
@@ -123,6 +126,7 @@ class VehiclePhysics:
         )
 
         polar = FoilTables.naca0009()
+        cav_on = bool(p.get("cavitation_model", True))
         self.main_flap_eff = (p.get("main_flap_effectiveness")
                               or (main_flap_effectiveness(p["main_flap_frac"], p["main_flap_span_frac"])
                                   if p.get("main_actuation", "flap") == "flap" else MAIN_FOIL_FLAP_EFFECTIVENESS))
@@ -135,6 +139,7 @@ class VehiclePhysics:
             r_attach=np.array([p["main_pos_x"], -p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=self.main_flap_eff,
             oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm, flap_stall_deg=stall_deg,
+            cavitation_model=cav_on,
         )
         self.right_foil = Foil(
             FoilGeometry(chord=p["main_chord"], span=p["main_span"], aoa_offset=p.get("main_incidence_deg", 0.0)),
@@ -142,25 +147,30 @@ class VehiclePhysics:
             r_attach=np.array([p["main_pos_x"], p["main_lateral_offset"], p["main_pos_z"]]),
             flap_effectiveness=self.main_flap_eff,
             oswald_efficiency=MAIN_FOIL_OSWALD_EFFICIENCY, flap_cm_delta=flap_cm, flap_stall_deg=stall_deg,
+            cavitation_model=cav_on,
         )
         self.elev_foil = Foil(
             FoilGeometry(chord=p["elev_chord"], span=p["elev_span"]),
             polar,
             r_attach=np.array([p["elev_pos_x"], 0.0, p["elev_pos_z"]]),
             flap_effectiveness=ELEVATOR_FLAP_EFFECTIVENESS,
+            cavitation_model=cav_on,
         )
 
         # Vertical struts (hull -> foil), normal axis = body y, so AoA = side-slip and they
         # carry side force; wetted span follows the foil's depth below the surface.
         self.main_strut = Foil(FoilGeometry(chord=p["main_strut_chord"], span=1.0), polar,
                                r_attach=np.array([p["main_pos_x"], 0.0, p["main_pos_z"]]),
-                               normal_axis=np.array([0.0, 1.0, 0.0]))
+                               normal_axis=np.array([0.0, 1.0, 0.0]), cavitation_model=cav_on)
         self.elev_strut = Foil(FoilGeometry(chord=p["elev_strut_chord"], span=1.0), polar,
                                r_attach=np.array([p["elev_pos_x"], 0.0, p["elev_pos_z"]]),
-                               normal_axis=np.array([0.0, 1.0, 0.0]))
+                               normal_axis=np.array([0.0, 1.0, 0.0]), cavitation_model=cav_on)
 
         self._r_nominal = {n: f.r_attach.copy() for n, f in self._foils().items()}
-        self.set_cg_offset(p.get("cg_offset", (0.0, 0.0)))
+        self._hull_offset_nominal = float(p["hull_offset"])
+        self._cg_z = float(p.get("cg_z", 0.0))
+        self._eta_turn_cache = None
+        self.set_cg_offset(p.get("cg_offset", (0.0, 0.0)), cg_z=self._cg_z)
 
         pid_gains = {
             "heave": {"Kp": p["kp_heave"], "Ki": p["ki_heave"], "Kd": p["kd_heave"]},
@@ -210,29 +220,91 @@ class VehiclePhysics:
                 spec.gear.rated_torque = p["gear_rated_torque"]
             self.drives[name] = ServoDrive(self.hinges[name], spec, p["dt"], stop, **sp,
                                            twist_k=self.twist_stiffness(name))
+        # Control allocator (independent front flaps + elevator, Physics x Control-Stability bounds)
+        self.allocator = ControlAllocator(p)
+        self._last_alloc_status: dict = {}
+        self._last_turn_envelope: dict = {}
+        self._last_sigma: float = 99.0
         # Flight-mode supervisor (control/supervisor.py): off unless params["supervisor"] is True or a config dict.
         self.supervisor = None
         if p.get("supervisor"):
             from hydrofoil.control.supervisor import Supervisor
             self.supervisor = Supervisor(self, p["supervisor"] if isinstance(p["supervisor"], dict) else None)
 
-    def set_cg_offset(self, offset):
-        """Move the centre of gravity by (dx forward, dy to starboard) [m] relative to the nominal layout, e.g. a
-        rider shifting their weight. The body frame stays at the CG, so every foil, strut, and hull hydrostatic cell
-        moves by -offset. Can be called mid-flight. Inertias and added-mass terms stay fixed at construction."""
+    @property
+    def hull_offset(self) -> float:
+        """Effective hull-bottom vertical offset relative to the current CG [m] (hull_offset_nom - cg_z)."""
+        return float(self.hull.hull_offset) if getattr(self, "hull", None) is not None else self._hull_offset_nominal - self._cg_z
+
+    def set_cg_offset(self, offset, cg_z: float | None = None):
+        """Move the centre of gravity by (dx forward, dy to starboard [, dz up]) [m] relative to the nominal
+        layout, e.g. a rider shifting or standing. The body frame stays at the CG, so every foil, strut, and hull
+        hydrostatic cell shifts by -offset in body NED coords. Can be called mid-flight."""
         dx, dy = float(offset[0]), float(offset[1])
-        d = np.array([dx, dy, 0.0])
+        dz_up = float(offset[2]) if len(offset) >= 3 else (self._cg_z if cg_z is None else float(cg_z))
+        self._cg_z = dz_up
+        d = np.array([dx, dy, -dz_up])
         for n, f in self._foils().items():
             f.r_attach = self._r_nominal[n] - d
         if getattr(self, "hull", None) is not None:
-            self.hull.set_cg_offset(dx, dy)
+            self.hull.set_cg_offset(dx, dy, -dz_up)
         self.params["cg_offset"] = (dx, dy)
+        self.params["cg_z"] = dz_up
+        self._eta_turn_cache = None
+
+    def turning_efficiency(self, u: float) -> float:
+        """
+        Plant-derived steady-turn yaw efficiency eta_turn = r_turn * u / G from the linearized
+        lateral-directional dynamics (`steady_turn_sensitivity` at trim). Lazily cached per geometry/CG.
+        """
+        p = self.params
+        key = (
+            round(self.hull_offset, 4),
+            round(float(p["mass"]), 3),
+            round(float(p["main_chord"]), 4),
+            round(float(p["main_span"]), 4),
+            round(float(p["main_strut_chord"]), 4),
+            round(float(p["elev_strut_chord"]), 4),
+            round(float(self.left_foil.r_attach[0]), 4),
+            round(float(self.left_foil.r_attach[2]), 4),
+        )
+        if self._eta_turn_cache is None or self._eta_turn_cache[0] != key:
+            etas: list[tuple[float, float]] = []
+            if self.lqr is not None and abs(self.hull_offset - self._hull_offset_nominal) < 1e-4:
+                for spd, tnu in zip(self.lqr.speeds, self.lqr.turn_nu):
+                    etas.append((float(spd), float(np.clip(float(tnu[4]) * float(spd) / G, 0.05, 1.0))))
+            if not etas:
+                from hydrofoil.control.lqr import steady_turn_sensitivity
+                from hydrofoil.linearize import linearize, trim
+                eps_saved = self._eps_used
+                try:
+                    v_tgt = max(float(p.get("target_speed", 4.0)), 2.5)
+                    v_grid = sorted({round(v, 2) for v in (0.65 * v_tgt, 0.85 * v_tgt, v_tgt, 1.2 * v_tgt) if v >= 2.0})
+                    for spd in v_grid:
+                        try:
+                            xt, ut = trim(self, spd, u0=(5.0, 0.0, 0.0, 200.0), max_iter=50)
+                            A, B, _, _ = linearize(self, xt, ut)
+                            idx = [2, 3, 4, 7, 8, 9, 10, 11]
+                            As, Bs = A[np.ix_(idx, idx)], B[np.ix_(idx, [0, 1, 2])]
+                            tnu, _, _, _ = steady_turn_sensitivity(As, Bs)
+                            etas.append((spd, float(np.clip(float(tnu[4]) * spd / G, 0.05, 1.0))))
+                        except Exception:
+                            continue
+                finally:
+                    self._eps_used = eps_saved
+            if not etas:
+                etas = [(max(float(p.get("target_speed", 4.0)), 2.0), 0.25)]
+            spds = np.array([e[0] for e in etas], dtype=float)
+            vals = np.array([e[1] for e in etas], dtype=float)
+            self._eta_turn_cache = (key, spds, vals)
+        _, spds, vals = self._eta_turn_cache
+        return float(np.interp(max(float(u), 0.5), spds, vals))
 
     def _build_lqr(self):
         """Scheduled LQR (control/lqr.py), designed on a PID-configured copy of this plant."""
         from hydrofoil.control.lqr import LQRController
         # designed on the NOMINAL CG: the controller cannot know where the rider sits (cg_offset is the truth)
-        p = dict(self.params, controller="pid", cg_offset=(0.0, 0.0), supervisor=False)
+        p = dict(self.params, controller="pid", cg_offset=(0.0, 0.0), cg_z=0.0, supervisor=False)
         # design latency: the loop delay the gains are computed for. Defaults to the drive model's command
         # delay; on hardware set lqr_delay_s to the MEASURED sensor-to-surface latency.
         delay = p.get("lqr_delay_s")
@@ -263,6 +335,20 @@ class VehiclePhysics:
             if self.lqr is not None:
                 self.lqr.auto_handback = (m == "auto")
                 self.lqr.force = None
+        return m
+
+    def set_safety_margin(self, level: str) -> str:
+        """Set live Layer-3 safety margin preset: 'conservative', 'standard', or 'sport'."""
+        canon, _ = safety_preset_config(level)
+        self.params["safety_margin"] = canon
+        return canon
+
+    def set_allocator_mode(self, mode: str) -> str:
+        """Set live surface allocator mode: 'jacobian' or 'legacy'."""
+        m = str(mode or "jacobian").strip().lower()
+        if m not in ("jacobian", "legacy"):
+            raise ValueError(f"unknown allocator mode {mode!r}; expected 'jacobian' or 'legacy'")
+        self.params["allocator"] = m
         return m
 
     def controller_status(self, u: float = 0.0) -> dict:
@@ -404,7 +490,7 @@ class VehiclePhysics:
         if not all(k in meas for k in ("z", "phi", "theta", "p", "q", "r")) and not self._est_ready:
             return state                                   # sensors not all up yet (first few ms)
         c = state.copy()
-        z_trim = p["hull_offset"] - p["flying_height"]
+        z_trim = self.hull_offset - p["flying_height"]
         if self._u_meas < p.get("est_engage_speed", 3.0) and not self._est_ready:
             for k, i in (("z", 2), ("phi", 3), ("theta", 4), ("p", 9), ("q", 10), ("r", 11)):
                 if k in meas:
@@ -448,6 +534,9 @@ class VehiclePhysics:
         for d in self.drives.values():
             d.reset()
         self._slew_last = None
+        self._last_alloc_status = {}
+        self._last_turn_envelope = {}
+        self._last_sigma = 99.0
 
     def twist_stiffness(self, name: str) -> float | None:
         """Spanwise twist stiffness of a surface at its drive [N m/rad], for the span-mean deflection under a
@@ -461,34 +550,90 @@ class VehiclePhysics:
         gj = p.get("elev_GJ")
         return None if (gj is None or p["elev_span"] <= 1e-4) else 12.0 * gj / p["elev_span"]
 
-    def _servo_commands(self, raw: dict, state, env, u_meas: float | None = None) -> dict:
-        """Mix the virtual PID channels onto the physical drives and advance the drive dynamics."""
+    def _compute_sigma_min(self, state, env) -> float:
+        """Compute minimum cavitation number across submerged foils."""
+        eta, nu = state[:6], state[6:]
+        sigma_min = 99.0
+        for name, foil in (("left", self.left_foil), ("right", self.right_foil), ("elev", self.elev_foil)):
+            vb = env.foil_vel_body[name]
+            speed = math.sqrt((float(nu[0]) - float(vb[0])) ** 2 + (float(nu[1]) - float(vb[1])) ** 2 + (float(nu[2]) - float(vb[2])) ** 2)
+            hc = self._effective_submergence_over_chord(foil, eta, env.foil_surface_z[name])
+            if hc > 0.0 and speed >= 2.0:
+                sigma_min = min(sigma_min, cavitation_number(speed, hc * foil.geometry.chord, rho=foil.rho))
+        return float(sigma_min)
+
+    def _servo_commands(self, raw: dict, state, env, u_meas: float | None = None, alloc_state=None) -> dict:
+        """Allocate virtual controller channels onto the physical drives and advance drive dynamics."""
         p = self.params
         u = max(float(state[6] if u_meas is None else u_meas), 0.1)
         vs = p.get("q_schedule_speed", 0.0)
         k = float(np.clip((vs / u) ** 2, 0.25, 1.0)) if vs > 0 else 1.0   # gain-schedule flap commands by 1/q above vs
-        main, roll, elev = k * raw["delta_main"], k * raw["delta_roll"], k * raw["delta_elev"]
-        target = {"left": main - roll, "right": main + roll, "elev": elev}
-        if self.supervisor is not None:
-            target = self.supervisor.mix(target)          # jammed-flap reconfiguration
-        slew = p.get("cmd_slew_deg_s")
-        if slew:                                           # rate-limit each drive's command (takeoff steps)
-            step = slew * p["dt"]
-            if self._slew_last is None:                    # start from where the surfaces are, not the first command
-                self._slew_last = {n: float(np.degrees(self.drives[n].delta)) for n in target}
-            target = {n: float(np.clip(v, self._slew_last[n] - step, self._slew_last[n] + step))
-                      for n, v in target.items()}
+        raw_s = {"delta_main": k * raw["delta_main"], "delta_roll": k * raw["delta_roll"], "delta_elev": k * raw["delta_elev"]}
+        flows_true = flow_models(self, state, env, self.hinges)
+        self._last_flows = flows_true                     # hinge model at this flow (supervisor fault residuals)
+        if self._slew_last is None:
+            self._slew_last = {n: float(np.degrees(self.drives[n].delta)) for n in self.drives}
+
+        jam = self.supervisor.jam if self.supervisor is not None else None
+        use_truth = self.sensors is None
+        s_alloc = state if (use_truth or alloc_state is None) else alloc_state
+        env_alloc = env if use_truth else self.calm_sample()
+        if p.get("allocator", "jacobian") == "jacobian" and self.allocator is not None:
+            flows_alloc = flows_true if use_truth else flow_models(self, s_alloc, env_alloc, self.hinges, r_overrides=self._r_nominal)
+            target, alloc_status = self.allocator.allocate(
+                self, raw_s, s_alloc, env_alloc, self._slew_last, u_meas=u_meas,
+                jam=jam, flows=flows_alloc, use_truth=use_truth,
+            )
             self._slew_last = dict(target)
+            self._last_alloc_status = alloc_status
+            self._last_sigma = float(alloc_status.get("sigma_min", 99.0))
+        else:
+            main, roll, elev = raw_s["delta_main"], raw_s["delta_roll"], raw_s["delta_elev"]
+            target = {"left": main - roll, "right": main + roll, "elev": elev}
+            if self.supervisor is not None:
+                target = self.supervisor.mix(target)          # jammed-flap reconfiguration
+            slew = p.get("cmd_slew_deg_s")
+            if slew:                                           # rate-limit each drive's command (takeoff steps)
+                step = slew * p["dt"]
+                target = {n: float(np.clip(v, self._slew_last[n] - step, self._slew_last[n] + step))
+                          for n, v in target.items()}
+                self._slew_last = dict(target)
+            self._last_sigma = self._compute_sigma_min(s_alloc, env_alloc)
+            fl_s, fr_s, fe_s = float(p["flap_stop_deg"]), float(p["flap_stop_deg"]), float(p["elev_stop_deg"])
+            m_ach = 0.5 * (target["left"] + target["right"])
+            r_ach = 0.5 * (target["right"] - target["left"])
+            self._last_alloc_status = {
+                "active_mode": "legacy",
+                "safety_margin": str(p.get("safety_margin", "standard")),
+                "angles": dict(target),
+                "bounds": {"left": [-fl_s, fl_s], "right": [-fl_s, fl_s], "elev": [-fe_s, fe_s]},
+                "binding": {"left": "legacy mixer", "right": "legacy mixer", "elev": "legacy mixer"},
+                "split_deg": float(target["right"] - target["left"]),
+                "reverse_drive_enabled": bool(p.get("reverse_drive_enabled", True)),
+                "reverse_drive_active": bool(target["left"] * target["right"] < -0.25 and abs(target["right"] - target["left"]) > 1.0),
+                "reverse_drive_gated": False,
+                "reverse_drive_reason": "Legacy mixer",
+                "lift_margin": 1.0,
+                "elev_reserve": float(np.clip(1.0 - abs(target["elev"]) / max(fe_s, 1.0), 0.0, 1.0)),
+                "sigma_min": float(self._last_sigma),
+                "saturated": {
+                    "main": abs(m_ach - raw_s["delta_main"]) > 0.15 or (abs(target["left"]) >= fl_s - 0.05 and abs(target["right"]) >= fl_s - 0.05),
+                    "elev": abs(target["elev"] - raw_s["delta_elev"]) > 0.15 or abs(target["elev"]) >= fe_s - 0.05,
+                    "roll": abs(r_ach - raw_s["delta_roll"]) > 0.15,
+                },
+                "solve_ms": 0.0,
+            }
         self._last_target = target
-        flows = flow_models(self, state, env, self.hinges)
-        self._last_flows = flows                          # hinge model at this flow (supervisor fault residuals)
         for d in self.drives.values():                     # live gear ratio / bus voltage (UI sliders)
             d.spec.gear.ratio, d.spec.ctrl.v_bus = p["gear_ratio"], p["v_bus"]
-        ang = {n: self.drives[n].update(target[n], flows[n]) for n in self.drives}
+        ang = {n: self.drives[n].update(target[n], flows_true[n]) for n in self.drives}
         return {"delta_main": 0.5 * (ang["left"] + ang["right"]),
                 "delta_roll": 0.5 * (ang["right"] - ang["left"]),
-                "delta_elev": ang["elev"],
+                "delta_left": float(ang["left"]),
+                "delta_right": float(ang["right"]),
+                "delta_elev": float(ang["elev"]),
                 "target": target,
+                "alloc": dict(self._last_alloc_status),
                 "drive": {n: dict(self.drives[n].telemetry) for n in self.drives}}
 
     def _downwash_qs(self) -> float:
@@ -518,13 +663,14 @@ class VehiclePhysics:
         if d0 == 0.0 or vs <= 0.0 or self.main_flap_eff <= 1e-6:
             return 0.0
         inc = p.get("main_incidence_deg", 0.0) / self.main_flap_eff    # incidence in flap degrees
-        return float(np.clip((d0 + inc) * (vs / max(float(u), 0.5 * vs)) ** 2 - inc, -20.0, 20.0))
+        cmd_lim = float(p.get("flap_cmd_max_deg", min(20.0, float(p.get("flap_stop_deg", 30.0)))))
+        return float(np.clip((d0 + inc) * (vs / max(float(u), 0.5 * vs)) ** 2 - inc, -cmd_lim, cmd_lim))
 
     def rest_state(self) -> np.ndarray:
         """Initial state: at rest, floating at the hull's buoyant equilibrium draft."""
         p = self.params
         rest_draft = min(p["mass"] / max(RHO_WATER * self.waterplane_area, 1e-6), p["max_draft"])
-        z0 = p["hull_offset"] + rest_draft
+        z0 = self.hull_offset + rest_draft
         eta0 = np.array([0.0, 0.0, z0, 0.0, np.radians(2.0), 0.0])
         nu0 = np.zeros(6)
         return np.concatenate([eta0, nu0])
@@ -557,16 +703,18 @@ class VehiclePhysics:
         names = ("left", "right", "elev", "main_strut", "elev_strut")
         return WaveSample(0.0, 0.0, 0.0, {n: 0.0 for n in names}, {n: z3 for n in names})
 
-    def _submergence_over_chord(self, foil, eta, water_surface_z):
+    def _submergence_over_chord(self, foil, eta, water_surface_z, r_attach: np.ndarray | None = None):
         """
         This foil's depth below the (possibly wave-displaced) local water
         surface at its attachment centre r_attach, divided by its chord.
         """
-        R = R_body_to_ned(eta[3], eta[4], eta[5])
-        world_z = eta[2] + (R @ foil.r_attach)[2]
-        return (world_z - water_surface_z) / foil.geometry.chord
+        phi, th = float(eta[3]), float(eta[4])
+        ct = math.cos(th)
+        r = foil.r_attach if r_attach is None else r_attach
+        world_z = float(eta[2]) + (-math.sin(th)) * float(r[0]) + (ct * math.sin(phi)) * float(r[1]) + (ct * math.cos(phi)) * float(r[2])
+        return (world_z - float(water_surface_z)) / foil.geometry.chord
 
-    def _foil_tip_submergence_over_chord(self, foil, eta, water_surface_z) -> float:
+    def _foil_tip_submergence_over_chord(self, foil, eta, water_surface_z, r_attach: np.ndarray | None = None) -> float:
         """
         Shallowest wingtip depth below local water surface, divided by chord.
         For split left/right panels (|r_attach[1]| > 1e-6), evaluates the outboard tip
@@ -574,44 +722,49 @@ class VehiclePhysics:
         takes the shallower of the two tips (+-span/2). Identical to
         `_submergence_over_chord` when level (phi == 0).
         """
-        R = R_body_to_ned(eta[3], eta[4], eta[5])
-        r2 = R[2]
-        z_ctr = eta[2] + float(r2 @ foil.r_attach)
-        half = 0.5 * foil.geometry.span
-        dy = float(r2[1]) * half
-        if abs(foil.r_attach[1]) > 1e-6:
-            sgn = 1.0 if foil.r_attach[1] > 0.0 else -1.0
-            z_tip = z_ctr + sgn * dy
+        phi, th = float(eta[3]), float(eta[4])
+        ct = math.cos(th)
+        r2y = ct * math.sin(phi)
+        r = foil.r_attach if r_attach is None else r_attach
+        z_ctr = float(eta[2]) + (-math.sin(th)) * float(r[0]) + r2y * float(r[1]) + (ct * math.cos(phi)) * float(r[2])
+        dy = r2y * (0.5 * foil.geometry.span)
+        ry = float(r[1])
+        if abs(ry) > 1e-6:
+            z_tip = z_ctr + (dy if ry > 0.0 else -dy)
         else:
             z_tip = z_ctr - abs(dy)
-        return (z_tip - water_surface_z) / foil.geometry.chord
+        return (z_tip - float(water_surface_z)) / foil.geometry.chord
 
-    def _effective_submergence_over_chord(self, foil, eta, water_surface_z) -> float:
+    def _effective_submergence_over_chord(self, foil, eta, water_surface_z, r_attach: np.ndarray | None = None) -> float:
         """
         Span-averaged effective submergence h/c for a horizontal foil using 3-station
         Simpson quadrature (inboard edge, center, outboard tip) of `free_surface_lift_factor`.
         Identical to `_submergence_over_chord` in level flight (phi == 0), while smoothly
         capturing outboard wingtip free-surface lift loss and emergence in banked turns.
         """
-        R = R_body_to_ned(eta[3], eta[4], eta[5])
-        r2 = R[2]
-        z_ctr = eta[2] + float(r2 @ foil.r_attach)
+        phi, th = float(eta[3]), float(eta[4])
+        ct = math.cos(th)
+        r2y = ct * math.sin(phi)
+        r = foil.r_attach if r_attach is None else r_attach
         c = foil.geometry.chord
-        hc_ctr = (z_ctr - water_surface_z) / c
-        dy_hc = float(r2[1]) * (0.5 * foil.geometry.span) / c
+        z_ctr = float(eta[2]) + (-math.sin(th)) * float(r[0]) + r2y * float(r[1]) + (ct * math.cos(phi)) * float(r[2])
+        hc_ctr = (z_ctr - float(water_surface_z)) / c
+        dy_hc = r2y * (0.5 * foil.geometry.span) / c
         if abs(dy_hc) < 1e-9:
             return hc_ctr
         hc_a = hc_ctr - dy_hc
         hc_b = hc_ctr + dy_hc
         if hc_a <= 0.0 and hc_ctr <= 0.0 and hc_b <= 0.0:
             return min(hc_a, hc_ctr, hc_b)
-        f_avg = (free_surface_lift_factor(hc_a) + 4.0 * free_surface_lift_factor(hc_ctr)
-                 + free_surface_lift_factor(hc_b)) / 6.0
+        def _fs(h):
+            if h <= 0.0: return 0.0
+            return 1.0 if h > 10.0 else (1.0 - math.exp(-h / 1.58))
+        f_avg = (_fs(hc_a) + 4.0 * _fs(hc_ctr) + _fs(hc_b)) / 6.0
         if f_avg <= 1e-9:
             return 0.0
         if f_avg >= 1.0 - 1e-12:
             return hc_ctr
-        return float(-1.58 * np.log(1.0 - f_avg))
+        return float(-1.58 * math.log(1.0 - f_avg))
 
     def physics_rhs(self, state, cmds, thrust, env: WaveSample | None = None):
         """
@@ -639,7 +792,7 @@ class VehiclePhysics:
             nu_rel[:3] -= env.foil_vel_body[name]
             h = self._submergence_over_chord(strut, eta, env.foil_surface_z[name]) * strut.geometry.chord
             cos_tilt = max(float(np.cos(eta[3]) * np.cos(eta[4])), 0.25)
-            strut_len = p["hull_offset"] + strut.r_attach[2]
+            strut_len = self.hull_offset + strut.r_attach[2]
             wet = float(np.clip(h / cos_tilt, 0.0, strut_len))
             r = strut.r_attach - np.array([0.0, 0.0, 0.5 * wet])   # AC at mid wetted length
             return strut.generalized_force(nu_rel, span=wet, r_attach=r, ventilation=self._vent.get(name, 0.0))
@@ -647,8 +800,16 @@ class VehiclePhysics:
         tau = np.zeros(6)
         tau += strut_force("main_strut")
         tau += strut_force("elev_strut")
-        tau += foil_force("left", cmds["delta_main"] - cmds["delta_roll"])
-        tau += foil_force("right", cmds["delta_main"] + cmds["delta_roll"])
+        dl_raw = cmds["delta_left"] if "delta_left" in cmds else (cmds["delta_main"] - cmds["delta_roll"])
+        dr_raw = cmds["delta_right"] if "delta_right" in cmds else (cmds["delta_main"] + cmds["delta_roll"])
+        k_cc = float(np.clip(p.get("split_flap_cross_coupling", 0.0), 0.0, 0.35))
+        if k_cc > 0.0 and dl_raw != dr_raw:
+            dl_eff = (1.0 - k_cc) * dl_raw + k_cc * dr_raw
+            dr_eff = (1.0 - k_cc) * dr_raw + k_cc * dl_raw
+        else:
+            dl_eff, dr_eff = dl_raw, dr_raw
+        tau += foil_force("left", dl_eff)
+        tau += foil_force("right", dr_eff)
         # Wing -> tail downwash: self._eps_used (transport-lagged, see _downwash_lagged)
         tau += foil_force("elev", cmds["delta_elev"], downwash=self._eps_used)
         tau += self.hull.buoyancy(eta, env.hull_cell_surface_z)
@@ -657,6 +818,9 @@ class VehiclePhysics:
                               p["hull_drag_coeff"], p["hull_rot_damping"],
                               hull_length=p["hull_length"], hump_amp=p.get("hull_hump_amp", 0.8))
         tau[0] += thrust
+        z_prop = float(p.get("prop_pos_z", 0.0)) + self._cg_z
+        if z_prop != 0.0:
+            tau[4] += thrust * z_prop
         tau[2] -= p["heave_damping"] * nu[2]
         return np.concatenate([J(eta) @ nu, self.rigid_body.nu_dot(nu, tau)])
 
@@ -684,13 +848,20 @@ class VehiclePhysics:
         cstate = self._control_state(state, t, env.elevation)   # what the controllers see (== state if sensors ideal)
         if self.supervisor is not None and cmds_override is None:
             self.supervisor.update(t, cstate)                  # mode, references, limits (control/supervisor.py)
-        z_ref = p["hull_offset"] - p["flying_height"]
+        else:
+            w_amp = float(wave.amplitude) if hasattr(wave, "amplitude") else float(p.get("wave_amplitude", 0.0))
+            self._last_turn_envelope = compute_turn_envelope(
+                self, cstate=cstate, wave_amp=w_amp, height_ref=p.get("flying_height"),
+                alloc_status=self._last_alloc_status,
+            )
+        z_ref = self.hull_offset - p["flying_height"]
         ceta, cnu = cstate[:6], cstate[6:]
         self._eps_used = self._downwash_lagged(t, nu[0])      # frozen over the step; drive loads use it too
         if cmds_override is None and self.actuator_model == "servo":
             ff = self._trim_ff(cnu[0])
-            self.controller.heave_pid.output_min = -20.0 - ff   # anti-windup judges the TOTAL flap command
-            self.controller.heave_pid.output_max = 20.0 - ff
+            cmd_lim = float(p.get("flap_cmd_max_deg", min(20.0, float(p.get("flap_stop_deg", 30.0)))))
+            self.controller.heave_pid.output_min = -cmd_lim - ff   # anti-windup judges the TOTAL flap command
+            self.controller.heave_pid.output_max = cmd_lim - ff
             pid_active = not (self.lqr is not None and self.lqr.engaged and self.lqr.force is not False
                               and self.lqr.since_engage >= self.lqr.blend_s)
             raw = self.controller.pid_commands(
@@ -710,11 +881,14 @@ class VehiclePhysics:
                                       raw, act, draft=cur_draft)
             if self.supervisor is not None:
                 raw = self.supervisor.shape_raw(raw, cstate)
-            cmds = self._servo_commands(raw, state, env, u_meas=cnu[0])
+            cmds = self._servo_commands(raw, state, env, u_meas=cnu[0], alloc_state=cstate)
             if self.lqr is not None:
                 t_cmd = cmds["target"]
-                self.lqr.sync_sent([0.5 * (t_cmd["left"] + t_cmd["right"]), t_cmd["elev"],
-                                    0.5 * (t_cmd["right"] - t_cmd["left"])])
+                sat_d = cmds["alloc"].get("saturated") or {}
+                self.lqr.sync_sent(
+                    [0.5 * (t_cmd["left"] + t_cmd["right"]), t_cmd["elev"], 0.5 * (t_cmd["right"] - t_cmd["left"])],
+                    sat_flags=(bool(sat_d.get("main")), bool(sat_d.get("elev")), bool(sat_d.get("roll"))),
+                )
         elif cmds_override is None:
             raw_k = self.controller.pid_commands(
                 z_ref,                       ceta[2],
@@ -728,8 +902,10 @@ class VehiclePhysics:
                 "delta_elev": self.controller.elev_actuator.update(raw_k["delta_elev"]),
                 "delta_roll": self.controller.roll_actuator.update(raw_k["delta_roll"]),
             }
+            self._last_sigma = self._compute_sigma_min(cstate, env if self.sensors is None else self.calm_sample())
         else:
             cmds = dict(cmds_override)
+            self._last_sigma = self._compute_sigma_min(state, env)
         thrust_cmd = self.surge.update(p["target_speed"], cnu[0])
         p_prop = p.get("prop_power_max")
         if p_prop is not None and p_prop > 0.0 and self.surge.pid.output_max > 0.0:
@@ -790,7 +966,7 @@ class VehiclePhysics:
             cos_tilt = max(float(np.cos(new_state[3]) * np.cos(new_state[4])), 0.25)
             for name, strut in (("main_strut", self.main_strut), ("elev_strut", self.elev_strut)):
                 h = self._submergence_over_chord(strut, new_state[:6], env.foil_surface_z[name]) * strut.geometry.chord
-                wet = float(np.clip(h / cos_tilt, 0.0, p["hull_offset"] + strut.r_attach[2]))
+                wet = float(np.clip(h / cos_tilt, 0.0, self.hull_offset + strut.r_attach[2]))
                 r_mid = strut.r_attach - np.array([0.0, 0.0, 0.5 * wet])
                 nu_rel = new_state[6:].copy()
                 nu_rel[:3] -= env.foil_vel_body[name]

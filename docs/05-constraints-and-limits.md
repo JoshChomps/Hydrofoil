@@ -1,5 +1,7 @@
 # 05 — Constraints and Limits
 
+> **Update Notice:** The original single-channel PID limits (`±20°` open-loop clip, static `±8°` uplink, ground-truth feedback) are superseded by the 3-layer Jacobian QP safe envelope (`compute_flap_safe_bounds` in `control/allocator.py`), speed/wave/preset-dependent `compute_turn_envelope` (`control/supervisor.py`), active $C^1$ cavitation degradation (`forces/foil.py`), and noisy sensor/Kalman isolation. See [00-master-system-architecture.md](00-master-system-architecture.md) and [24-dual-front-flaps-and-jacobian-allocation.md](24-dual-front-flaps-and-jacobian-allocation.md) for live limits. Historical 2026-11-04 baseline constraints remain below for traceability.
+
 ## 1. Hard clamps in code
 
 | Where | Constraint | Effect |
